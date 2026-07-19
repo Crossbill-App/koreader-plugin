@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS prereading (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prereading_book ON prereading(client_book_id);
+
+CREATE TABLE IF NOT EXISTS prereading_fetch_meta (
+    client_book_id TEXT PRIMARY KEY,
+    fetched_at     INTEGER NOT NULL,
+    item_count     INTEGER NOT NULL
+);
 ]]
 
 --- Create a new PrereadingCache instance
@@ -180,6 +186,7 @@ function PrereadingCache:replaceBook(client_book_id, items)
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ]])
 
+		local inserted_count = 0
 		for _, item in ipairs(items) do
 			local chapter_number = tonumber(item.chapter_number)
 			if chapter_number == nil then
@@ -202,10 +209,26 @@ function PrereadingCache:replaceBook(client_book_id, items)
 					fetched_at
 				)
 				ins_stmt:step()
+				inserted_count = inserted_count + 1
 			end
 		end
 
 		ins_stmt:close()
+
+		-- Record this fetch so a "fetched and empty" book is distinguishable from
+		-- a "never fetched" one. hasBook checks this meta table, so a book with an
+		-- empty server prereading list still counts as present and does not trigger
+		-- a re-fetch on every popup open. An empty fetch is refreshed by sync
+		-- (refreshBook), not by popup opens.
+		local meta_stmt = self.db:prepare([[
+            INSERT OR REPLACE INTO prereading_fetch_meta (
+                client_book_id, fetched_at, item_count
+            ) VALUES (?, ?, ?)
+        ]])
+		meta_stmt:bind(client_book_id, fetched_at, inserted_count)
+		meta_stmt:step()
+		meta_stmt:close()
+
 		self.db:exec("COMMIT;")
 	end)
 
@@ -266,9 +289,13 @@ function PrereadingCache:getBook(client_book_id)
 	return items
 end
 
---- Check whether any prereading rows are cached for a book
+--- Check whether a book has ever been fetched (even if it had no prereading)
+-- Checks the fetch-meta table rather than counting prereading rows, so a book
+-- whose server prereading list was empty still counts as present. This keeps a
+-- popup open from re-attempting a network fetch every time; the empty fetch is
+-- refreshed by sync (refreshBook), not by popup opens.
 -- @param client_book_id string The client book ID
--- @return boolean True if at least one row exists
+-- @return boolean True if the book has been fetched at least once
 function PrereadingCache:hasBook(client_book_id)
 	if not self._initialized or not self.db then
 		return false
@@ -280,7 +307,7 @@ function PrereadingCache:hasBook(client_book_id)
 
 	local has = false
 	local success, err = pcall(function()
-		local stmt = self.db:prepare("SELECT 1 FROM prereading WHERE client_book_id = ? LIMIT 1")
+		local stmt = self.db:prepare("SELECT 1 FROM prereading_fetch_meta WHERE client_book_id = ? LIMIT 1")
 		stmt:bind(client_book_id)
 		for _ in stmt:rows() do
 			has = true
