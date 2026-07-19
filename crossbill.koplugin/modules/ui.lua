@@ -83,26 +83,53 @@ local function buildPrereadingTitle(item)
 	return chapter_name
 end
 
---- Build the body text for a prereading item
+--- Strip markdown inline markers from a text for plain-text display
+-- The server's prereading content contains markdown (e.g. **bold**), which
+-- older TextViewers render as literal asterisks. Order matters: bold before
+-- italics so ** is consumed first.
+-- @param text any The raw text (non-strings pass through tostring)
+-- @return string The text without markdown markers
+local function stripMarkdown(text)
+	local result = tostring(text)
+	result = result:gsub("%*%*(.-)%*%*", "%1")
+	result = result:gsub("__(.-)__", "%1")
+	result = result:gsub("%*(.-)%*", "%1")
+	result = result:gsub("`(.-)`", "%1")
+	-- Leading heading markers at the start of any line
+	result = result:gsub("^#+%s*", ""):gsub("\n#+%s*", "\n")
+	return result
+end
+
+--- Check whether this KOReader's TextViewer can render markdown as HTML
+-- Newer TextViewers accept text_format = "md" and render via ScrollHtmlWidget;
+-- older ones lack html_text_formats entirely and show plain text only.
+-- @return boolean True if markdown rendering is available
+local function supportsMarkdown()
+	return type(TextViewer.html_text_formats) == "table" and TextViewer.html_text_formats.md == true
+end
+
+--- Build the popup body as markdown (rendered as HTML by newer TextViewers)
+-- Summary, keypoints and questions are passed through verbatim so their own
+-- inline markdown (bold, italics) renders properly.
 -- @param item table Prereading item with summary, keypoints, questions
--- @return string Multi-section body text
-local function buildPrereadingBody(item)
+-- @return string Markdown body
+local function buildPrereadingMarkdown(item)
 	local sections = {}
 
 	if item.summary and item.summary ~= "" then
-		table.insert(sections, item.summary)
+		table.insert(sections, tostring(item.summary))
 	end
 
 	if item.keypoints and #item.keypoints > 0 then
-		local lines = { _("Key points") }
+		local lines = { "## " .. _("Key points") }
 		for _idx, point in ipairs(item.keypoints) do
-			table.insert(lines, "• " .. tostring(point))
+			table.insert(lines, "- " .. tostring(point))
 		end
 		table.insert(sections, table.concat(lines, "\n"))
 	end
 
 	if item.questions and #item.questions > 0 then
-		local lines = { _("Questions to think about") }
+		local lines = { "## " .. _("Questions to think about") }
 		for i, question in ipairs(item.questions) do
 			table.insert(lines, tostring(i) .. ". " .. tostring(question))
 		end
@@ -116,13 +143,57 @@ local function buildPrereadingBody(item)
 	return table.concat(sections, "\n\n")
 end
 
+--- Build the popup body as plain text, with markdown markers stripped
+-- Fallback for older TextViewers without markdown rendering.
+-- @param item table Prereading item with summary, keypoints, questions
+-- @return string Multi-section plain text body
+local function buildPrereadingBody(item)
+	local sections = {}
+
+	if item.summary and item.summary ~= "" then
+		table.insert(sections, stripMarkdown(item.summary))
+	end
+
+	if item.keypoints and #item.keypoints > 0 then
+		local lines = { _("Key points") }
+		for _idx, point in ipairs(item.keypoints) do
+			table.insert(lines, "• " .. stripMarkdown(point))
+		end
+		table.insert(sections, table.concat(lines, "\n"))
+	end
+
+	if item.questions and #item.questions > 0 then
+		local lines = { _("Questions to think about") }
+		for i, question in ipairs(item.questions) do
+			table.insert(lines, tostring(i) .. ". " .. stripMarkdown(question))
+		end
+		table.insert(sections, table.concat(lines, "\n"))
+	end
+
+	if #sections == 0 then
+		return _("No prereading content available for this chapter.")
+	end
+
+	return table.concat(sections, "\n\n")
+end
+
 --- Show the prereading popup for a matched chapter item
+-- Renders the body as markdown (bold, headings, lists) when this KOReader's
+-- TextViewer supports it, falling back to plain text with markers stripped.
 -- @param item table Prereading item to display
 function UI.showPrereadingPopup(item)
-	UIManager:show(TextViewer:new({
-		title = buildPrereadingTitle(item),
-		text = buildPrereadingBody(item),
-	}))
+	if supportsMarkdown() then
+		UIManager:show(TextViewer:new({
+			title = buildPrereadingTitle(item),
+			text = buildPrereadingMarkdown(item),
+			text_format = "md",
+		}))
+	else
+		UIManager:show(TextViewer:new({
+			title = buildPrereadingTitle(item),
+			text = buildPrereadingBody(item),
+		}))
+	end
 end
 
 --- Show a message when no prereading is cached and we are offline
