@@ -14,9 +14,12 @@ local Network = require("modules/network")
 local Auth = require("modules/auth")
 local ApiClient = require("modules/api_client")
 local SessionTracker = require("modules/sessiontracker")
+local PrereadingCache = require("modules/prereading_cache")
+local PrereadingService = require("modules/prereading_service")
 local FileUploader = require("modules/file_uploader")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
+local BookMetadata = require("modules/book_metadata")
 
 local CrossbillSync = WidgetContainer:extend({
 	name = "Crossbill",
@@ -41,8 +44,14 @@ function CrossbillSync:init()
 	self.session_tracker = SessionTracker:new(self.settings)
 	self.session_tracker:init(DataStorage:getSettingsDir())
 
+	-- Initialize prereading cache (SQLite) and service
+	self.prereading_cache = PrereadingCache:new(self.settings)
+	self.prereading_cache:init(DataStorage:getSettingsDir())
+	self.prereading_service = PrereadingService:new(self.api_client, self.prereading_cache)
+
 	-- Initialize sync service with all dependencies
-	self.sync_service = SyncService:new(self.api_client, self.file_uploader, self.session_tracker, self.settings)
+	self.sync_service =
+		SyncService:new(self.api_client, self.file_uploader, self.session_tracker, self.settings, self.prereading_service)
 
 	-- Register menu
 	self.ui.menu:registerToMainMenu(self)
@@ -53,6 +62,9 @@ function CrossbillSync:addToMainMenu(menu_items)
 	menu_items.crossbill_sync = UI.buildMenuItems({
 		on_sync = function()
 			self:syncCurrentBook()
+		end,
+		on_show_prereading = function()
+			self:showChapterPrereading()
 		end,
 		on_configure = function()
 			self:configureServer()
@@ -88,6 +100,67 @@ end
 --- Show server configuration dialog
 function CrossbillSync:configureServer()
 	UI.showConfigureServerDialog(self.settings)
+end
+
+--- Show a prereading result: popup on success, matching info message otherwise
+-- @param item table|nil The matched prereading item
+-- @param err_kind string|nil The error kind returned by the prereading service
+function CrossbillSync:_showPrereadingResult(item, err_kind)
+	if item then
+		UI.showPrereadingPopup(item)
+	elseif err_kind == "book_unknown" then
+		UI.showPrereadingBookUnknown()
+	elseif err_kind == "no_prereading_for_book" then
+		UI.showPrereadingEmptyBook()
+	elseif err_kind == "chapter_not_matched" then
+		UI.showPrereadingChapterNotMatched()
+	else
+		-- err_kind == "no_cache" (or any unexpected value)
+		UI.showPrereadingNoCache()
+	end
+end
+
+--- Show the current chapter's prereading content
+function CrossbillSync:showChapterPrereading()
+	if not self.ui.document then
+		logger.warn("Crossbill: Cannot show prereading - no document available")
+		return
+	end
+
+	local ok, book_data = pcall(function()
+		return BookMetadata:new(self.ui):extractBookData()
+	end)
+	if not ok or not book_data or not book_data.client_book_id then
+		logger.err("Crossbill: Failed to extract book metadata for prereading")
+		UI.showPrereadingNoCache()
+		return
+	end
+
+	local client_book_id = book_data.client_book_id
+	local item, err_kind = self.prereading_service:getForCurrentChapter(self.ui, client_book_id)
+
+	-- Anything other than a missing cache can be shown immediately (no network needed).
+	if err_kind ~= "no_cache" then
+		self:_showPrereadingResult(item, err_kind)
+		return
+	end
+
+	-- Nothing cached and the fetch failed: retry once online if WiFi is off.
+	local callback = function()
+		local retry_item, retry_err = self.prereading_service:getForCurrentChapter(self.ui, client_book_id)
+		self:_showPrereadingResult(retry_item, retry_err)
+		Network.disableWifiIfNeeded()
+	end
+
+	if not Network.ensureWifiEnabled(callback) then
+		-- WiFi is being enabled; callback will run when online
+		logger.info("Crossbill: Waiting for WiFi to show prereading...")
+		return
+	end
+
+	-- Already online but still no cache: the fetch genuinely failed
+	self:_showPrereadingResult(item, err_kind)
+	Network.disableWifiIfNeeded()
 end
 
 --- Check if session tracking is currently active
@@ -226,9 +299,12 @@ function CrossbillSync:onExit()
 		logger.info("Crossbill: Auto-syncing on exit")
 		self:syncCurrentBook(true)
 	end
-	-- Close database after sync attempts
+	-- Close databases after sync attempts
 	if self.session_tracker then
 		self.session_tracker:close()
+	end
+	if self.prereading_cache then
+		self.prereading_cache:close()
 	end
 	return false
 end

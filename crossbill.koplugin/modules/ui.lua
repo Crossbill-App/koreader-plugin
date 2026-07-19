@@ -10,6 +10,7 @@ Provides UI components for the plugin including:
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local TextViewer = require("ui/widget/textviewer")
 local _ = require("gettext")
 
 local UI = {}
@@ -69,6 +70,79 @@ end
 -- @param enabled boolean Whether session tracking is now enabled
 function UI.showSessionTrackingToggled(enabled)
 	UI.showMessage(enabled and _("Session tracking enabled") or _("Session tracking disabled"))
+end
+
+--- Build the display title for a prereading item
+-- @param item table Prereading item with chapter_name and parent_chapter_name
+-- @return string Title, prefixed with the parent chapter name when present
+local function buildPrereadingTitle(item)
+	local chapter_name = item.chapter_name or _("Chapter")
+	if item.parent_chapter_name and item.parent_chapter_name ~= "" then
+		return item.parent_chapter_name .. " › " .. chapter_name
+	end
+	return chapter_name
+end
+
+--- Build the body text for a prereading item
+-- @param item table Prereading item with summary, keypoints, questions
+-- @return string Multi-section body text
+local function buildPrereadingBody(item)
+	local sections = {}
+
+	if item.summary and item.summary ~= "" then
+		table.insert(sections, item.summary)
+	end
+
+	if item.keypoints and #item.keypoints > 0 then
+		local lines = { _("Key points") }
+		for _idx, point in ipairs(item.keypoints) do
+			table.insert(lines, "• " .. tostring(point))
+		end
+		table.insert(sections, table.concat(lines, "\n"))
+	end
+
+	if item.questions and #item.questions > 0 then
+		local lines = { _("Questions to think about") }
+		for i, question in ipairs(item.questions) do
+			table.insert(lines, tostring(i) .. ". " .. tostring(question))
+		end
+		table.insert(sections, table.concat(lines, "\n"))
+	end
+
+	if #sections == 0 then
+		return _("No prereading content available for this chapter.")
+	end
+
+	return table.concat(sections, "\n\n")
+end
+
+--- Show the prereading popup for a matched chapter item
+-- @param item table Prereading item to display
+function UI.showPrereadingPopup(item)
+	UIManager:show(TextViewer:new({
+		title = buildPrereadingTitle(item),
+		text = buildPrereadingBody(item),
+	}))
+end
+
+--- Show a message when no prereading is cached and we are offline
+function UI.showPrereadingNoCache()
+	UI.showMessage(_("No prereading cached yet. Sync this book while online."), 4)
+end
+
+--- Show a message when the book is unknown to the server
+function UI.showPrereadingBookUnknown()
+	UI.showMessage(_("Book not found on Crossbill. Sync this book first."), 4)
+end
+
+--- Show a message when the book is known but has no prereading generated
+function UI.showPrereadingEmptyBook()
+	UI.showMessage(_("No prereading generated for this book yet. Generate it in the Crossbill web app."), 4)
+end
+
+--- Show a message when the current chapter could not be matched
+function UI.showPrereadingChapterNotMatched()
+	UI.showMessage(_("Couldn't match the current chapter to Crossbill's chapter list."), 4)
 end
 
 --- Show server configuration dialog
@@ -181,6 +255,7 @@ end
 --- Build the main menu structure for the plugin
 -- @param handlers table Callback handlers for menu actions
 --   - on_sync: function() Called when sync is triggered
+--   - on_show_prereading: function() Called when chapter prereading is requested
 --   - on_configure: function() Called when configure is triggered
 --   - is_autosync_enabled: function() Returns autosync state
 --   - on_toggle_autosync: function() Called when autosync is toggled
@@ -196,6 +271,10 @@ function UI.buildMenuItems(handlers)
 			{
 				text = _("Sync Current Book"),
 				callback = handlers.on_sync,
+			},
+			{
+				text = _("Chapter prereading"),
+				callback = handlers.on_show_prereading,
 			},
 			{
 				text = _("Configure Server"),
