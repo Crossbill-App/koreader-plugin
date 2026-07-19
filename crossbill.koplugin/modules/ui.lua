@@ -253,9 +253,11 @@ function UI.showMinSessionDurationDialog(settings, on_save)
 end
 
 --- Build the main menu structure for the plugin
+-- Primary actions (sync, chapter summary) are top-level; everything else
+-- lives under a Settings submenu.
 -- @param handlers table Callback handlers for menu actions
 --   - on_sync: function() Called when sync is triggered
---   - on_show_prereading: function() Called when chapter prereading is requested
+--   - on_show_prereading: function() Called when the chapter summary is requested
 --   - on_configure: function() Called when configure is triggered
 --   - is_autosync_enabled: function() Returns autosync state
 --   - on_toggle_autosync: function() Called when autosync is toggled
@@ -265,7 +267,7 @@ end
 -- @return table Menu item table for KOReader
 function UI.buildMenuItems(handlers)
 	return {
-		text = _("Crossbill Sync"),
+		text = _("Crossbill"),
 		sorting_hint = "tools",
 		sub_item_table = {
 			{
@@ -273,26 +275,31 @@ function UI.buildMenuItems(handlers)
 				callback = handlers.on_sync,
 			},
 			{
-				text = _("Chapter prereading"),
+				text = _("Chapter summary"),
 				callback = handlers.on_show_prereading,
 			},
 			{
-				text = _("Configure Server"),
-				callback = handlers.on_configure,
-			},
-			{
-				text = _("Auto-sync"),
-				checked_func = handlers.is_autosync_enabled,
-				callback = handlers.on_toggle_autosync,
-			},
-			{
-				text = _("Track Reading Sessions"),
-				checked_func = handlers.is_session_tracking_enabled,
-				callback = handlers.on_toggle_session_tracking,
-			},
-			{
-				text = _("Minimum Session Duration"),
-				callback = handlers.on_configure_min_session_duration,
+				text = _("Settings"),
+				sub_item_table = {
+					{
+						text = _("Configure Server"),
+						callback = handlers.on_configure,
+					},
+					{
+						text = _("Auto-sync"),
+						checked_func = handlers.is_autosync_enabled,
+						callback = handlers.on_toggle_autosync,
+					},
+					{
+						text = _("Track Reading Sessions"),
+						checked_func = handlers.is_session_tracking_enabled,
+						callback = handlers.on_toggle_session_tracking,
+					},
+					{
+						text = _("Minimum Session Duration"),
+						callback = handlers.on_configure_min_session_duration,
+					},
+				},
 			},
 		},
 	}

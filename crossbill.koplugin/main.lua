@@ -6,8 +6,10 @@ Supports manual sync, auto-sync on suspend/exit
 ]]
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Dispatcher = require("dispatcher")
 local logger = require("logger")
 local DataStorage = require("datastorage")
+local _ = require("gettext")
 
 local Settings = require("modules/settings")
 local Network = require("modules/network")
@@ -26,8 +28,29 @@ local CrossbillSync = WidgetContainer:extend({
 	is_doc_only = true, -- Only show when document is open
 })
 
+--- Register gesture-bindable actions with KOReader's Dispatcher
+-- These show up in the gesture manager under "Sync current book with
+-- Crossbill" and "Crossbill chapter summary".
+function CrossbillSync:onDispatcherRegisterActions()
+	Dispatcher:registerAction("crossbill_sync_current_book", {
+		category = "none",
+		event = "CrossbillSyncCurrentBook",
+		title = _("Sync current book with Crossbill"),
+		reader = true,
+	})
+	Dispatcher:registerAction("crossbill_show_chapter_summary", {
+		category = "none",
+		event = "CrossbillShowChapterSummary",
+		title = _("Crossbill chapter summary"),
+		reader = true,
+	})
+end
+
 --- Initialize the plugin
 function CrossbillSync:init()
+	-- Register gesture-bindable actions
+	self:onDispatcherRegisterActions()
+
 	-- Initialize settings
 	self.settings = Settings:new():load()
 
@@ -241,6 +264,20 @@ function CrossbillSync:doSync(is_autosync)
 	if not is_autosync then
 		UI.showSyncSuccess(result.highlights_created, result.highlights_skipped)
 	end
+end
+
+-- Event handlers for gesture-bound actions (dispatched via Dispatcher)
+
+--- Handle the "sync current book" gesture action
+function CrossbillSync:onCrossbillSyncCurrentBook()
+	self:syncCurrentBook()
+	return true
+end
+
+--- Handle the "chapter summary" gesture action
+function CrossbillSync:onCrossbillShowChapterSummary()
+	self:showChapterPrereading()
+	return true
 end
 
 -- Event handlers for session tracking and auto-sync

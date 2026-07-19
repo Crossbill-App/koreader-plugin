@@ -44,6 +44,15 @@ mv "$TMP_TEST_DIR/crossbill-test.koplugin/modules" "$TMP_TEST_DIR/crossbill-test
 sed -i 's/name = "Crossbill"/name = "Crossbill Test"/' "$TMP_TEST_DIR/crossbill-test.koplugin/main.lua"
 # Change the menu key to avoid conflicts with production
 sed -i 's/menu_items\.crossbill_sync/menu_items.crossbill_test_sync/g' "$TMP_TEST_DIR/crossbill-test.koplugin/main.lua"
+# Rename dispatcher action ids and events so gestures don't trigger both versions
+sed -i \
+    -e 's/crossbill_sync_current_book/crossbill_test_sync_current_book/g' \
+    -e 's/crossbill_show_chapter_summary/crossbill_test_show_chapter_summary/g' \
+    -e 's/CrossbillSyncCurrentBook/CrossbillTestSyncCurrentBook/g' \
+    -e 's/CrossbillShowChapterSummary/CrossbillTestShowChapterSummary/g' \
+    -e 's/Sync current book with Crossbill/Sync current book with Crossbill Test/' \
+    -e 's/Crossbill chapter summary/Crossbill Test chapter summary/' \
+    "$TMP_TEST_DIR/crossbill-test.koplugin/main.lua"
 # Update require paths to use renamed modules directory (in main.lua and all module files)
 find "$TMP_TEST_DIR/crossbill-test.koplugin" -name "*.lua" -exec sed -i 's|require("modules/|require("test_modules/|g' {} \;
 
@@ -53,16 +62,26 @@ sed -i 's/crossbill_sync/crossbill_test_sync/g' "$TMP_TEST_DIR/crossbill-test.ko
 
 # Modify test_modules/ui.lua for test version
 # Change menu text
-sed -i 's/_("Crossbill Sync")/_("Crossbill Test Sync")/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/ui.lua"
+sed -i 's/_("Crossbill")/_("Crossbill Test")/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/ui.lua"
 
 # Modify test_modules/sessiontracker.lua for test version
 # Change database filename to avoid conflicts with production
 sed -i 's/crossbill_sessions\.sqlite3/test_crossbill_sessions.sqlite3/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/sessiontracker.lua"
+
+# Modify test_modules/prereading_cache.lua for test version
+# Change database filename to avoid conflicts with production
+sed -i 's/crossbill_prereading\.sqlite3/test_crossbill_prereading.sqlite3/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/prereading_cache.lua"
 
 # Copy test plugin to destination
 cp -R "$TMP_TEST_DIR/crossbill-test.koplugin" "$KOREADER_PLUGINS_PATH/"
 
 # Clean up temporary directory
 rm -rf "$TMP_TEST_DIR"
+
+echo "Installing menu-position user patch..."
+# Patches live in koreader/patches/, a sibling of the plugins directory
+KOREADER_DIR="$(dirname "$KOREADER_PLUGINS_PATH")"
+mkdir -p "$KOREADER_DIR/patches"
+cp "$SCRIPT_DIR/patches/2-crossbill-menu-position.lua" "$KOREADER_DIR/patches/"
 
 echo "Done! Installed both production and test versions."
