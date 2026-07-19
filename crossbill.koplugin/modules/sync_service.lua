@@ -23,13 +23,15 @@ SyncService.__index = SyncService
 -- @param file_uploader FileUploader instance for file uploads
 -- @param session_tracker SessionTracker instance for reading sessions
 -- @param settings Settings instance for configuration
+-- @param prereading_service PrereadingService instance for prereading refresh
 -- @return SyncService instance
-function SyncService:new(api_client, file_uploader, session_tracker, settings)
+function SyncService:new(api_client, file_uploader, session_tracker, settings, prereading_service)
 	local instance = setmetatable({}, SyncService)
 	instance.api_client = api_client
 	instance.file_uploader = file_uploader
 	instance.session_tracker = session_tracker
 	instance.settings = settings
+	instance.prereading_service = prereading_service
 	return instance
 end
 
@@ -88,7 +90,33 @@ function SyncService:syncBook(ui)
 	local session_result = self:_syncReadingSessions(ui, book_data.client_book_id, doc_path)
 	result.sessions_synced = session_result.synced
 
+	-- Refresh cached prereading (best-effort; never fails the sync)
+	self:_refreshPrereading(book_data.client_book_id)
+
 	return result
+end
+
+--- Refresh cached prereading for a book after a successful sync
+-- Delegates to the prereading service. Failures are logged only and never
+-- propagate to the sync result.
+-- @param client_book_id string The client book ID
+function SyncService:_refreshPrereading(client_book_id)
+	if not self.prereading_service then
+		return
+	end
+
+	local ok, err = pcall(function()
+		local refreshed, err_kind = self.prereading_service:refreshBook(client_book_id)
+		if not refreshed then
+			logger.warn("Crossbill SyncService: Prereading refresh skipped:", err_kind or "unknown")
+		else
+			logger.dbg("Crossbill SyncService: Prereading refreshed for", client_book_id)
+		end
+	end)
+
+	if not ok then
+		logger.warn("Crossbill SyncService: Error refreshing prereading:", err)
+	end
 end
 
 --- Sync highlights for the current book

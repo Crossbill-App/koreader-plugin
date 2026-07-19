@@ -102,6 +102,39 @@ function ApiClient:getBookMetadata(client_book_id)
 	end
 end
 
+--- Get prereading content for a book from the server by client_book_id
+-- @param client_book_id string The client-side book ID (hash of title|author)
+-- @return number|nil HTTP status code
+-- @return table|nil Response data containing an "items" array of chapter prereading
+-- @return string|nil Error message
+function ApiClient:getBookPrereading(client_book_id)
+	local token, auth_err = self.auth:getValidToken()
+	if not token then
+		return nil, nil, auth_err or "Authentication failed"
+	end
+
+	local api_url = self:getApiUrl() .. "/ereader/books/" .. client_book_id .. "/prereading"
+	logger.dbg("Crossbill API: Fetching book prereading from", api_url)
+
+	local code, response_data, err = Network.getJson(api_url, token)
+
+	if not code then
+		logger.err("Crossbill API: Network error fetching prereading:", err)
+		return nil, nil, err or "Network error"
+	end
+
+	if code == 200 and response_data then
+		logger.dbg("Crossbill API: Book prereading fetched successfully")
+		return code, response_data, nil
+	elseif code == 404 then
+		logger.dbg("Crossbill API: Book not found for prereading (404)")
+		return code, nil, nil
+	else
+		logger.warn("Crossbill API: Fetch book prereading failed with code:", code)
+		return code, nil, "Fetch failed: " .. tostring(code)
+	end
+end
+
 --- Create a new book on the server
 -- @param book_data table Book metadata (title, author, isbn, description, language, page_count, client_book_id, keywords)
 -- @return boolean Success status
