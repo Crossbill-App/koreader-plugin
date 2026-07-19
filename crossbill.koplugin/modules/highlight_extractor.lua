@@ -129,39 +129,152 @@ function HighlightExtractor:getHighlights(doc_path)
 	return self:getHighlightsFromMemory() or self:getHighlightsFromDisk(doc_path)
 end
 
---- Get chapter number mapping from table of contents
--- Maps chapter names to their order number for proper sorting
--- @return table Map of chapter name -> chapter number
-function HighlightExtractor:getChapterNumberMap()
-	local chapter_map = {}
+--- Normalize a title for comparison: trim, collapse internal whitespace, lowercase
+-- Non-string input (including JSON null sentinels) normalizes to nil. Mirrors the
+-- normalizeTitle semantics used by prereading_service.lua.
+-- @param title string|nil The raw title
+-- @return string|nil The normalized title, or nil for nil/non-string input
+local function normalizeTitle(title)
+	if type(title) ~= "string" then
+		return nil
+	end
+	local text = title
+	-- Collapse all runs of whitespace to single spaces
+	text = text:gsub("%s+", " ")
+	-- Trim leading/trailing whitespace
+	text = text:gsub("^%s*(.-)%s*$", "%1")
+	return text:lower()
+end
 
-	-- Get TOC from the document
-	if self.ui.toc and self.ui.toc.toc then
-		local toc = self.ui.toc.toc
+--- Resolve a highlight's numeric page, following xpointers when needed
+-- Highlights carry `page` from annotation.pageno or annotation.page (see
+-- formatHighlight). A numeric page is used directly; a non-numeric string is
+-- treated as an xpointer and resolved via the document, defensively pcall-wrapped.
+-- @param document table|nil The KOReader document
+-- @param highlight table The formatted highlight
+-- @return number|nil The numeric page, or nil if unresolvable
+local function getNumericPage(document, highlight)
+	local numeric = tonumber(highlight.page)
+	if numeric then
+		return numeric
+	end
 
-		for i, item in ipairs(toc) do
-			if item.title then
-				chapter_map[item.title] = i
+	if type(highlight.page) ~= "string" then
+		return nil
+	end
+
+	local ok, page = pcall(function()
+		if document and document.getPageFromXPointer then
+			return document:getPageFromXPointer(highlight.page)
+		end
+		return nil
+	end)
+
+	if ok and page then
+		return tonumber(page)
+	end
+
+	return nil
+end
+
+--- Find the flat ToC index containing a page: the last entry whose page <= page
+-- Same convention as findCurrentTocEntry in prereading_service.lua.
+-- @param toc table The flat ToC array
+-- @param page number The highlight's page
+-- @return number|nil The 1-based index into toc, or nil if none
+local function findContainingTocIndex(toc, page)
+	local containing_index = nil
+	for i, entry in ipairs(toc) do
+		local entry_page = tonumber(entry.page)
+		if entry_page and entry_page <= page then
+			-- Keep advancing; the last matching entry contains the page
+			containing_index = i
+		end
+	end
+	return containing_index
+end
+
+--- Find the first flat ToC index whose title matches the given normalized title
+-- First occurrence is deterministic (unlike the old last-wins title map).
+-- @param toc table The flat ToC array
+-- @param title_norm string|nil The normalized target title
+-- @return number|nil The 1-based index, or nil if none matches
+local function findFirstTitleIndex(toc, title_norm)
+	if not title_norm then
+		return nil
+	end
+	for i, entry in ipairs(toc) do
+		if normalizeTitle(entry.title) == title_norm then
+			return i
+		end
+	end
+	return nil
+end
+
+--- Resolve the chapter number (flat ToC index) for a single highlight
+-- Position-first, verified by title. The server associates highlights to
+-- chapters solely via this number matching the server's flat TOC order.
+-- @param toc table The flat ToC array
+-- @param highlight table The formatted highlight
+-- @param numeric_page number|nil The highlight's resolved numeric page
+-- @return number|nil The chapter number, or nil if unresolvable
+local function resolveChapterNumber(toc, highlight, numeric_page)
+	local chapter_norm = normalizeTitle(highlight.chapter)
+
+	if numeric_page then
+		local containing_index = findContainingTocIndex(toc, numeric_page)
+		if not containing_index then
+			-- No entry precedes this page; fall back to title-only matching.
+			return findFirstTitleIndex(toc, chapter_norm)
+		end
+
+		-- No chapter title on the highlight: trust the position.
+		if not chapter_norm then
+			return containing_index
+		end
+
+		-- The containing entry's title matches: use it directly.
+		if normalizeTitle(toc[containing_index].title) == chapter_norm then
+			return containing_index
+		end
+
+		-- Titles differ: KOReader's annotation chapter can come from a shallower
+		-- ToC depth than the containing leaf entry. Walk backwards to the nearest
+		-- entry whose title equals the highlight's chapter.
+		for i = containing_index - 1, 1, -1 do
+			if normalizeTitle(toc[i].title) == chapter_norm then
+				return i
 			end
 		end
 
-		logger.dbg("Crossbill Extractor: Created mapping for", #toc, "chapters from TOC")
-	else
-		logger.dbg("Crossbill Extractor: No TOC available for this document")
+		-- No title match found; position is more trustworthy than nothing.
+		return containing_index
 	end
 
-	return chapter_map
+	-- No numeric page could be resolved: fall back to first-occurrence title match.
+	return findFirstTitleIndex(toc, chapter_norm)
 end
 
---- Add chapter numbers to highlights based on chapter names
+--- Add chapter numbers to highlights based on reading position, verified by title
+-- Resolves each highlight's flat ToC index position-first and mutates the array
+-- in place, setting highlight.chapter_number. Leaves it unset when unresolvable
+-- (the server tolerates missing numbers with a warning).
 -- @param highlights table Array of highlights to augment
 -- @return table The same highlights array with chapter_number added
 function HighlightExtractor:addChapterNumbers(highlights)
-	local chapter_map = self:getChapterNumberMap()
+	local toc = self.ui.toc and self.ui.toc.toc
+	if not toc or #toc == 0 then
+		logger.dbg("Crossbill Extractor: No TOC available; leaving chapter numbers unset")
+		return highlights
+	end
+
+	local document = self.ui.document
 
 	for _, highlight in ipairs(highlights) do
-		if highlight.chapter and chapter_map[highlight.chapter] then
-			highlight.chapter_number = chapter_map[highlight.chapter]
+		local numeric_page = getNumericPage(document, highlight)
+		local chapter_number = resolveChapterNumber(toc, highlight, numeric_page)
+		if chapter_number then
+			highlight.chapter_number = chapter_number
 		end
 	end
 
