@@ -31,6 +31,7 @@ Syncs your KOReader highlights to your Crossbill server.
 - Uploads book epub to the Crossbill
 - Uploads reading session data to the Crossbill
 - Works with EPUB files
+- View AI generated chapter summary of the chapter on Koreader
 
 ## Requirements
 
