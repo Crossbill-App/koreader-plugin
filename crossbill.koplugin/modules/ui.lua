@@ -375,11 +375,11 @@ function UI.showMinSessionDurationDialog(settings, on_save)
 end
 
 --- Build the main menu structure for the plugin
--- Primary actions (sync, chapter summary) are top-level; everything else
+-- Primary actions (sync, chapter digest) are top-level; everything else
 -- lives under a Settings submenu.
 -- @param handlers table Callback handlers for menu actions
 --   - on_sync: function() Called when sync is triggered
---   - on_show_digest: function() Called when the chapter summary is requested
+--   - on_show_digest: function() Called when the chapter digest is requested
 --   - on_configure: function() Called when configure is triggered
 --   - is_autosync_enabled: function() Returns autosync state
 --   - on_toggle_autosync: function() Called when autosync is toggled
@@ -397,7 +397,7 @@ function UI.buildMenuItems(handlers)
 				callback = handlers.on_sync,
 			},
 			{
-				text = _("Chapter summary"),
+				text = _("Chapter digest"),
 				callback = handlers.on_show_digest,
 			},
 			{

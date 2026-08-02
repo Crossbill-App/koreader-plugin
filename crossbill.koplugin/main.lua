@@ -30,7 +30,7 @@ local CrossbillSync = WidgetContainer:extend({
 
 --- Register gesture-bindable actions with KOReader's Dispatcher
 -- These show up in the gesture manager under "Sync current book with
--- Crossbill" and "Crossbill chapter summary".
+-- Crossbill" and "Crossbill chapter digest".
 function CrossbillSync:onDispatcherRegisterActions()
 	Dispatcher:registerAction("crossbill_sync_current_book", {
 		category = "none",
@@ -38,10 +38,15 @@ function CrossbillSync:onDispatcherRegisterActions()
 		title = _("Sync current book with Crossbill"),
 		reader = true,
 	})
+	-- The action name is the key KOReader stores in a user's gesture and
+	-- profile settings, and Dispatcher silently skips names it no longer
+	-- knows. Renaming this to ..._digest would leave existing bindings
+	-- pointing at nothing, with no error to tell the user why their gesture
+	-- stopped working, so the old name stays. Only the title is user-visible.
 	Dispatcher:registerAction("crossbill_show_chapter_summary", {
 		category = "none",
-		event = "CrossbillShowChapterSummary",
-		title = _("Crossbill chapter summary"),
+		event = "CrossbillShowChapterDigest",
+		title = _("Crossbill chapter digest"),
 		reader = true,
 	})
 end
@@ -274,8 +279,8 @@ function CrossbillSync:onCrossbillSyncCurrentBook()
 	return true
 end
 
---- Handle the "chapter summary" gesture action
-function CrossbillSync:onCrossbillShowChapterSummary()
+--- Handle the "chapter digest" gesture action
+function CrossbillSync:onCrossbillShowChapterDigest()
 	self:showChapterDigest()
 	return true
 end
