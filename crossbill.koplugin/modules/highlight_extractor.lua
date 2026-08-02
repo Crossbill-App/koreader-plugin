@@ -131,7 +131,7 @@ end
 
 --- Normalize a title for comparison: trim, collapse internal whitespace, lowercase
 -- Non-string input (including JSON null sentinels) normalizes to nil. Mirrors the
--- normalizeTitle semantics used by prereading_service.lua.
+-- normalizeTitle semantics used by digest_service.lua.
 -- @param title string|nil The raw title
 -- @return string|nil The normalized title, or nil for nil/non-string input
 local function normalizeTitle(title)
@@ -178,7 +178,7 @@ local function getNumericPage(document, highlight)
 end
 
 --- Find the flat ToC index containing a page: the last entry whose page <= page
--- Same convention as findCurrentTocEntry in prereading_service.lua.
+-- Same convention as findCurrentTocEntry in digest_service.lua.
 -- @param toc table The flat ToC array
 -- @param page number The highlight's page
 -- @return number|nil The 1-based index into toc, or nil if none
