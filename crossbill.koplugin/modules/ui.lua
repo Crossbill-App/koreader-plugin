@@ -17,12 +17,12 @@ local _ = require("gettext")
 -- The rich HTML viewer pulls in several KOReader widgets. On an exotic build
 -- where one of those requires is unavailable, we fall back to a plain-text
 -- TextViewer, so load it protectively and treat a failure as "not available".
-local ok_viewer, PrereadingViewer = pcall(function()
-	return require("modules/prereading_viewer")
+local ok_viewer, DigestViewer = pcall(function()
+	return require("modules/digest_viewer")
 end)
 if not ok_viewer then
-	logger.warn("Crossbill: prereading HTML viewer unavailable: " .. tostring(PrereadingViewer))
-	PrereadingViewer = nil
+	logger.warn("Crossbill: digest HTML viewer unavailable: " .. tostring(DigestViewer))
+	DigestViewer = nil
 end
 
 local UI = {}
@@ -84,10 +84,10 @@ function UI.showSessionTrackingToggled(enabled)
 	UI.showMessage(enabled and _("Session tracking enabled") or _("Session tracking disabled"))
 end
 
---- Build the display title for a prereading item
--- @param item table Prereading item with chapter_name and parent_chapter_name
+--- Build the display title for a digest item
+-- @param item table Digest item with chapter_name and parent_chapter_name
 -- @return string Title, prefixed with the parent chapter name when present
-local function buildPrereadingTitle(item)
+local function buildDigestTitle(item)
 	local chapter_name = item.chapter_name or _("Chapter")
 	if item.parent_chapter_name and item.parent_chapter_name ~= "" then
 		return item.parent_chapter_name .. " › " .. chapter_name
@@ -96,7 +96,7 @@ local function buildPrereadingTitle(item)
 end
 
 --- Strip markdown inline markers from a text for plain-text display
--- The server's prereading content contains markdown (e.g. **bold**), which
+-- The server's digest content contains markdown (e.g. **bold**), which
 -- older TextViewers render as literal asterisks. Order matters: bold before
 -- italics so ** is consumed first.
 -- @param text any The raw text (non-strings pass through tostring)
@@ -144,9 +144,9 @@ end
 -- Summary paragraphs (separated by blank lines) become <p> blocks; key points
 -- become a <ul>, questions an <ol>. All content flows through
 -- inlineMarkdownToHtml so bold/italics/code render properly.
--- @param item table Prereading item with summary, keypoints, questions
+-- @param item table Digest item with summary, keypoints, questions
 -- @return string HTML body
-local function buildPrereadingHtml(item)
+local function buildDigestHtml(item)
 	local parts = {}
 
 	if item.summary and item.summary ~= "" then
@@ -181,7 +181,7 @@ local function buildPrereadingHtml(item)
 	end
 
 	if #parts == 0 then
-		return "<p>" .. escapeHtml(_("No prereading content available for this chapter.")) .. "</p>"
+		return "<p>" .. escapeHtml(_("No digest available for this chapter.")) .. "</p>"
 	end
 
 	return table.concat(parts, "\n")
@@ -189,9 +189,9 @@ end
 
 --- Build the popup body as plain text, with markdown markers stripped
 -- Fallback for older TextViewers without markdown rendering.
--- @param item table Prereading item with summary, keypoints, questions
+-- @param item table Digest item with summary, keypoints, questions
 -- @return string Multi-section plain text body
-local function buildPrereadingBody(item)
+local function buildDigestBody(item)
 	local sections = {}
 
 	if item.summary and item.summary ~= "" then
@@ -215,55 +215,55 @@ local function buildPrereadingBody(item)
 	end
 
 	if #sections == 0 then
-		return _("No prereading content available for this chapter.")
+		return _("No digest available for this chapter.")
 	end
 
 	return table.concat(sections, "\n\n")
 end
 
---- Show the prereading popup for a matched chapter item
+--- Show the digest popup for a matched chapter item
 -- Renders the body as rich HTML (bold, headings, lists) via our own
 -- ScrollHtmlWidget-based viewer. If that viewer is unavailable or fails to
 -- construct on some exotic build, falls back to a plain-text TextViewer with
 -- markdown markers stripped.
--- @param item table Prereading item to display
-function UI.showPrereadingPopup(item)
-	if PrereadingViewer then
+-- @param item table Digest item to display
+function UI.showDigestPopup(item)
+	if DigestViewer then
 		local ok, err = pcall(function()
-			UIManager:show(PrereadingViewer:new({
-				title = buildPrereadingTitle(item),
-				html = buildPrereadingHtml(item),
+			UIManager:show(DigestViewer:new({
+				title = buildDigestTitle(item),
+				html = buildDigestHtml(item),
 			}))
 		end)
 		if ok then
 			return
 		end
-		logger.warn("Crossbill: prereading HTML viewer failed, using plain text: " .. tostring(err))
+		logger.warn("Crossbill: digest HTML viewer failed, using plain text: " .. tostring(err))
 	end
 
 	UIManager:show(TextViewer:new({
-		title = buildPrereadingTitle(item),
-		text = buildPrereadingBody(item),
+		title = buildDigestTitle(item),
+		text = buildDigestBody(item),
 	}))
 end
 
---- Show a message when no prereading is cached and we are offline
-function UI.showPrereadingNoCache()
-	UI.showMessage(_("No prereading cached yet. Sync this book while online."), 4)
+--- Show a message when no digest is cached and we are offline
+function UI.showDigestNoCache()
+	UI.showMessage(_("No digest cached yet. Sync this book while online."), 4)
 end
 
 --- Show a message when the book is unknown to the server
-function UI.showPrereadingBookUnknown()
+function UI.showDigestBookUnknown()
 	UI.showMessage(_("Book not found on Crossbill. Sync this book first."), 4)
 end
 
---- Show a message when the book is known but has no prereading generated
-function UI.showPrereadingEmptyBook()
-	UI.showMessage(_("No prereading generated for this book yet. Generate it in the Crossbill web app."), 4)
+--- Show a message when the book is known but has no digest generated
+function UI.showDigestEmptyBook()
+	UI.showMessage(_("No digest generated for this book yet. Generate it in the Crossbill web app."), 4)
 end
 
 --- Show a message when the current chapter could not be matched
-function UI.showPrereadingChapterNotMatched()
+function UI.showDigestChapterNotMatched()
 	UI.showMessage(_("Couldn't match the current chapter to Crossbill's chapter list."), 4)
 end
 
@@ -379,7 +379,7 @@ end
 -- lives under a Settings submenu.
 -- @param handlers table Callback handlers for menu actions
 --   - on_sync: function() Called when sync is triggered
---   - on_show_prereading: function() Called when the chapter summary is requested
+--   - on_show_digest: function() Called when the chapter summary is requested
 --   - on_configure: function() Called when configure is triggered
 --   - is_autosync_enabled: function() Returns autosync state
 --   - on_toggle_autosync: function() Called when autosync is toggled
@@ -398,7 +398,7 @@ function UI.buildMenuItems(handlers)
 			},
 			{
 				text = _("Chapter summary"),
-				callback = handlers.on_show_prereading,
+				callback = handlers.on_show_digest,
 			},
 			{
 				text = _("Settings"),

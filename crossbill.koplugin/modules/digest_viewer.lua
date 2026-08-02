@@ -1,7 +1,7 @@
 --[[
-Prereading Viewer Module for Crossbill Sync
+Digest Viewer Module for Crossbill Sync
 
-A self-contained, scrollable dialog that renders prereading content (summary,
+A self-contained, scrollable dialog that renders a chapter digest (summary,
 key points, questions) as rich HTML — so inline markdown (bold, italics, code)
 shows up properly.
 
@@ -64,7 +64,7 @@ local CSS = [[
 	}
 ]]
 
-local PrereadingViewer = InputContainer:extend({
+local DigestViewer = InputContainer:extend({
 	title = nil,
 	html = nil,
 	width = nil,
@@ -76,7 +76,7 @@ local PrereadingViewer = InputContainer:extend({
 	button_padding = Size.padding.default,
 })
 
-function PrereadingViewer:init()
+function DigestViewer:init()
 	local screen_w = Screen:getWidth()
 	local screen_h = Screen:getHeight()
 
@@ -192,33 +192,33 @@ function PrereadingViewer:init()
 	})
 end
 
-function PrereadingViewer:onCloseWidget()
+function DigestViewer:onCloseWidget()
 	UIManager:setDirty(nil, function()
 		return "partial", self.frame.dimen
 	end)
 end
 
-function PrereadingViewer:onShow()
+function DigestViewer:onShow()
 	UIManager:setDirty(self, function()
 		return "partial", self.frame.dimen
 	end)
 	return true
 end
 
-function PrereadingViewer:onTapClose(arg, ges_ev)
+function DigestViewer:onTapClose(arg, ges_ev)
 	if ges_ev.pos:notIntersectWith(self.frame.dimen) then
 		self:onClose()
 	end
 	return true
 end
 
-function PrereadingViewer:onMultiSwipe(arg, ges_ev)
+function DigestViewer:onMultiSwipe(arg, ges_ev)
 	-- Any multiswipe closes, for consistency with other fullscreen widgets.
 	self:onClose()
 	return true
 end
 
-function PrereadingViewer:onClose()
+function DigestViewer:onClose()
 	UIManager:close(self)
 	if self.close_callback then
 		self.close_callback()
@@ -226,4 +226,4 @@ function PrereadingViewer:onClose()
 	return true
 end
 
-return PrereadingViewer
+return DigestViewer

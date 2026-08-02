@@ -68,9 +68,9 @@ sed -i 's/_("Crossbill")/_("Crossbill Test")/g' "$TMP_TEST_DIR/crossbill-test.ko
 # Change database filename to avoid conflicts with production
 sed -i 's/crossbill_sessions\.sqlite3/test_crossbill_sessions.sqlite3/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/sessiontracker.lua"
 
-# Modify test_modules/prereading_cache.lua for test version
+# Modify test_modules/digest_cache.lua for test version
 # Change database filename to avoid conflicts with production
-sed -i 's/crossbill_prereading\.sqlite3/test_crossbill_prereading.sqlite3/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/prereading_cache.lua"
+sed -i 's/crossbill_digests\.sqlite3/test_crossbill_digests.sqlite3/g' "$TMP_TEST_DIR/crossbill-test.koplugin/test_modules/digest_cache.lua"
 
 # Copy test plugin to destination
 cp -R "$TMP_TEST_DIR/crossbill-test.koplugin" "$KOREADER_PLUGINS_PATH/"

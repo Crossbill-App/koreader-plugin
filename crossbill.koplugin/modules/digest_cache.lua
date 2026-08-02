@@ -1,7 +1,7 @@
 --[[
-Prereading Cache Module for Crossbill Sync
+Digest Cache Module for Crossbill Sync
 
-Caches per-chapter prereading content (summary, key points, questions) in a
+Caches per-chapter digests (summary, key points, questions) in a
 local SQLite3 database so it can be viewed offline. Mirrors the connection,
 WAL and lifecycle patterns used by SessionTracker, but stores its data in its
 own database file.
@@ -11,15 +11,15 @@ local logger = require("logger")
 local SQ3 = require("lua-ljsqlite3/init")
 local JSON = require("json")
 
-local PrereadingCache = {}
-PrereadingCache.__index = PrereadingCache
+local DigestCache = {}
+DigestCache.__index = DigestCache
 
 -- Constants
-local DB_FILENAME = "crossbill_prereading.sqlite3"
+local DB_FILENAME = "crossbill_digests.sqlite3"
 
 -- Database schema
 local SCHEMA = [[
-CREATE TABLE IF NOT EXISTS prereading (
+CREATE TABLE IF NOT EXISTS digest (
     client_book_id TEXT NOT NULL,
     chapter_number INTEGER NOT NULL,
     chapter_name   TEXT NOT NULL,
@@ -32,20 +32,20 @@ CREATE TABLE IF NOT EXISTS prereading (
     PRIMARY KEY (client_book_id, chapter_number)
 );
 
-CREATE INDEX IF NOT EXISTS idx_prereading_book ON prereading(client_book_id);
+CREATE INDEX IF NOT EXISTS idx_digest_book ON digest(client_book_id);
 
-CREATE TABLE IF NOT EXISTS prereading_fetch_meta (
+CREATE TABLE IF NOT EXISTS digest_fetch_meta (
     client_book_id TEXT PRIMARY KEY,
     fetched_at     INTEGER NOT NULL,
     item_count     INTEGER NOT NULL
 );
 ]]
 
---- Create a new PrereadingCache instance
+--- Create a new DigestCache instance
 -- @param settings Settings instance for accessing configuration
--- @return PrereadingCache instance
-function PrereadingCache:new(settings)
-	local instance = setmetatable({}, PrereadingCache)
+-- @return DigestCache instance
+function DigestCache:new(settings)
+	local instance = setmetatable({}, DigestCache)
 	instance.db = nil
 	instance.db_path = nil
 	instance._initialized = false
@@ -56,13 +56,13 @@ end
 --- Initialize the cache with its database
 -- @param data_dir string Path to KOReader settings directory
 -- @return boolean Success status
-function PrereadingCache:init(data_dir)
+function DigestCache:init(data_dir)
 	if self._initialized then
 		return true
 	end
 
 	self.db_path = data_dir .. "/" .. DB_FILENAME
-	logger.dbg("Crossbill PrereadingCache: Initializing database at", self.db_path)
+	logger.dbg("Crossbill DigestCache: Initializing database at", self.db_path)
 
 	local success, err = pcall(function()
 		self.db = SQ3.open(self.db_path)
@@ -73,27 +73,27 @@ function PrereadingCache:init(data_dir)
 	end)
 
 	if not success then
-		logger.err("Crossbill PrereadingCache: Failed to initialize database:", err)
+		logger.err("Crossbill DigestCache: Failed to initialize database:", err)
 		self.db = nil
 		return false
 	end
 
 	self._initialized = true
-	logger.dbg("Crossbill PrereadingCache: Database initialized successfully")
+	logger.dbg("Crossbill DigestCache: Database initialized successfully")
 	return true
 end
 
 --- Close the database connection
-function PrereadingCache:close()
+function DigestCache:close()
 	if self.db then
-		logger.dbg("Crossbill PrereadingCache: Closing database")
+		logger.dbg("Crossbill DigestCache: Closing database")
 		local success, err = pcall(function()
 			-- Checkpoint WAL to ensure all data is written to main file
 			self.db:exec("PRAGMA wal_checkpoint(TRUNCATE);")
 			self.db:close()
 		end)
 		if not success then
-			logger.warn("Crossbill PrereadingCache: Error closing database:", err)
+			logger.warn("Crossbill DigestCache: Error closing database:", err)
 		end
 		self.db = nil
 	end
@@ -152,19 +152,19 @@ local function decodeArray(text)
 	return {}
 end
 
---- Replace all cached prereading for a book with a fresh set of items
+--- Replace a book's cached digests with a fresh set of items
 -- Deletes existing rows and inserts the new ones in a single transaction.
 -- @param client_book_id string The client book ID
--- @param items table Array of prereading items from the API
+-- @param items table Array of digest items from the API
 -- @return boolean Success status
-function PrereadingCache:replaceBook(client_book_id, items)
+function DigestCache:replaceBook(client_book_id, items)
 	if not self._initialized or not self.db then
-		logger.warn("Crossbill PrereadingCache: Cannot replace book - not initialized")
+		logger.warn("Crossbill DigestCache: Cannot replace book - not initialized")
 		return false
 	end
 
 	if not client_book_id then
-		logger.warn("Crossbill PrereadingCache: Cannot replace book - missing client_book_id")
+		logger.warn("Crossbill DigestCache: Cannot replace book - missing client_book_id")
 		return false
 	end
 
@@ -174,13 +174,13 @@ function PrereadingCache:replaceBook(client_book_id, items)
 	local success, err = pcall(function()
 		self.db:exec("BEGIN TRANSACTION;")
 
-		local del_stmt = self.db:prepare("DELETE FROM prereading WHERE client_book_id = ?")
+		local del_stmt = self.db:prepare("DELETE FROM digest WHERE client_book_id = ?")
 		del_stmt:bind(client_book_id)
 		del_stmt:step()
 		del_stmt:close()
 
 		local ins_stmt = self.db:prepare([[
-            INSERT INTO prereading (
+            INSERT INTO digest (
                 client_book_id, chapter_number, chapter_name, parent_chapter_name,
                 summary, keypoints, questions, generated_at, fetched_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -192,7 +192,7 @@ function PrereadingCache:replaceBook(client_book_id, items)
 			if chapter_number == nil then
 				-- The primary key requires an integer chapter_number; skip defensively.
 				logger.warn(
-					"Crossbill PrereadingCache: Skipping item with nil chapter_number for chapter",
+					"Crossbill DigestCache: Skipping item with nil chapter_number for chapter",
 					tostring(item.chapter_name)
 				)
 			else
@@ -217,11 +217,11 @@ function PrereadingCache:replaceBook(client_book_id, items)
 
 		-- Record this fetch so a "fetched and empty" book is distinguishable from
 		-- a "never fetched" one. hasBook checks this meta table, so a book with an
-		-- empty server prereading list still counts as present and does not trigger
+		-- empty server digest list still counts as present and does not trigger
 		-- a re-fetch on every popup open. An empty fetch is refreshed by sync
 		-- (refreshBook), not by popup opens.
 		local meta_stmt = self.db:prepare([[
-            INSERT OR REPLACE INTO prereading_fetch_meta (
+            INSERT OR REPLACE INTO digest_fetch_meta (
                 client_book_id, fetched_at, item_count
             ) VALUES (?, ?, ?)
         ]])
@@ -233,21 +233,21 @@ function PrereadingCache:replaceBook(client_book_id, items)
 	end)
 
 	if not success then
-		logger.err("Crossbill PrereadingCache: Failed to replace book, rolling back:", err)
+		logger.err("Crossbill DigestCache: Failed to replace book, rolling back:", err)
 		pcall(function()
 			self.db:exec("ROLLBACK;")
 		end)
 		return false
 	end
 
-	logger.dbg("Crossbill PrereadingCache: Replaced prereading for book", client_book_id)
+	logger.dbg("Crossbill DigestCache: Replaced digests for book", client_book_id)
 	return true
 end
 
---- Get all cached prereading items for a book, ordered by chapter_number
+--- Get all cached digest items for a book, ordered by chapter_number
 -- @param client_book_id string The client book ID
--- @return table Array of decoded prereading items
-function PrereadingCache:getBook(client_book_id)
+-- @return table Array of decoded digest items
+function DigestCache:getBook(client_book_id)
 	if not self._initialized or not self.db then
 		return {}
 	end
@@ -261,7 +261,7 @@ function PrereadingCache:getBook(client_book_id)
 		local stmt = self.db:prepare([[
             SELECT chapter_number, chapter_name, parent_chapter_name,
                    summary, keypoints, questions, generated_at
-            FROM prereading
+            FROM digest
             WHERE client_book_id = ?
             ORDER BY chapter_number ASC
         ]])
@@ -283,20 +283,20 @@ function PrereadingCache:getBook(client_book_id)
 	end)
 
 	if not success then
-		logger.err("Crossbill PrereadingCache: Error fetching book prereading:", err)
+		logger.err("Crossbill DigestCache: Error fetching book digests:", err)
 	end
 
 	return items
 end
 
---- Check whether a book has ever been fetched (even if it had no prereading)
--- Checks the fetch-meta table rather than counting prereading rows, so a book
--- whose server prereading list was empty still counts as present. This keeps a
+--- Check whether a book has ever been fetched (even if it had no digests)
+-- Checks the fetch-meta table rather than counting digest rows, so a book
+-- whose server digest list was empty still counts as present. This keeps a
 -- popup open from re-attempting a network fetch every time; the empty fetch is
 -- refreshed by sync (refreshBook), not by popup opens.
 -- @param client_book_id string The client book ID
 -- @return boolean True if the book has been fetched at least once
-function PrereadingCache:hasBook(client_book_id)
+function DigestCache:hasBook(client_book_id)
 	if not self._initialized or not self.db then
 		return false
 	end
@@ -307,7 +307,7 @@ function PrereadingCache:hasBook(client_book_id)
 
 	local has = false
 	local success, err = pcall(function()
-		local stmt = self.db:prepare("SELECT 1 FROM prereading_fetch_meta WHERE client_book_id = ? LIMIT 1")
+		local stmt = self.db:prepare("SELECT 1 FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1")
 		stmt:bind(client_book_id)
 		for _ in stmt:rows() do
 			has = true
@@ -316,11 +316,11 @@ function PrereadingCache:hasBook(client_book_id)
 	end)
 
 	if not success then
-		logger.err("Crossbill PrereadingCache: Error checking book presence:", err)
+		logger.err("Crossbill DigestCache: Error checking book presence:", err)
 		return false
 	end
 
 	return has
 end
 
-return PrereadingCache
+return DigestCache

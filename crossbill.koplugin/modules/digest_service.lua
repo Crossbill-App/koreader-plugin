@@ -1,36 +1,36 @@
 --[[
-Prereading Service Module for Crossbill Sync
+Digest Service Module for Crossbill Sync
 
-UI-free logic that fetches, caches and resolves per-chapter prereading content.
+UI-free logic that fetches, caches and resolves per-chapter digests.
 Given the current reading position it matches the current chapter against the
-cached prereading items using a small, staged matching algorithm.
+cached digest items using a small, staged matching algorithm.
 
 Public API:
-  PrereadingService:new(api_client, prereading_cache)
-  PrereadingService:refreshBook(client_book_id) -> ok, err_kind
-  PrereadingService:getForCurrentChapter(ui, client_book_id) -> item, err_kind
+  DigestService:new(api_client, digest_cache)
+  DigestService:refreshBook(client_book_id) -> ok, err_kind
+  DigestService:getForCurrentChapter(ui, client_book_id) -> item, err_kind
 
 err_kind is one of:
   nil                      matched, item returned
   "no_cache"               nothing cached and the fetch failed/offline
   "book_unknown"           the server returned 404 for this book
-  "no_prereading_for_book" the book is known but has no prereading yet
+  "no_digest_for_book" the book is known but has no digest yet
   "chapter_not_matched"    could not match the current chapter to a cached item
 ]]
 
 local logger = require("logger")
 
-local PrereadingService = {}
-PrereadingService.__index = PrereadingService
+local DigestService = {}
+DigestService.__index = DigestService
 
---- Create a new PrereadingService instance
+--- Create a new DigestService instance
 -- @param api_client ApiClient instance for server communication
--- @param prereading_cache PrereadingCache instance for local caching
--- @return PrereadingService instance
-function PrereadingService:new(api_client, prereading_cache)
-	local instance = setmetatable({}, PrereadingService)
+-- @param digest_cache DigestCache instance for local caching
+-- @return DigestService instance
+function DigestService:new(api_client, digest_cache)
+	local instance = setmetatable({}, DigestService)
 	instance.api_client = api_client
-	instance.cache = prereading_cache
+	instance.cache = digest_cache
 	return instance
 end
 
@@ -137,7 +137,7 @@ local function findParentTitle(toc, index)
 end
 
 --- Stage 1: items whose chapter_name matches the ToC title
--- @param items table Array of cached prereading items
+-- @param items table Array of cached digest items
 -- @param toc_title_norm string|nil Normalized ToC title
 -- @return table Array of matching items (preserves input order)
 local function matchByTitle(items, toc_title_norm)
@@ -207,12 +207,12 @@ end
 
 --- Match the current chapter against the cached items using staged matching
 -- @param ui table The KOReader UI context
--- @param items table Array of cached prereading items
+-- @param items table Array of cached digest items
 -- @return table|nil The matched item, or nil if it could not be matched
 local function matchCurrentChapter(ui, items)
 	local current_index, current_entry = findCurrentTocEntry(ui)
 	if not current_entry then
-		logger.dbg("Crossbill PrereadingService: No current ToC entry could be resolved")
+		logger.dbg("Crossbill DigestService: No current ToC entry could be resolved")
 		return nil
 	end
 
@@ -223,7 +223,7 @@ local function matchCurrentChapter(ui, items)
 	-- Stage 1: match by chapter title.
 	local stage1 = matchByTitle(items, toc_title_norm)
 	if #stage1 == 0 then
-		logger.dbg("Crossbill PrereadingService: No prereading item matches the current chapter title")
+		logger.dbg("Crossbill DigestService: No digest item matches the current chapter title")
 		return nil
 	end
 	if #stage1 == 1 then
@@ -240,25 +240,25 @@ local function matchCurrentChapter(ui, items)
 	return matchByOccurrence(toc, current_index, toc_title_norm, stage1)
 end
 
---- Fetch prereading for a book from the server and replace the cache
+--- Fetch a book's digests from the server and replace the cache
 -- Caller is responsible for WiFi lifecycle.
 -- @param client_book_id string The client book ID
 -- @return boolean ok True if fetched and cached successfully
 -- @return string|nil err_kind "book_unknown" (404) or "fetch_failed", nil on success
-function PrereadingService:refreshBook(client_book_id)
+function DigestService:refreshBook(client_book_id)
 	if not client_book_id then
 		return false, "fetch_failed"
 	end
 
-	local code, data, err = self.api_client:getBookPrereading(client_book_id)
+	local code, data, err = self.api_client:getBookDigest(client_book_id)
 
 	if code == 404 then
-		logger.dbg("Crossbill PrereadingService: Book unknown to server (404)")
+		logger.dbg("Crossbill DigestService: Book unknown to server (404)")
 		return false, "book_unknown"
 	end
 
 	if code ~= 200 or not data then
-		logger.warn("Crossbill PrereadingService: Failed to fetch prereading:", err or tostring(code))
+		logger.warn("Crossbill DigestService: Failed to fetch digests:", err or tostring(code))
 		return false, "fetch_failed"
 	end
 
@@ -268,18 +268,18 @@ function PrereadingService:refreshBook(client_book_id)
 		return false, "fetch_failed"
 	end
 
-	logger.dbg("Crossbill PrereadingService: Cached", #items, "prereading items for", client_book_id)
+	logger.dbg("Crossbill DigestService: Cached", #items, "digest items for", client_book_id)
 	return true, nil
 end
 
---- Resolve the prereading item for the current chapter
+--- Resolve the digest item for the current chapter
 -- Tries the cache first; if the book is absent, fetches it, then matches the
 -- current chapter against the cached items.
 -- @param ui table The KOReader UI context
 -- @param client_book_id string The client book ID
--- @return table|nil item The matched prereading item, or nil
+-- @return table|nil item The matched digest item, or nil
 -- @return string|nil err_kind One of the documented error kinds, nil on success
-function PrereadingService:getForCurrentChapter(ui, client_book_id)
+function DigestService:getForCurrentChapter(ui, client_book_id)
 	if not client_book_id then
 		return nil, "no_cache"
 	end
@@ -297,7 +297,7 @@ function PrereadingService:getForCurrentChapter(ui, client_book_id)
 
 	local items = self.cache:getBook(client_book_id)
 	if not items or #items == 0 then
-		return nil, "no_prereading_for_book"
+		return nil, "no_digest_for_book"
 	end
 
 	local item = matchCurrentChapter(ui, items)
@@ -308,4 +308,4 @@ function PrereadingService:getForCurrentChapter(ui, client_book_id)
 	return item, nil
 end
 
-return PrereadingService
+return DigestService

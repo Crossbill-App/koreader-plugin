@@ -16,8 +16,8 @@ local Network = require("modules/network")
 local Auth = require("modules/auth")
 local ApiClient = require("modules/api_client")
 local SessionTracker = require("modules/sessiontracker")
-local PrereadingCache = require("modules/prereading_cache")
-local PrereadingService = require("modules/prereading_service")
+local DigestCache = require("modules/digest_cache")
+local DigestService = require("modules/digest_service")
 local FileUploader = require("modules/file_uploader")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
@@ -67,14 +67,14 @@ function CrossbillSync:init()
 	self.session_tracker = SessionTracker:new(self.settings)
 	self.session_tracker:init(DataStorage:getSettingsDir())
 
-	-- Initialize prereading cache (SQLite) and service
-	self.prereading_cache = PrereadingCache:new(self.settings)
-	self.prereading_cache:init(DataStorage:getSettingsDir())
-	self.prereading_service = PrereadingService:new(self.api_client, self.prereading_cache)
+	-- Initialize digest cache (SQLite) and service
+	self.digest_cache = DigestCache:new(self.settings)
+	self.digest_cache:init(DataStorage:getSettingsDir())
+	self.digest_service = DigestService:new(self.api_client, self.digest_cache)
 
 	-- Initialize sync service with all dependencies
 	self.sync_service =
-		SyncService:new(self.api_client, self.file_uploader, self.session_tracker, self.settings, self.prereading_service)
+		SyncService:new(self.api_client, self.file_uploader, self.session_tracker, self.settings, self.digest_service)
 
 	-- Register menu
 	self.ui.menu:registerToMainMenu(self)
@@ -86,8 +86,8 @@ function CrossbillSync:addToMainMenu(menu_items)
 		on_sync = function()
 			self:syncCurrentBook()
 		end,
-		on_show_prereading = function()
-			self:showChapterPrereading()
+		on_show_digest = function()
+			self:showChapterDigest()
 		end,
 		on_configure = function()
 			self:configureServer()
@@ -125,28 +125,28 @@ function CrossbillSync:configureServer()
 	UI.showConfigureServerDialog(self.settings)
 end
 
---- Show a prereading result: popup on success, matching info message otherwise
--- @param item table|nil The matched prereading item
--- @param err_kind string|nil The error kind returned by the prereading service
-function CrossbillSync:_showPrereadingResult(item, err_kind)
+--- Show a digest result: popup on success, matching info message otherwise
+-- @param item table|nil The matched digest item
+-- @param err_kind string|nil The error kind returned by the digest service
+function CrossbillSync:_showDigestResult(item, err_kind)
 	if item then
-		UI.showPrereadingPopup(item)
+		UI.showDigestPopup(item)
 	elseif err_kind == "book_unknown" then
-		UI.showPrereadingBookUnknown()
-	elseif err_kind == "no_prereading_for_book" then
-		UI.showPrereadingEmptyBook()
+		UI.showDigestBookUnknown()
+	elseif err_kind == "no_digest_for_book" then
+		UI.showDigestEmptyBook()
 	elseif err_kind == "chapter_not_matched" then
-		UI.showPrereadingChapterNotMatched()
+		UI.showDigestChapterNotMatched()
 	else
 		-- err_kind == "no_cache" (or any unexpected value)
-		UI.showPrereadingNoCache()
+		UI.showDigestNoCache()
 	end
 end
 
---- Show the current chapter's prereading content
-function CrossbillSync:showChapterPrereading()
+--- Show the current chapter's digest
+function CrossbillSync:showChapterDigest()
 	if not self.ui.document then
-		logger.warn("Crossbill: Cannot show prereading - no document available")
+		logger.warn("Crossbill: Cannot show digest - no document available")
 		return
 	end
 
@@ -154,35 +154,35 @@ function CrossbillSync:showChapterPrereading()
 		return BookMetadata:new(self.ui):extractBookData()
 	end)
 	if not ok or not book_data or not book_data.client_book_id then
-		logger.err("Crossbill: Failed to extract book metadata for prereading")
-		UI.showPrereadingNoCache()
+		logger.err("Crossbill: Failed to extract book metadata for the digest")
+		UI.showDigestNoCache()
 		return
 	end
 
 	local client_book_id = book_data.client_book_id
-	local item, err_kind = self.prereading_service:getForCurrentChapter(self.ui, client_book_id)
+	local item, err_kind = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
 
 	-- Anything other than a missing cache can be shown immediately (no network needed).
 	if err_kind ~= "no_cache" then
-		self:_showPrereadingResult(item, err_kind)
+		self:_showDigestResult(item, err_kind)
 		return
 	end
 
 	-- Nothing cached and the fetch failed: retry once online if WiFi is off.
 	local callback = function()
-		local retry_item, retry_err = self.prereading_service:getForCurrentChapter(self.ui, client_book_id)
-		self:_showPrereadingResult(retry_item, retry_err)
+		local retry_item, retry_err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
+		self:_showDigestResult(retry_item, retry_err)
 		Network.disableWifiIfNeeded()
 	end
 
 	if not Network.ensureWifiEnabled(callback) then
 		-- WiFi is being enabled; callback will run when online
-		logger.info("Crossbill: Waiting for WiFi to show prereading...")
+		logger.info("Crossbill: Waiting for WiFi to show digest...")
 		return
 	end
 
 	-- Already online but still no cache: the fetch genuinely failed
-	self:_showPrereadingResult(item, err_kind)
+	self:_showDigestResult(item, err_kind)
 	Network.disableWifiIfNeeded()
 end
 
@@ -276,7 +276,7 @@ end
 
 --- Handle the "chapter summary" gesture action
 function CrossbillSync:onCrossbillShowChapterSummary()
-	self:showChapterPrereading()
+	self:showChapterDigest()
 	return true
 end
 
@@ -340,8 +340,8 @@ function CrossbillSync:onExit()
 	if self.session_tracker then
 		self.session_tracker:close()
 	end
-	if self.prereading_cache then
-		self.prereading_cache:close()
+	if self.digest_cache then
+		self.digest_cache:close()
 	end
 	return false
 end
