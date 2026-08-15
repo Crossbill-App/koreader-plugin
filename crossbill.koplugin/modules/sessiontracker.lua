@@ -17,6 +17,17 @@ SessionTracker.__index = SessionTracker
 -- Constants
 local DB_FILENAME = "crossbill_sessions.sqlite3"
 
+-- A gap this long between page turns means reading stopped: the reader put the
+-- book down, or the device suspended without telling us (onSuspend is not
+-- reliable on PocketBook). Such a session is ended as of its last activity
+-- instead of running until the device finally powers off.
+local SESSION_ACTIVITY_GAP_SECONDS = 1800
+
+-- How often a page turn triggers a full position capture. Page turns are
+-- frequent and the capture is not free, but without it the tracked xpointer
+-- would never move during a session.
+local POSITION_CAPTURE_INTERVAL_SECONDS = 60
+
 -- Database schema
 local SCHEMA = [[
 CREATE TABLE IF NOT EXISTS sessions (
@@ -262,18 +273,22 @@ function SessionTracker:startSession(document, ui)
 		end
 	end
 
+	local now = os.time()
+
 	self.current_session = {
 		book_file = file_path,
 		book_hash = self:getBookFileHash(file_path),
 		book_title = book_title,
 		book_author = book_author,
-		start_time = os.time(),
+		start_time = now,
 		start_position = position.position,
 		start_page = position.page,
 		position_type = position.type,
 		-- These will be updated as reading progresses
 		current_position = position.position,
 		current_page = position.page,
+		last_activity_time = now,
+		last_capture_time = now,
 		total_pages = self:_getTotalPages(document, ui),
 	}
 
@@ -286,63 +301,68 @@ end
 -- @param ui The UI object
 -- @param pageno number Current page number (optional)
 function SessionTracker:updatePosition(document, ui, pageno)
-	if not self.current_session then
+	local session = self.current_session
+	if not session then
 		return
+	end
+
+	local now = os.time()
+	local idle_seconds = now - (session.last_activity_time or session.start_time)
+
+	-- A long gap means this page turn belongs to a new sitting, not the old
+	-- one: close the old session where and when it actually stopped.
+	if idle_seconds > SESSION_ACTIVITY_GAP_SECONDS then
+		logger.dbg("Crossbill SessionTracker: Activity gap of", idle_seconds, "seconds - splitting session")
+		self:_endSessionAtLastActivity("activity_gap")
+		self:startSession(document, ui)
+		session = self.current_session
+		if not session then
+			return
+		end
+		now = session.last_activity_time
+	end
+
+	-- Full position capture is throttled: page turns are frequent, but the
+	-- tracked position has to keep up so a retroactive end has somewhere to
+	-- point at.
+	if not pageno or (now - (session.last_capture_time or 0)) >= POSITION_CAPTURE_INTERVAL_SECONDS then
+		local position = self:_capturePosition(document, ui)
+		if position then
+			session.current_position = position.position
+			session.current_page = position.page
+		end
+		session.last_capture_time = now
 	end
 
 	-- Quick update without full position capture for performance
 	if pageno then
-		self.current_session.current_page = pageno
+		session.current_page = pageno
 	end
 
-	-- Only do full position capture occasionally or if we don't have pageno
-	if not pageno then
-		local position = self:_capturePosition(document, ui)
-		if position then
-			self.current_session.current_position = position.position
-			self.current_session.current_page = position.page
-		end
-	end
+	session.last_activity_time = now
 end
 
---- End current session and save to database
--- @param document The document object
--- @param ui The UI object
--- @param reason string Reason for ending ("document_close", "suspend", "app_exit", "new_session")
-function SessionTracker:endSession(document, ui, reason)
-	if not self.current_session then
-		logger.dbg("Crossbill SessionTracker: No active session to end")
-		return
-	end
-
+--- Save a finished session to the database
+-- Shared by both end paths (fresh capture and retroactive end); the caller
+-- decides when the session ended and where it ended.
+-- @param session table The session being ended
+-- @param end_time number Unix time the session ended
+-- @param end_position string Position where reading stopped
+-- @param end_page number Page where reading stopped
+-- @param reason string Reason for ending
+function SessionTracker:_saveSession(session, end_time, end_position, end_page, reason)
 	if not self._initialized or not self.db then
-		logger.warn("Crossbill SessionTracker: Cannot end session - database not available")
-		self.current_session = nil
+		logger.warn("Crossbill SessionTracker: Cannot save session - database not available")
 		return
 	end
 
-	local session = self.current_session
-	local end_time = os.time()
 	local duration = end_time - session.start_time
 
 	-- Discard very short sessions
 	local min_duration = self.settings:getMinReadingSessionDuration() or 60
 	if duration < min_duration then
 		logger.dbg("Crossbill SessionTracker: Discarding short session (", duration, "seconds) - reason:", reason)
-		self.current_session = nil
 		return
-	end
-
-	-- Capture final position
-	local end_position = session.current_position
-	local end_page = session.current_page
-
-	if document then
-		local position = self:_capturePosition(document, ui)
-		if position then
-			end_position = position.position
-			end_page = position.page
-		end
 	end
 
 	-- Save to database
@@ -387,7 +407,70 @@ function SessionTracker:endSession(document, ui, reason)
 	else
 		logger.err("Crossbill SessionTracker: Failed to save session:", err)
 	end
+end
 
+--- End the active session as of its last recorded activity
+-- Used when reading stopped long before we noticed (an idle gap, or a suspend
+-- that never reached us). The position is not re-captured: the document now
+-- shows where the reader is *now*, which may be hours of standby later, and an
+-- end position equal to the start position makes the server drop the session.
+-- @param reason string Reason for ending
+function SessionTracker:_endSessionAtLastActivity(reason)
+	local session = self.current_session
+	if not session then
+		return
+	end
+
+	local end_time = session.last_activity_time or session.start_time
+	self:_saveSession(session, end_time, session.current_position, session.current_page, reason)
+	self.current_session = nil
+end
+
+--- End current session and save to database
+-- @param document The document object
+-- @param ui The UI object
+-- @param reason string Reason for ending ("document_close", "suspend", "app_exit", "new_session")
+function SessionTracker:endSession(document, ui, reason)
+	local session = self.current_session
+	if not session then
+		logger.dbg("Crossbill SessionTracker: No active session to end")
+		return
+	end
+
+	if not self._initialized or not self.db then
+		logger.warn("Crossbill SessionTracker: Cannot end session - database not available")
+		self.current_session = nil
+		return
+	end
+
+	local end_time = os.time()
+	local idle_seconds = end_time - (session.last_activity_time or session.start_time)
+
+	-- Reading stopped long ago; end the session there rather than now.
+	if idle_seconds > SESSION_ACTIVITY_GAP_SECONDS then
+		logger.dbg(
+			"Crossbill SessionTracker: Ending session at last activity,",
+			idle_seconds,
+			"seconds ago - reason:",
+			reason
+		)
+		self:_endSessionAtLastActivity(reason)
+		return
+	end
+
+	-- Capture final position
+	local end_position = session.current_position
+	local end_page = session.current_page
+
+	if document then
+		local position = self:_capturePosition(document, ui)
+		if position then
+			end_position = position.position
+			end_page = position.page
+		end
+	end
+
+	self:_saveSession(session, end_time, end_position, end_page, reason)
 	self.current_session = nil
 end
 

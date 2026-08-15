@@ -154,6 +154,10 @@ end
 
 --- Replace a book's cached digests with a fresh set of items
 -- Deletes existing rows and inserts the new ones in a single transaction.
+-- Individual items are inserted defensively: the server can return two items
+-- with the same chapter_number, and a single failing item must not roll back
+-- the whole book and leave the cache permanently stale. Items are upserted and
+-- each one is guarded on its own; only a transaction-level failure rolls back.
 -- @param client_book_id string The client book ID
 -- @param items table Array of digest items from the API
 -- @return boolean Success status
@@ -170,6 +174,8 @@ function DigestCache:replaceBook(client_book_id, items)
 
 	items = items or {}
 	local fetched_at = os.time()
+	local inserted_count = 0
+	local failed_count = 0
 
 	local success, err = pcall(function()
 		self.db:exec("BEGIN TRANSACTION;")
@@ -179,14 +185,15 @@ function DigestCache:replaceBook(client_book_id, items)
 		del_stmt:step()
 		del_stmt:close()
 
+		-- INSERT OR REPLACE: two items can share a chapter_number, which would
+		-- otherwise break the primary key and abort the whole fetch.
 		local ins_stmt = self.db:prepare([[
-            INSERT INTO digest (
+            INSERT OR REPLACE INTO digest (
                 client_book_id, chapter_number, chapter_name, parent_chapter_name,
                 summary, keypoints, questions, generated_at, fetched_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ]])
 
-		local inserted_count = 0
 		for _, item in ipairs(items) do
 			local chapter_number = tonumber(item.chapter_number)
 			if chapter_number == nil then
@@ -195,21 +202,41 @@ function DigestCache:replaceBook(client_book_id, items)
 					"Crossbill DigestCache: Skipping item with nil chapter_number for chapter",
 					tostring(item.chapter_name)
 				)
+				failed_count = failed_count + 1
 			else
-				ins_stmt:reset()
-				ins_stmt:bind(
-					client_book_id,
-					chapter_number,
-					asText(item.chapter_name) or "",
-					asText(item.parent_chapter_name),
-					asText(item.summary) or "",
-					encodeArray(item.keypoints),
-					encodeArray(item.questions),
-					asText(item.generated_at),
-					fetched_at
-				)
-				ins_stmt:step()
-				inserted_count = inserted_count + 1
+				local item_ok, item_err = pcall(function()
+					ins_stmt:reset()
+					ins_stmt:bind(
+						client_book_id,
+						chapter_number,
+						asText(item.chapter_name) or "",
+						asText(item.parent_chapter_name),
+						asText(item.summary) or "",
+						encodeArray(item.keypoints),
+						encodeArray(item.questions),
+						asText(item.generated_at),
+						fetched_at
+					)
+					ins_stmt:step()
+				end)
+
+				if item_ok then
+					inserted_count = inserted_count + 1
+				else
+					failed_count = failed_count + 1
+					logger.err(
+						"Crossbill DigestCache: Failed to cache digest item for book",
+						tostring(client_book_id),
+						"chapter",
+						tostring(chapter_number),
+						tostring(item.chapter_name),
+						item_err
+					)
+					-- Leave the statement usable for the remaining items.
+					pcall(function()
+						ins_stmt:reset()
+					end)
+				end
 			end
 		end
 
@@ -219,7 +246,7 @@ function DigestCache:replaceBook(client_book_id, items)
 		-- a "never fetched" one. hasBook checks this meta table, so a book with an
 		-- empty server digest list still counts as present and does not trigger
 		-- a re-fetch on every popup open. An empty fetch is refreshed by sync
-		-- (refreshBook), not by popup opens.
+		-- (refreshBook) or, once it is old enough, by a popup open (getFetchedAt).
 		local meta_stmt = self.db:prepare([[
             INSERT OR REPLACE INTO digest_fetch_meta (
                 client_book_id, fetched_at, item_count
@@ -238,6 +265,19 @@ function DigestCache:replaceBook(client_book_id, items)
 			self.db:exec("ROLLBACK;")
 		end)
 		return false
+	end
+
+	if failed_count > 0 then
+		logger.warn(
+			"Crossbill DigestCache: cached",
+			inserted_count,
+			"of",
+			#items,
+			"digest items;",
+			failed_count,
+			"failed for book",
+			tostring(client_book_id)
+		)
 	end
 
 	logger.dbg("Crossbill DigestCache: Replaced digests for book", client_book_id)
@@ -292,8 +332,8 @@ end
 --- Check whether a book has ever been fetched (even if it had no digests)
 -- Checks the fetch-meta table rather than counting digest rows, so a book
 -- whose server digest list was empty still counts as present. This keeps a
--- popup open from re-attempting a network fetch every time; the empty fetch is
--- refreshed by sync (refreshBook), not by popup opens.
+-- popup open from re-attempting a network fetch every time; an empty fetch is
+-- only retried once it is stale (see getFetchedAt).
 -- @param client_book_id string The client book ID
 -- @return boolean True if the book has been fetched at least once
 function DigestCache:hasBook(client_book_id)
@@ -321,6 +361,36 @@ function DigestCache:hasBook(client_book_id)
 	end
 
 	return has
+end
+
+--- Get the time of a book's last digest fetch
+-- @param client_book_id string The client book ID
+-- @return number|nil Unix time of the last fetch, or nil if never fetched
+function DigestCache:getFetchedAt(client_book_id)
+	if not self._initialized or not self.db then
+		return nil
+	end
+
+	if not client_book_id then
+		return nil
+	end
+
+	local fetched_at = nil
+	local success, err = pcall(function()
+		local stmt = self.db:prepare("SELECT fetched_at FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1")
+		stmt:bind(client_book_id)
+		for row in stmt:rows() do
+			fetched_at = tonumber(row[1])
+		end
+		stmt:close()
+	end)
+
+	if not success then
+		logger.err("Crossbill DigestCache: Error reading fetch time:", err)
+		return nil
+	end
+
+	return fetched_at
 end
 
 return DigestCache

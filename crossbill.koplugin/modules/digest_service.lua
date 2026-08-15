@@ -19,9 +19,16 @@ err_kind is one of:
 ]]
 
 local logger = require("logger")
+local Network = require("modules/network")
 
 local DigestService = {}
 DigestService.__index = DigestService
+
+-- How old a "fetched, but empty" cache entry has to be before opening the
+-- popup re-checks the server. Digests are generated asynchronously, so a book
+-- fetched before its digests existed would otherwise stay empty until a sync
+-- happened to refresh it.
+local STALE_EMPTY_REFETCH_SECONDS = 900
 
 --- Create a new DigestService instance
 -- @param api_client ApiClient instance for server communication
@@ -272,6 +279,37 @@ function DigestService:refreshBook(client_book_id)
 	return true, nil
 end
 
+--- Re-fetch a book whose cache is present but empty, if that is worth trying
+-- Only re-fetches an old enough empty cache, and only when the device is
+-- already online: an offline device must not be prompted for WiFi or made to
+-- wait for a request that cannot succeed.
+-- @param client_book_id string The client book ID
+-- @return table Cached items after the attempt (empty if it was skipped or failed)
+function DigestService:_refetchStaleEmptyBook(client_book_id)
+	local fetched_at = self.cache:getFetchedAt(client_book_id)
+	if not fetched_at then
+		return {}
+	end
+
+	local age = os.time() - fetched_at
+	if age < STALE_EMPTY_REFETCH_SECONDS then
+		return {}
+	end
+
+	if not Network.isConnected() then
+		logger.dbg("Crossbill DigestService: Empty digest cache is stale but the device is offline")
+		return {}
+	end
+
+	logger.dbg("Crossbill DigestService: Re-fetching empty digest cache, last fetched", age, "seconds ago")
+	local ok = self:refreshBook(client_book_id)
+	if not ok then
+		return {}
+	end
+
+	return self.cache:getBook(client_book_id) or {}
+end
+
 --- Resolve the digest item for the current chapter
 -- Tries the cache first; if the book is absent, fetches it, then matches the
 -- current chapter against the cached items.
@@ -296,6 +334,12 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 	end
 
 	local items = self.cache:getBook(client_book_id)
+	if not items or #items == 0 then
+		-- The book was fetched but had no digests then; the server may have
+		-- generated them since.
+		items = self:_refetchStaleEmptyBook(client_book_id)
+	end
+
 	if not items or #items == 0 then
 		return nil, "no_digest_for_book"
 	end
