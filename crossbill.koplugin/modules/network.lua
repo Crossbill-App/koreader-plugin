@@ -288,4 +288,22 @@ function Network.didWeEnableWifi()
 	return wifi_enabled_by_us
 end
 
+--- Check whether the device currently has a network connection
+-- Never prompts and never turns WiFi on; use it to decide whether an optional
+-- network call is worth attempting. Anything other than a definite yes counts
+-- as offline (KOReader returns nil rather than false on some platforms).
+-- @return boolean True if the device is connected
+function Network.isConnected()
+	local success, connected = pcall(function()
+		return NetworkMgr:isConnected()
+	end)
+
+	if not success then
+		logger.dbg("Crossbill Network: Could not query connectivity:", connected)
+		return false
+	end
+
+	return connected == true
+end
+
 return Network

@@ -246,7 +246,7 @@ function DigestCache:replaceBook(client_book_id, items)
 		-- a "never fetched" one. hasBook checks this meta table, so a book with an
 		-- empty server digest list still counts as present and does not trigger
 		-- a re-fetch on every popup open. An empty fetch is refreshed by sync
-		-- (refreshBook), not by popup opens.
+		-- (refreshBook) or, once it is old enough, by a popup open (getFetchedAt).
 		local meta_stmt = self.db:prepare([[
             INSERT OR REPLACE INTO digest_fetch_meta (
                 client_book_id, fetched_at, item_count
@@ -332,8 +332,8 @@ end
 --- Check whether a book has ever been fetched (even if it had no digests)
 -- Checks the fetch-meta table rather than counting digest rows, so a book
 -- whose server digest list was empty still counts as present. This keeps a
--- popup open from re-attempting a network fetch every time; the empty fetch is
--- refreshed by sync (refreshBook), not by popup opens.
+-- popup open from re-attempting a network fetch every time; an empty fetch is
+-- only retried once it is stale (see getFetchedAt).
 -- @param client_book_id string The client book ID
 -- @return boolean True if the book has been fetched at least once
 function DigestCache:hasBook(client_book_id)
@@ -361,6 +361,36 @@ function DigestCache:hasBook(client_book_id)
 	end
 
 	return has
+end
+
+--- Get the time of a book's last digest fetch
+-- @param client_book_id string The client book ID
+-- @return number|nil Unix time of the last fetch, or nil if never fetched
+function DigestCache:getFetchedAt(client_book_id)
+	if not self._initialized or not self.db then
+		return nil
+	end
+
+	if not client_book_id then
+		return nil
+	end
+
+	local fetched_at = nil
+	local success, err = pcall(function()
+		local stmt = self.db:prepare("SELECT fetched_at FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1")
+		stmt:bind(client_book_id)
+		for row in stmt:rows() do
+			fetched_at = tonumber(row[1])
+		end
+		stmt:close()
+	end)
+
+	if not success then
+		logger.err("Crossbill DigestCache: Error reading fetch time:", err)
+		return nil
+	end
+
+	return fetched_at
 end
 
 return DigestCache
