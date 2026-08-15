@@ -154,6 +154,10 @@ end
 
 --- Replace a book's cached digests with a fresh set of items
 -- Deletes existing rows and inserts the new ones in a single transaction.
+-- Individual items are inserted defensively: the server can return two items
+-- with the same chapter_number, and a single failing item must not roll back
+-- the whole book and leave the cache permanently stale. Items are upserted and
+-- each one is guarded on its own; only a transaction-level failure rolls back.
 -- @param client_book_id string The client book ID
 -- @param items table Array of digest items from the API
 -- @return boolean Success status
@@ -170,6 +174,8 @@ function DigestCache:replaceBook(client_book_id, items)
 
 	items = items or {}
 	local fetched_at = os.time()
+	local inserted_count = 0
+	local failed_count = 0
 
 	local success, err = pcall(function()
 		self.db:exec("BEGIN TRANSACTION;")
@@ -179,14 +185,15 @@ function DigestCache:replaceBook(client_book_id, items)
 		del_stmt:step()
 		del_stmt:close()
 
+		-- INSERT OR REPLACE: two items can share a chapter_number, which would
+		-- otherwise break the primary key and abort the whole fetch.
 		local ins_stmt = self.db:prepare([[
-            INSERT INTO digest (
+            INSERT OR REPLACE INTO digest (
                 client_book_id, chapter_number, chapter_name, parent_chapter_name,
                 summary, keypoints, questions, generated_at, fetched_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ]])
 
-		local inserted_count = 0
 		for _, item in ipairs(items) do
 			local chapter_number = tonumber(item.chapter_number)
 			if chapter_number == nil then
@@ -195,21 +202,41 @@ function DigestCache:replaceBook(client_book_id, items)
 					"Crossbill DigestCache: Skipping item with nil chapter_number for chapter",
 					tostring(item.chapter_name)
 				)
+				failed_count = failed_count + 1
 			else
-				ins_stmt:reset()
-				ins_stmt:bind(
-					client_book_id,
-					chapter_number,
-					asText(item.chapter_name) or "",
-					asText(item.parent_chapter_name),
-					asText(item.summary) or "",
-					encodeArray(item.keypoints),
-					encodeArray(item.questions),
-					asText(item.generated_at),
-					fetched_at
-				)
-				ins_stmt:step()
-				inserted_count = inserted_count + 1
+				local item_ok, item_err = pcall(function()
+					ins_stmt:reset()
+					ins_stmt:bind(
+						client_book_id,
+						chapter_number,
+						asText(item.chapter_name) or "",
+						asText(item.parent_chapter_name),
+						asText(item.summary) or "",
+						encodeArray(item.keypoints),
+						encodeArray(item.questions),
+						asText(item.generated_at),
+						fetched_at
+					)
+					ins_stmt:step()
+				end)
+
+				if item_ok then
+					inserted_count = inserted_count + 1
+				else
+					failed_count = failed_count + 1
+					logger.err(
+						"Crossbill DigestCache: Failed to cache digest item for book",
+						tostring(client_book_id),
+						"chapter",
+						tostring(chapter_number),
+						tostring(item.chapter_name),
+						item_err
+					)
+					-- Leave the statement usable for the remaining items.
+					pcall(function()
+						ins_stmt:reset()
+					end)
+				end
 			end
 		end
 
@@ -238,6 +265,19 @@ function DigestCache:replaceBook(client_book_id, items)
 			self.db:exec("ROLLBACK;")
 		end)
 		return false
+	end
+
+	if failed_count > 0 then
+		logger.warn(
+			"Crossbill DigestCache: cached",
+			inserted_count,
+			"of",
+			#items,
+			"digest items;",
+			failed_count,
+			"failed for book",
+			tostring(client_book_id)
+		)
 	end
 
 	logger.dbg("Crossbill DigestCache: Replaced digests for book", client_book_id)
