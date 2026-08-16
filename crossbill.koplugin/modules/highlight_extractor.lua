@@ -31,6 +31,15 @@ local function isHighlight(annotation)
 	return annotation.drawer ~= nil
 end
 
+-- Positions are xpointer strings for reflowable documents, but tables of
+-- coordinates for fixed-layout ones, which the server has no use for.
+local function asXpoint(position)
+	if type(position) == "string" then
+		return position
+	end
+	return nil
+end
+
 --- Convert a raw annotation to our standard highlight format
 -- @param annotation table The raw annotation object
 -- @return table Formatted highlight object
@@ -40,8 +49,8 @@ local function formatHighlight(annotation)
 		note = annotation.note or nil,
 		datetime = annotation.datetime or "",
 		page = annotation.pageno or annotation.page,
-		start_xpoint = annotation.pos0 or nil,
-		end_xpoint = annotation.pos1 or nil,
+		start_xpoint = asXpoint(annotation.pos0),
+		end_xpoint = asXpoint(annotation.pos1),
 		chapter = annotation.chapter or nil,
 		color = annotation.color or nil,
 		drawer = annotation.drawer or nil,
@@ -122,6 +131,8 @@ function HighlightExtractor:getHighlightsFromDisk(doc_path)
 				note = note,
 				datetime = item.datetime or "",
 				page = item.page,
+				start_xpoint = asXpoint(item.pos0),
+				end_xpoint = asXpoint(item.pos1),
 				chapter = item.chapter or nil,
 				color = item.color or nil,
 				drawer = item.drawer or nil,
