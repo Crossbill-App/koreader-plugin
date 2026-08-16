@@ -28,10 +28,29 @@ Syncs your KOReader highlights to your Crossbill server.
 ## Features
 
 - Syncs highlights from the currently open book
+- Pulls highlights back from Crossbill, so edits and deletions made in the web app reach the device
 - Uploads book epub to the Crossbill
 - Uploads reading session data to the Crossbill
 - Works with EPUB files
 - View the AI generated digest of the current chapter on KOReader
+
+## Pull highlights from Crossbill
+
+Menu → Crossbill → Pull highlights from Crossbill (also bindable to a gesture)
+replaces the open book's highlights with the copy held by the server. Crossbill
+is the master: highlights you deleted or edited in the web app are deleted or
+edited on the device, and highlights made on your other devices appear here.
+
+- Your unsynced highlights are pushed to the server first, so nothing made on
+  this device is lost. If that push fails, nothing is replaced.
+- Page bookmarks are kept untouched; only highlights and notes are replaced.
+- Highlights the server has no position for, or whose position no longer
+  resolves in this copy of the book, are skipped and reported in the summary.
+- Before anything is changed, the book's KOReader metadata file is copied to
+  `<book>.sdr/metadata.epub.lua.crossbill-<YYYYMMDD-HHMMSS>.bak`. The three
+  newest backups are kept.
+- Reflowable books (EPUB) only: highlight positions are xpointers, which do not
+  apply to fixed-layout formats such as PDF.
 
 ## Requirements
 
