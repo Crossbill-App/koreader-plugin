@@ -8,6 +8,7 @@ Provides UI components for the plugin including:
 ]]
 
 local UIManager = require("ui/uimanager")
+local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
@@ -65,6 +66,62 @@ end
 -- @param error_msg string The error message
 function UI.showAuthError(error_msg)
 	UI.showMessage(_("Authentication failed: ") .. (error_msg or "unknown error"), 5)
+end
+
+--- Ask the user to confirm replacing the book's highlights with the server's copy
+-- @param on_confirm function Called when the user confirms
+-- @param on_cancel function Called when the user cancels or dismisses the dialog
+function UI.showPullConfirm(on_confirm, on_cancel)
+	UIManager:show(ConfirmBox:new({
+		text = _(
+			"Replace this book's highlights with Crossbill's copy? Highlights not yet synced are pushed first, page bookmarks are kept, and a backup of the book's metadata is made."
+		),
+		ok_text = _("Pull"),
+		ok_callback = on_confirm,
+		cancel_callback = on_cancel,
+	}))
+end
+
+--- Show a message while local highlights are pushed ahead of the pull
+function UI.showPullingMessage()
+	UI.showMessage(_("Pushing local highlights..."), 2)
+end
+
+--- Show the outcome of a highlight pull
+-- @param result table Importer result with the counts and an optional backup path
+function UI.showPullResult(result)
+	local lines = {
+		string.format(_("Pulled %d highlights from Crossbill."), result.inserted or 0),
+		string.format(
+			_("Skipped: %d without position, %d not found in this book."),
+			result.skipped_unplaceable or 0,
+			result.skipped_invalid or 0
+		),
+		string.format(_("Page bookmarks kept: %d"), result.kept_bookmarks or 0),
+	}
+
+	if result.backup_path then
+		table.insert(lines, _("Backup: ") .. result.backup_path:gsub(".*/", ""))
+	end
+
+	UI.showMessage(table.concat(lines, "\n"), 5)
+end
+
+--- Show a message when the highlights could not be fetched from the server
+-- @param code number|nil The HTTP status code
+-- @param error_msg string|nil The error message
+function UI.showPullFailed(code, error_msg)
+	if code == 404 then
+		UI.showMessage(_("Book not found on Crossbill. Sync this book first."), 4)
+	else
+		UI.showMessage(_("Couldn't fetch highlights: ") .. tostring(error_msg or code or "unknown error"), 5)
+	end
+end
+
+--- Show an error raised while replacing the book's highlights
+-- @param error_msg string The error message
+function UI.showPullError(error_msg)
+	UI.showMessage(_("Pull failed: ") .. tostring(error_msg or "unknown error"), 5)
 end
 
 --- Show settings saved message
@@ -379,6 +436,7 @@ end
 -- lives under a Settings submenu.
 -- @param handlers table Callback handlers for menu actions
 --   - on_sync: function() Called when sync is triggered
+--   - on_pull: function() Called when pulling highlights from the server
 --   - on_show_digest: function() Called when the chapter digest is requested
 --   - on_configure: function() Called when configure is triggered
 --   - is_autosync_enabled: function() Returns autosync state
@@ -395,6 +453,10 @@ function UI.buildMenuItems(handlers)
 			{
 				text = _("Sync Current Book"),
 				callback = handlers.on_sync,
+			},
+			{
+				text = _("Pull highlights from Crossbill"),
+				callback = handlers.on_pull,
 			},
 			{
 				text = _("Chapter digest"),
