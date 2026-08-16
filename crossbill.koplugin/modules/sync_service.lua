@@ -13,6 +13,7 @@ module handles the sync business logic.
 
 local logger = require("logger")
 local BookMetadata = require("modules/book_metadata")
+local DeviceIdentity = require("modules/device_identity")
 local HighlightExtractor = require("modules/highlight_extractor")
 
 local SyncService = {}
@@ -142,7 +143,8 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path)
 	highlight_extractor:addChapterNumbers(highlights)
 
 	-- Upload highlights to server
-	local upload_success, response, err = self.api_client:uploadHighlights(client_book_id, highlights)
+	local upload_success, response, err =
+		self.api_client:uploadHighlights(client_book_id, highlights, DeviceIdentity.getDeviceId())
 
 	if not upload_success then
 		result.success = false

@@ -34,12 +34,13 @@ function ApiClient:getApiUrl()
 end
 
 --- Upload highlights to the server
--- @param book_data table Book metadata
+-- @param client_book_id string The client-side book ID (hash of title|author)
 -- @param highlights table Array of highlights
+-- @param device_id string|nil Identifier of the device the highlights came from
 -- @return boolean Success status
 -- @return table|nil Response data containing book_id, highlights_created, highlights_skipped
 -- @return string|nil Error message
-function ApiClient:uploadHighlights(client_book_id, highlights)
+function ApiClient:uploadHighlights(client_book_id, highlights, device_id)
 	local token, auth_err = self.auth:getValidToken()
 	if not token then
 		return false, nil, auth_err or "Authentication failed"
@@ -48,6 +49,7 @@ function ApiClient:uploadHighlights(client_book_id, highlights)
 	local payload = {
 		client_book_id = client_book_id,
 		highlights = highlights,
+		device_id = device_id,
 	}
 
 	local api_url = self:getApiUrl() .. "/highlights/upload"
