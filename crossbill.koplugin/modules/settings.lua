@@ -26,6 +26,33 @@ local DEFAULTS = {
 -- Settings key in KOReader's global settings
 local SETTINGS_KEY = "crossbill_sync"
 
+-- Returns the plugin's settings table, registering it with G_reader_settings on
+-- first use so that every reader of the namespace shares one table.
+local function sharedData()
+	local data = G_reader_settings:readSetting(SETTINGS_KEY)
+	if data == nil then
+		data = {}
+		G_reader_settings:saveSetting(SETTINGS_KEY, data)
+	end
+	return data
+end
+
+--- Read a value from the plugin settings namespace without an instance
+-- @param key string The setting key
+-- @return mixed The setting value, or nil
+function Settings.readShared(key)
+	return sharedData()[key]
+end
+
+--- Store a value in the plugin settings namespace without an instance
+-- @param key string The setting key
+-- @param value mixed The setting value
+function Settings.saveShared(key, value)
+	local data = sharedData()
+	data[key] = value
+	G_reader_settings:saveSetting(SETTINGS_KEY, data)
+end
+
 --- Create a new Settings instance
 -- @return Settings instance
 function Settings:new()
@@ -37,7 +64,7 @@ end
 --- Load settings from KOReader's global settings
 -- @return self for chaining
 function Settings:load()
-	self._data = G_reader_settings:readSetting(SETTINGS_KEY) or {}
+	self._data = sharedData()
 	-- Apply defaults for any missing keys
 	for key, value in pairs(DEFAULTS) do
 		if self._data[key] == nil then

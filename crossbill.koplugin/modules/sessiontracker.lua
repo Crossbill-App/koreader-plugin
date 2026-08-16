@@ -8,8 +8,8 @@ page numbers for fixed-layout docs) for later sync and analytics.
 
 local logger = require("logger")
 local SQ3 = require("lua-ljsqlite3/init")
-local Device = require("device")
 local BookMetadata = require("modules/book_metadata")
+local DeviceIdentity = require("modules/device_identity")
 
 local SessionTracker = {}
 SessionTracker.__index = SessionTracker
@@ -130,19 +130,9 @@ function SessionTracker:getBookFileHash(file_path)
 end
 
 --- Get device identifier
--- @return string Device ID or "unknown"
+-- @return string Stable device ID
 function SessionTracker:_getDeviceId()
-	local success, device_info = pcall(function()
-		return Device:info()
-	end)
-
-	if success and device_info then
-		-- Try to construct a meaningful device ID
-		local model = Device.model or "unknown"
-		return model
-	end
-
-	return "unknown"
+	return DeviceIdentity.getDeviceId()
 end
 
 --- Capture current reading position from document
