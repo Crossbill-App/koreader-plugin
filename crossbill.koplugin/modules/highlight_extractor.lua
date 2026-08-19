@@ -48,6 +48,7 @@ local function formatHighlight(annotation)
 		text = annotation.text or "",
 		note = annotation.note or nil,
 		datetime = annotation.datetime or "",
+		datetime_updated = annotation.datetime_updated,
 		page = annotation.pageno or annotation.page,
 		start_xpoint = asXpoint(annotation.pos0),
 		end_xpoint = asXpoint(annotation.pos1),

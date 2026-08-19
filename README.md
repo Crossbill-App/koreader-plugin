@@ -43,6 +43,11 @@ edited on the device, and highlights made on your other devices appear here.
 
 - Your unsynced highlights are pushed to the server first, so nothing made on
   this device is lost. If that push fails, nothing is replaced.
+- Edits to a highlight's note or colour made on different devices are merged by
+  the time of the edit: the most recent change wins, whichever device made it.
+- Deleting a highlight on the e-reader does not delete it in Crossbill; the next
+  pull brings it back. Delete it in Crossbill instead, and that deletion reaches
+  every device on its next pull.
 - Page bookmarks are kept untouched; only highlights and notes are replaced.
 - Highlights the server has no position for, or whose position no longer
   resolves in this copy of the book, are skipped and reported in the summary.
