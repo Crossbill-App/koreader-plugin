@@ -173,6 +173,7 @@ end
 -- @return table The annotation item
 local function buildItem(ui, source, start_xpoint, end_xpoint, defaults)
 	local drawer = asString(source.device_style)
+	local note = asNonEmptyString(source.note)
 	return {
 		page = start_xpoint,
 		pos0 = start_xpoint,
@@ -182,8 +183,9 @@ local function buildItem(ui, source, start_xpoint, end_xpoint, defaults)
 		datetime_updated = asNonEmptyString(source.datetime_updated),
 		drawer = (drawer and VALID_DRAWERS[drawer]) and drawer or defaults.drawer,
 		color = asNonEmptyString(source.device_color) or defaults.color,
-		note = asNonEmptyString(source.note),
+		note = note,
 		chapter = chapterTitle(ui, source, start_xpoint),
+		crossbill_note_seen = note or "",
 	}
 end
 
@@ -209,6 +211,69 @@ local function buildItems(ui, items, defaults, result)
 	end
 
 	return built
+end
+
+--- Key an annotation by the position pair that identifies it
+-- @param item table An annotation item
+-- @return string The key
+local function positionKey(item)
+	return tostring(item.pos0) .. "\0" .. tostring(item.pos1)
+end
+
+--- Describe everything a replacement could change about one highlight
+-- @param item table An annotation item
+-- @return string The fields joined into one comparable string
+local function fingerprint(item)
+	return table.concat({
+		item.text or "",
+		item.note or "",
+		item.drawer or "",
+		tostring(item.color or ""),
+		item.datetime_updated or "",
+	}, "\0")
+end
+
+--- Check whether the reader already holds exactly the highlights we would insert
+-- Bookmarks (annotations without a drawer) are left out: the replacement never
+-- touches them. crossbill_note_seen is left out too, being the plugin's own
+-- bookkeeping rather than something the server sends.
+-- @param annotations table The reader's live annotation array
+-- @param built table Array of annotation items built from the server's copy
+-- @return boolean True when replacing would change nothing
+local function sameHighlightSet(annotations, built)
+	local device = {}
+	local device_count = 0
+	for _, item in ipairs(annotations) do
+		if item.drawer then
+			device[positionKey(item)] = fingerprint(item)
+			device_count = device_count + 1
+		end
+	end
+
+	if device_count ~= #built then
+		return false
+	end
+
+	for _, item in ipairs(built) do
+		if device[positionKey(item)] ~= fingerprint(item) then
+			return false
+		end
+	end
+
+	return true
+end
+
+--- Count the page bookmarks a replacement would keep
+-- @param annotations table The reader's live annotation array
+-- @return number Number of annotations without a drawer
+local function countBookmarks(annotations)
+	local kept = 0
+	for _, item in ipairs(annotations) do
+		if not item.drawer then
+			kept = kept + 1
+		end
+	end
+	return kept
 end
 
 --- Remove every highlight from the reader, keeping page bookmarks
@@ -262,12 +327,14 @@ local function restoreAnnotations(annotations, previous)
 end
 
 --- Replace the open book's highlights with the server's copy
--- Backs up the sidecar file first, keeps page bookmarks, and flushes the new
--- set to disk before returning.
+-- Returns early when the book already holds exactly the server's highlights, so
+-- a sync that changed nothing neither rewrites the sidecar nor backs it up.
+-- Otherwise backs up the sidecar file first, keeps page bookmarks, and flushes
+-- the new set to disk before returning.
 -- @param ui table The KOReader UI context
 -- @param items table Array of highlight items from the server
 -- @return table|nil Result with inserted, skipped_unplaceable, skipped_invalid,
---   kept_bookmarks and backup_path, or nil on failure
+--   kept_bookmarks, backup_path and unchanged, or nil on failure
 -- @return string|nil Error message
 function HighlightImporter:replaceHighlights(ui, items)
 	if not ui.document or not ui.annotation or not ui.annotation.annotations then
@@ -277,20 +344,11 @@ function HighlightImporter:replaceHighlights(ui, items)
 		return nil, "Only reflowable books (EPUB) are supported"
 	end
 
-	ui:handleEvent(Event:new("FlushSettings"))
-
-	local backup_path, backup_err = backupSidecar(ui.document.file)
-	if backup_err then
-		logger.err("Crossbill Importer: Could not back up the sidecar file:", backup_err)
-		return nil, backup_err
-	end
-
 	local result = {
 		inserted = 0,
 		skipped_unplaceable = 0,
 		skipped_invalid = 0,
 		kept_bookmarks = 0,
-		backup_path = backup_path,
 	}
 
 	local highlight_settings = (ui.view and ui.view.highlight) or {}
@@ -299,6 +357,29 @@ function HighlightImporter:replaceHighlights(ui, items)
 		color = highlight_settings.saved_color,
 	}
 	local built = buildItems(ui, items, defaults, result)
+
+	if sameHighlightSet(ui.annotation.annotations, built) then
+		result.unchanged = true
+		result.kept_bookmarks = countBookmarks(ui.annotation.annotations)
+		logger.dbg("Crossbill Importer: Highlights already match the server's copy")
+		return result, nil
+	end
+
+	-- The server has highlights for this book but none fits this copy of it:
+	-- most likely a different edition, or positions the server could not keep.
+	-- Wiping the device's highlights on that basis would be data loss, not sync.
+	if #built == 0 and #items > 0 and countBookmarks(ui.annotation.annotations) < #ui.annotation.annotations then
+		return nil, "None of the server's highlights fit this book; nothing changed"
+	end
+
+	ui:handleEvent(Event:new("FlushSettings"))
+
+	local backup_path, backup_err = backupSidecar(ui.document.file)
+	if backup_err then
+		logger.err("Crossbill Importer: Could not back up the sidecar file:", backup_err)
+		return nil, backup_err
+	end
+	result.backup_path = backup_path
 
 	local previous = {}
 	for i, item in ipairs(ui.annotation.annotations) do
