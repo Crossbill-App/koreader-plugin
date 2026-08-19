@@ -31,18 +31,12 @@ local CrossbillSync = WidgetContainer:extend({
 
 --- Register gesture-bindable actions with KOReader's Dispatcher
 -- These show up in the gesture manager under "Sync current book with
--- Crossbill", "Pull highlights from Crossbill" and "Crossbill chapter digest".
+-- Crossbill" and "Crossbill chapter digest".
 function CrossbillSync:onDispatcherRegisterActions()
 	Dispatcher:registerAction("crossbill_sync_current_book", {
 		category = "none",
 		event = "CrossbillSyncCurrentBook",
 		title = _("Sync current book with Crossbill"),
-		reader = true,
-	})
-	Dispatcher:registerAction("crossbill_pull_highlights", {
-		category = "none",
-		event = "CrossbillPullHighlights",
-		title = _("Pull highlights from Crossbill"),
 		reader = true,
 	})
 	-- The action name is the key KOReader stores in a user's gesture and
@@ -88,8 +82,14 @@ function CrossbillSync:init()
 	self.highlight_importer = HighlightImporter:new()
 
 	-- Initialize sync service with all dependencies
-	self.sync_service =
-		SyncService:new(self.api_client, self.file_uploader, self.session_tracker, self.settings, self.digest_service)
+	self.sync_service = SyncService:new(
+		self.api_client,
+		self.file_uploader,
+		self.session_tracker,
+		self.settings,
+		self.digest_service,
+		self.highlight_importer
+	)
 
 	-- Register menu
 	self.ui.menu:registerToMainMenu(self)
@@ -100,9 +100,6 @@ function CrossbillSync:addToMainMenu(menu_items)
 	menu_items.crossbill_sync = UI.buildMenuItems({
 		on_sync = function()
 			self:syncCurrentBook()
-		end,
-		on_pull = function()
-			self:pullCurrentBook()
 		end,
 		on_show_digest = function()
 			self:showChapterDigest()
@@ -280,94 +277,8 @@ function CrossbillSync:doSync(is_autosync)
 
 	-- Show success message for manual syncs
 	if not is_autosync then
-		UI.showSyncSuccess(result.highlights_created, result.highlights_skipped)
+		UI.showSyncSuccess(result)
 	end
-end
-
---- Pull the currently open book's highlights from the server
-function CrossbillSync:pullCurrentBook()
-	local callback = function()
-		self:performPull()
-	end
-
-	if not Network.ensureWifiEnabled(callback) then
-		-- WiFi is being enabled, callback will be called when ready
-		logger.info("Crossbill: Waiting for WiFi to be enabled...")
-	else
-		self:performPull()
-	end
-end
-
---- Ask for confirmation before replacing the book's highlights
-function CrossbillSync:performPull()
-	if not self.ui.document then
-		logger.warn("Crossbill: Cannot pull - no document available")
-		Network.disableWifiIfNeeded()
-		return
-	end
-
-	UI.showPullConfirm(function()
-		self:doPull()
-	end, function()
-		Network.disableWifiIfNeeded()
-	end)
-end
-
---- Run the confirmed pull, keeping session tracking and WiFi in order
-function CrossbillSync:doPull()
-	UI.showPullingMessage()
-
-	-- End current session before the push so it gets included
-	if self:isSessionTrackingActive() and self.session_tracker:hasActiveSession() then
-		self.session_tracker:endSession(self.ui.document, self.ui, "manual_sync")
-	end
-
-	local success, err = pcall(function()
-		self:executePull()
-	end)
-
-	if not success then
-		logger.err("Crossbill: Error in pull:", err)
-		UI.showPullError(err)
-	end
-
-	-- Restart session so reading continues to be tracked
-	if self:isSessionTrackingActive() and self.ui.document then
-		self.session_tracker:startSession(self.ui.document, self.ui)
-	end
-
-	Network.disableWifiIfNeeded()
-end
-
---- Execute the pull workflow: push local highlights, fetch, then replace
--- The push has to succeed first, otherwise highlights made on this device
--- since the last sync would be replaced by a server copy that never saw them.
-function CrossbillSync:executePull()
-	local sync_result = self.sync_service:syncBook(self.ui)
-
-	if not sync_result.success then
-		if sync_result.error and sync_result.error:match("^Authentication") then
-			UI.showAuthError(sync_result.error)
-		else
-			UI.showSyncFailed(sync_result.error)
-		end
-		return
-	end
-
-	local book_data = BookMetadata:new(self.ui):extractBookData()
-	local code, items, err = self.api_client:getHighlights(book_data.client_book_id)
-	if code ~= 200 or not items then
-		UI.showPullFailed(code, err)
-		return
-	end
-
-	local result, import_err = self.highlight_importer:replaceHighlights(self.ui, items)
-	if not result then
-		UI.showPullError(import_err)
-		return
-	end
-
-	UI.showPullResult(result)
 end
 
 -- Event handlers for gesture-bound actions (dispatched via Dispatcher)
@@ -375,12 +286,6 @@ end
 --- Handle the "sync current book" gesture action
 function CrossbillSync:onCrossbillSyncCurrentBook()
 	self:syncCurrentBook()
-	return true
-end
-
---- Handle the "pull highlights" gesture action
-function CrossbillSync:onCrossbillPullHighlights()
-	self:pullCurrentBook()
 	return true
 end
 

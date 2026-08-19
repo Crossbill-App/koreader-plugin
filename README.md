@@ -27,35 +27,45 @@ Syncs your KOReader highlights to your Crossbill server.
 
 ## Features
 
-- Syncs highlights from the currently open book
-- Pulls highlights back from Crossbill, so edits and deletions made in the web app reach the device
+- Syncs highlights from the currently open book, in both directions: every sync
+  pushes your highlights, then pulls Crossbill's copy back, so edits and
+  deletions made in the web app reach the device
 - Uploads book epub to the Crossbill
 - Uploads reading session data to the Crossbill
 - Works with EPUB files
 - View the AI generated digest of the current chapter on KOReader
 
-## Pull highlights from Crossbill
+## What Sync Current Book does
 
-Menu → Crossbill → Pull highlights from Crossbill (also bindable to a gesture)
-replaces the open book's highlights with the copy held by the server. Crossbill
-is the master: highlights you deleted or edited in the web app are deleted or
-edited on the device, and highlights made on your other devices appear here.
+Menu → Crossbill → Sync Current Book (also bindable to a gesture, and run
+automatically on suspend and exit when Auto-sync is on) first pushes the open
+book's highlights, reading sessions and epub to Crossbill, then pulls
+Crossbill's copy of the highlights back into the book.
 
-- Your unsynced highlights are pushed to the server first, so nothing made on
-  this device is lost. If that push fails, nothing is replaced.
+- Crossbill is the master of the pull: highlights you deleted or edited in the
+  web app are deleted or edited on the device, and highlights made on your other
+  devices appear here. Because the push comes first, nothing made on this device
+  is lost.
 - Edits to a highlight's note or colour made on different devices are merged by
   the time of the edit: the most recent change wins, whichever device made it.
 - Deleting a highlight on the e-reader does not delete it in Crossbill; the next
-  pull brings it back. Delete it in Crossbill instead, and that deletion reaches
-  every device on its next pull.
+  sync brings it back. Delete it in Crossbill instead, and that deletion reaches
+  every device on its next sync.
 - Page bookmarks are kept untouched; only highlights and notes are replaced.
+- When the book already holds exactly Crossbill's highlights, the pull changes
+  nothing and makes no backup, so routine syncs leave the book's files alone.
+- When something does change, the book's KOReader metadata file is copied to
+  `<book>.sdr/metadata.epub.lua.crossbill-<YYYYMMDD-HHMMSS>.bak` before the
+  rewrite. The three newest backups are kept.
+- The first sync after upgrading rewrites the book's highlights once, and makes
+  one backup: Crossbill stores positions in a normalised form, so its copy
+  differs from the raw positions the device wrote. Later syncs match and leave
+  the book alone.
 - Highlights the server has no position for, or whose position no longer
   resolves in this copy of the book, are skipped and reported in the summary.
-- Before anything is changed, the book's KOReader metadata file is copied to
-  `<book>.sdr/metadata.epub.lua.crossbill-<YYYYMMDD-HHMMSS>.bak`. The three
-  newest backups are kept.
 - Reflowable books (EPUB) only: highlight positions are xpointers, which do not
-  apply to fixed-layout formats such as PDF.
+  apply to fixed-layout formats such as PDF. The pull is skipped for those; the
+  push works as before.
 
 ## Requirements
 
