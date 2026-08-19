@@ -21,6 +21,16 @@ function HighlightExtractor:new(ui)
 	return instance
 end
 
+--- Tell highlights apart from page bookmarks
+-- KOReader keeps both in the same annotations array; page bookmarks have no
+-- drawer and carry a generated "in <chapter>" text, which would otherwise be
+-- uploaded as a highlight.
+-- @param annotation table One item from ReaderAnnotation's annotations
+-- @return boolean True for highlights (with or without a note)
+local function isHighlight(annotation)
+	return annotation.drawer ~= nil
+end
+
 --- Convert a raw annotation to our standard highlight format
 -- @param annotation table The raw annotation object
 -- @return table Formatted highlight object
@@ -57,8 +67,7 @@ function HighlightExtractor:getHighlightsFromMemory()
 	local results = {}
 
 	for _, annotation in ipairs(annotations) do
-		-- Only include highlights and notes, skip other annotation types
-		if annotation.text or annotation.note then
+		if isHighlight(annotation) then
 			table.insert(results, formatHighlight(annotation))
 		end
 	end
@@ -79,7 +88,9 @@ function HighlightExtractor:getHighlightsFromDisk(doc_path)
 	local annotations = doc_settings:readSetting("annotations")
 	if annotations then
 		for _, annotation in ipairs(annotations) do
-			table.insert(results, formatHighlight(annotation))
+			if isHighlight(annotation) then
+				table.insert(results, formatHighlight(annotation))
+			end
 		end
 		logger.dbg("Crossbill Extractor: Found", #results, "highlights in modern format")
 		return results
