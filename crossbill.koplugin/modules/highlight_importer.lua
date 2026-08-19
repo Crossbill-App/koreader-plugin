@@ -179,6 +179,7 @@ local function buildItem(ui, source, start_xpoint, end_xpoint, defaults)
 		pos1 = end_xpoint,
 		text = asString(source.text) or "",
 		datetime = asNonEmptyString(source.datetime),
+		datetime_updated = asNonEmptyString(source.datetime_updated),
 		drawer = (drawer and VALID_DRAWERS[drawer]) and drawer or defaults.drawer,
 		color = asNonEmptyString(source.device_color) or defaults.color,
 		note = asNonEmptyString(source.note),
