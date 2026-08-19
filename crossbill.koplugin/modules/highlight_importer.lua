@@ -2,25 +2,19 @@
 Highlight Importer Module for Crossbill Sync
 
 Replaces the open book's KOReader highlights with the server's copy. The server
-is the master: every highlight is rebuilt from the pulled items, page bookmarks
-are left untouched, and the book's sidecar file is backed up before anything is
-changed.
+is the master: every highlight is rebuilt from the pulled items and page
+bookmarks are left untouched.
 
 Only reflowable (rolling) documents are supported: the pulled positions are
 xpointers, which mean nothing to a fixed-layout document.
 ]]
 
-local DocSettings = require("docsettings")
 local Event = require("ui/event")
 local UIManager = require("ui/uimanager")
-local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 
 local HighlightImporter = {}
 HighlightImporter.__index = HighlightImporter
-
-local BACKUP_MARKER = ".crossbill-"
-local BACKUPS_KEPT = 3
 
 -- Drawers KOReader knows how to paint (highlight_style in readerhighlight.lua).
 -- An unknown drawer would still count as a highlight but draw nothing, so
@@ -60,80 +54,6 @@ local function asNonEmptyString(value)
 		return nil
 	end
 	return text
-end
-
---- Copy a file byte for byte
--- @param source string Path to read from
--- @param target string Path to write to
--- @return boolean Success status
--- @return string|nil Error message
-local function copyFile(source, target)
-	local input, input_err = io.open(source, "rb")
-	if not input then
-		return false, input_err or ("Cannot read " .. source)
-	end
-	local data = input:read("*a")
-	input:close()
-	if not data then
-		return false, "Cannot read " .. source
-	end
-
-	local output, output_err = io.open(target, "wb")
-	if not output then
-		return false, output_err or ("Cannot write " .. target)
-	end
-	local written = output:write(data)
-	output:close()
-	if not written then
-		return false, "Cannot write " .. target
-	end
-
-	return true, nil
-end
-
---- Delete all but the newest backups of one sidecar file
--- @param sidecar_file string Path to the sidecar file the backups belong to
-local function pruneBackups(sidecar_file)
-	local dir, name = sidecar_file:match("^(.*)/([^/]+)$")
-	if not dir or lfs.attributes(dir, "mode") ~= "directory" then
-		return
-	end
-
-	local prefix = name .. BACKUP_MARKER
-	local backups = {}
-	for entry in lfs.dir(dir) do
-		if entry:sub(1, #prefix) == prefix and entry:sub(-4) == ".bak" then
-			table.insert(backups, entry)
-		end
-	end
-
-	-- The timestamps are fixed-width and zero-padded, so the names sort oldest first.
-	table.sort(backups)
-	for i = 1, #backups - BACKUPS_KEPT do
-		os.remove(dir .. "/" .. backups[i])
-	end
-end
-
---- Back up the book's sidecar file alongside itself
--- @param doc_path string Path to the open document
--- @return string|nil Path to the backup, nil when the book has no sidecar file yet
--- @return string|nil Error message
-local function backupSidecar(doc_path)
-	local sidecar_file = DocSettings:findSidecarFile(doc_path)
-	if not sidecar_file then
-		logger.dbg("Crossbill Importer: No sidecar file to back up")
-		return nil, nil
-	end
-
-	local backup_path = sidecar_file .. BACKUP_MARKER .. os.date("%Y%m%d-%H%M%S") .. ".bak"
-	local ok, err = copyFile(sidecar_file, backup_path)
-	if not ok then
-		return nil, err
-	end
-
-	logger.info("Crossbill Importer: Backed up sidecar to", backup_path)
-	pruneBackups(sidecar_file)
-	return backup_path, nil
 end
 
 --- Check that an xpointer resolves somewhere in the open document
@@ -334,7 +254,7 @@ end
 -- @param ui table The KOReader UI context
 -- @param items table Array of highlight items from the server
 -- @return table|nil Result with inserted, skipped_unplaceable, skipped_invalid,
---   kept_bookmarks, backup_path and unchanged, or nil on failure
+--   kept_bookmarks and unchanged, or nil on failure
 -- @return string|nil Error message
 function HighlightImporter:replaceHighlights(ui, items)
 	if not ui.document or not ui.annotation or not ui.annotation.annotations then
@@ -371,15 +291,6 @@ function HighlightImporter:replaceHighlights(ui, items)
 	if #built == 0 and #items > 0 and countBookmarks(ui.annotation.annotations) < #ui.annotation.annotations then
 		return nil, "None of the server's highlights fit this book; nothing changed"
 	end
-
-	ui:handleEvent(Event:new("FlushSettings"))
-
-	local backup_path, backup_err = backupSidecar(ui.document.file)
-	if backup_err then
-		logger.err("Crossbill Importer: Could not back up the sidecar file:", backup_err)
-		return nil, backup_err
-	end
-	result.backup_path = backup_path
 
 	local previous = {}
 	for i, item in ipairs(ui.annotation.annotations) do

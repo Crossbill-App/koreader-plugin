@@ -69,10 +69,6 @@ function UI.showSyncSuccess(result)
 				string.format(_("Skipped: %d without position, %d not in this book."), unplaceable, invalid)
 			)
 		end
-
-		if pull.backup_path then
-			table.insert(parts, _("Backup: ") .. pull.backup_path:gsub(".*/", ""))
-		end
 	end
 
 	if result.pull_error then
