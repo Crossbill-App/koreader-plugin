@@ -59,8 +59,10 @@ local function formatHighlight(annotation)
 end
 
 --- Get highlights directly from ReaderAnnotation's memory
--- This is preferred as it captures annotations not yet flushed to disk
--- @return table|nil Array of highlights, or nil if not available
+-- This is preferred as it captures annotations not yet flushed to disk. An
+-- existing but empty annotations array is authoritative and yields an empty
+-- list: the stale sidecar must not resurrect highlights deleted in memory.
+-- @return table|nil Array of highlights, or nil when ReaderAnnotation is absent
 function HighlightExtractor:getHighlightsFromMemory()
 	if not self.ui.annotation then
 		logger.dbg("Crossbill Extractor: ReaderAnnotation module not available")
@@ -68,7 +70,7 @@ function HighlightExtractor:getHighlightsFromMemory()
 	end
 
 	local annotations = self.ui.annotation.annotations
-	if not annotations or #annotations == 0 then
+	if not annotations then
 		logger.dbg("Crossbill Extractor: No annotations in memory")
 		return nil
 	end

@@ -32,8 +32,11 @@ describe("HighlightExtractor", function()
 			assert.is_nil(extractorFor():getHighlightsFromMemory())
 		end)
 
-		it("returns nil when there are no annotations", function()
-			assert.is_nil(extractorFor({ annotation = annotationModule({}) }):getHighlightsFromMemory())
+		it("returns an empty list when the book has no annotations", function()
+			-- An empty in-memory array is an answer, not an absence: falling
+			-- back to the sidecar here would re-upload highlights the user
+			-- deleted but had not yet flushed to disk.
+			assert.are.same({}, extractorFor({ annotation = annotationModule({}) }):getHighlightsFromMemory())
 		end)
 
 		it("keeps annotations that have a drawer", function()
