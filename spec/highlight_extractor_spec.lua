@@ -101,6 +101,34 @@ describe("HighlightExtractor", function()
 			}, extractor:getHighlightsFromMemory()[1])
 		end)
 
+		it("drops fixed-layout positions, which are coordinate tables", function()
+			local extractor = extractorFor({
+				annotation = annotationModule({
+					{
+						drawer = "lighten",
+						text = "the spice must flow",
+						pos0 = { x = 10, y = 20, page = 3 },
+						pos1 = { x = 90, y = 20, page = 3 },
+					},
+				}),
+			})
+
+			local highlight = extractor:getHighlightsFromMemory()[1]
+
+			assert.is_nil(highlight.start_xpoint)
+			assert.is_nil(highlight.end_xpoint)
+		end)
+
+		it("carries datetime_updated through when the annotation has one", function()
+			local extractor = extractorFor({
+				annotation = annotationModule({
+					{ drawer = "lighten", datetime_updated = "2024-05-02 09:30:00" },
+				}),
+			})
+
+			assert.are.equal("2024-05-02 09:30:00", extractor:getHighlightsFromMemory()[1].datetime_updated)
+		end)
+
 		it("falls back to `page` when the annotation has no `pageno`", function()
 			local extractor = extractorFor({
 				annotation = annotationModule({ { drawer = "lighten", page = 7 } }),
@@ -188,6 +216,41 @@ describe("HighlightExtractor", function()
 			})
 
 			assert.is_nil(extractorFor():getHighlightsFromDisk(DOC_PATH)[1].note)
+		end)
+
+		it("keeps legacy xpointer positions and drops coordinate tables", function()
+			DocSettings.setFixture(DOC_PATH, {
+				highlight = {
+					[1] = {
+						{
+							text = "reflowable",
+							datetime = "2024-01-01 10:00:00",
+							pos0 = "/body/DocFragment[3]/p[1]/text()[0]",
+							pos1 = "/body/DocFragment[3]/p[1]/text()[9]",
+						},
+					},
+					[2] = {
+						{
+							text = "fixed layout",
+							datetime = "2024-01-02 10:00:00",
+							pos0 = { x = 10, y = 20, page = 2 },
+							pos1 = { x = 90, y = 20, page = 2 },
+						},
+					},
+				},
+			})
+
+			-- The legacy format is a map of pages, so the flattened order is not
+			-- guaranteed; look each highlight up by its text.
+			local by_text = {}
+			for _, highlight in ipairs(extractorFor():getHighlightsFromDisk(DOC_PATH)) do
+				by_text[highlight.text] = highlight
+			end
+
+			assert.are.equal("/body/DocFragment[3]/p[1]/text()[0]", by_text["reflowable"].start_xpoint)
+			assert.are.equal("/body/DocFragment[3]/p[1]/text()[9]", by_text["reflowable"].end_xpoint)
+			assert.is_nil(by_text["fixed layout"].start_xpoint)
+			assert.is_nil(by_text["fixed layout"].end_xpoint)
 		end)
 	end)
 
