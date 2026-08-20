@@ -8,7 +8,9 @@ This is a KOReader plugin (Lua) that syncs book highlights and reading sessions 
 
 ## Development
 
-**Testing on device**: Use `copy_to_pocketbook.sh` with a `.env` file containing the path to your device's KOReader plugins folder. The script copies both production and development versions.
+**Testing on device**: Use the Makefile with a `.env` file containing the path to your device's KOReader plugins folder (`KOREADER_PLUGINS_PATH`): `make install` (production), `make install-test` (test version), `make install-all` (both). These wrap `scripts/copy_to_pocketbook.sh`, which builds the test plugin as a renamed copy with its own settings key and databases so both versions can run side by side.
+
+**Linting and formatting**: `make lint` runs luacheck (config in `.luacheckrc`), `make format` runs StyLua (config in `.stylua.toml`), `make check` runs both. Keep `make check` green.
 
 **No build step required** - Lua files are loaded directly by KOReader.
 

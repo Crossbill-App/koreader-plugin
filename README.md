@@ -49,6 +49,21 @@ The default server URL is `http://localhost:8000`. You'll need to change this to
 
 ## Development
 
-You can use `copy_to_pocketbook.sh` script to copy the plugin to a connected Pocketbook device for testing by creating `.env`file
-with your unique path to the device's Koreader plugins folder. The script copies the plugin both as a "production" version and
-as a "development" version letting you to use different server configuration for local testing and production.
+Copy `.env.example` to `.env` and set `KOREADER_PLUGINS_PATH` to your device's KOReader plugins folder, then use the Makefile:
+
+```bash
+make install       # copy the production plugin to the device
+make install-test  # copy the test plugin to the device
+make install-all   # copy both
+make lint          # luacheck
+make format        # stylua
+make check         # lint + formatting check
+make help          # list all targets
+```
+
+The test plugin is a renamed copy of the production one with its own settings key and databases, so both can run side by side
+with different server configurations. `make install`/`install-test`/`install-all` wrap `scripts/copy_to_pocketbook.sh`, which
+can also be called directly with `production`, `test` or `all`.
+
+Linting and formatting need [luacheck](https://github.com/lunarmodules/luacheck) and
+[StyLua](https://github.com/JohnnyMorganz/StyLua); run `make tools` for install commands.
