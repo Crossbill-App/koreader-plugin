@@ -17,84 +17,60 @@ describe("UI", function()
 	end
 
 	describe("showSyncSuccess", function()
-		it("reports what the push uploaded", function()
+		it("reports what the push uploaded, one line per fact", function()
 			UI.showSyncSuccess({ highlights_created = 3, highlights_skipped = 7 })
 
-			assert.are.equal("Uploaded 3 new highlights (7 already there).", shownText())
+			assert.are.equal("Uploaded 3 new highlights.", shownText())
 		end)
 
-		it("counts a sync that uploaded nothing as zero rather than omitting it", function()
+		it("says the highlights are up to date when nothing happened at all", function()
 			UI.showSyncSuccess({})
 
-			assert.are.equal("Uploaded 0 new highlights (0 already there).", shownText())
+			assert.are.equal("Highlights are up to date.", shownText())
 		end)
 
-		it("says nothing about a pull that did not happen", function()
-			-- A fixed-layout book is not pulled, and that is not worth reporting.
-			UI.showSyncSuccess({ highlights_created = 1, highlights_skipped = 0 })
+		it("says the highlights are up to date when the pull found them matching", function()
+			UI.showSyncSuccess({ pull = { unchanged = true, inserted = 0 } })
 
-			assert.is_nil(shownText():find("Pulled", 1, true))
-			assert.is_nil(shownText():find("up to date", 1, true))
+			assert.are.equal("Highlights are up to date.", shownText())
 		end)
 
 		it("reports what the pull brought back", function()
-			UI.showSyncSuccess({ highlights_created = 1, highlights_skipped = 0, pull = { inserted = 12 } })
+			UI.showSyncSuccess({ highlights_created = 1, pull = { inserted = 12 } })
 
-			assert.is_truthy(shownText():find("Pulled 12 from Crossbill.", 1, true))
+			assert.are.equal("Uploaded 1 new highlights.\nPulled 12 highlights from Crossbill.", shownText())
 		end)
 
-		it("says the highlights already matched instead of pulling zero", function()
-			UI.showSyncSuccess({ pull = { unchanged = true, inserted = 0 } })
-
-			assert.is_truthy(shownText():find("Highlights already up to date.", 1, true))
-			assert.is_nil(shownText():find("Pulled", 1, true))
-		end)
-
-		it("reports both kinds of skipped highlight", function()
+		it("sums the two kinds of skipped highlight into one count", function()
 			UI.showSyncSuccess({
 				pull = { inserted = 2, skipped_unplaceable = 3, skipped_invalid = 4 },
 			})
 
-			assert.is_truthy(shownText():find("Skipped: 3 without position, 4 not in this book.", 1, true))
+			assert.are.equal("Pulled 2 highlights from Crossbill.\nSkipped: 7", shownText())
 		end)
 
-		it("mentions skips even when only one kind occurred", function()
-			UI.showSyncSuccess({ pull = { inserted = 2, skipped_invalid = 1 } })
+		it("leaves every zero-valued line out", function()
+			UI.showSyncSuccess({
+				highlights_created = 0,
+				pull = { inserted = 0, skipped_unplaceable = 0, skipped_invalid = 1 },
+			})
 
-			assert.is_truthy(shownText():find("Skipped: 0 without position, 1 not in this book.", 1, true))
-		end)
-
-		it("stays quiet about skips when there were none", function()
-			UI.showSyncSuccess({ pull = { inserted = 2, skipped_unplaceable = 0, skipped_invalid = 0 } })
-
-			assert.is_nil(shownText():find("Skipped", 1, true))
+			assert.are.equal("Skipped: 1", shownText())
 		end)
 
 		it("reports a pull that failed, after the upload that succeeded", function()
 			UI.showSyncSuccess({
 				highlights_created = 3,
-				highlights_skipped = 0,
 				pull_error = "Book not found on Crossbill",
 			})
 
-			assert.are.equal(
-				"Uploaded 3 new highlights (0 already there). Pull failed: Book not found on Crossbill",
-				shownText()
-			)
+			assert.are.equal("Uploaded 3 new highlights.\nPull failed: Book not found on Crossbill", shownText())
 		end)
 
-		it("joins every part into a single message", function()
-			UI.showSyncSuccess({
-				highlights_created = 1,
-				highlights_skipped = 2,
-				pull = { inserted = 5, skipped_unplaceable = 1, skipped_invalid = 0 },
-			})
+		it("shows the message long enough to read it", function()
+			UI.showSyncSuccess({ pull = { inserted = 1 } })
 
-			assert.are.equal(
-				"Uploaded 1 new highlights (2 already there). Pulled 5 from Crossbill. "
-					.. "Skipped: 1 without position, 0 not in this book.",
-				shownText()
-			)
+			assert.are.equal(6, UIManager.show.calls[1].vals[2].timeout)
 		end)
 	end)
 end)

@@ -45,37 +45,33 @@ end
 --- Show the outcome of a sync: what was uploaded, and what the pull brought back
 -- @param result table Sync result with the upload counts and the pull outcome
 function UI.showSyncSuccess(result)
-	local parts = {
-		string.format(
-			_("Uploaded %d new highlights (%d already there)."),
-			result.highlights_created or 0,
-			result.highlights_skipped or 0
-		),
-	}
+	local lines = {}
 
-	local pull = result.pull
-	if pull then
-		if pull.unchanged then
-			table.insert(parts, _("Highlights already up to date."))
-		else
-			table.insert(parts, string.format(_("Pulled %d from Crossbill."), pull.inserted or 0))
-		end
+	local uploaded = result.highlights_created or 0
+	if uploaded > 0 then
+		table.insert(lines, string.format(_("Uploaded %d new highlights."), uploaded))
+	end
 
-		local unplaceable = pull.skipped_unplaceable or 0
-		local invalid = pull.skipped_invalid or 0
-		if unplaceable > 0 or invalid > 0 then
-			table.insert(
-				parts,
-				string.format(_("Skipped: %d without position, %d not in this book."), unplaceable, invalid)
-			)
-		end
+	local pull = result.pull or {}
+	local pulled = pull.inserted or 0
+	if pulled > 0 then
+		table.insert(lines, string.format(_("Pulled %d highlights from Crossbill."), pulled))
+	end
+
+	local skipped = (pull.skipped_unplaceable or 0) + (pull.skipped_invalid or 0)
+	if skipped > 0 then
+		table.insert(lines, string.format(_("Skipped: %d"), skipped))
 	end
 
 	if result.pull_error then
-		table.insert(parts, _("Pull failed: ") .. tostring(result.pull_error))
+		table.insert(lines, _("Pull failed: ") .. tostring(result.pull_error))
 	end
 
-	UI.showMessage(table.concat(parts, " "), 4)
+	if #lines == 0 then
+		table.insert(lines, _("Highlights are up to date."))
+	end
+
+	UI.showMessage(table.concat(lines, "\n"), 6)
 end
 
 --- Show sync error message
