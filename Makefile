@@ -52,3 +52,4 @@ tools: ## Print how to install the lint/format/test tools
 	@echo "luacheck: luarocks install luacheck"
 	@echo "stylua:   cargo install stylua   (or: npm install -g @johnnymorganz/stylua-bin)"
 	@echo "busted:   luarocks --lua-version=5.1 install busted"
+	@echo "prek:     uv tool install prek; then 'prek install' to run these as a pre-commit hook"

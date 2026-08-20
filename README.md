@@ -66,6 +66,10 @@ The test plugin is a renamed copy of the production one with its own settings ke
 with different server configurations. `make install`/`install-test`/`install-all` wrap `scripts/copy_to_pocketbook.sh`, which
 can also be called directly with `production`, `test` or `all`.
 
+The same checks can run as a git pre-commit hook via [prek](https://prek.j178.dev):
+`uv tool install prek`, then `prek install` in the repo — every commit then runs
+stylua and luacheck on the staged Lua files and the busted suite.
+
 Linting, formatting and testing need [luacheck](https://github.com/lunarmodules/luacheck),
 [StyLua](https://github.com/JohnnyMorganz/StyLua) and [busted](https://lunarmodules.github.io/busted/);
 run `make tools` for install commands.

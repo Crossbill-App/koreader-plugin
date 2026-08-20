@@ -1,0 +1,26 @@
+# Pre-commit hooks, run with prek (https://prek.j178.dev): `prek install` once,
+# then every commit runs the same checks as `make check`, scoped to staged files
+# where the tool allows it. The tools themselves come from `make tools`.
+repos:
+  - repo: local
+    hooks:
+      - id: stylua
+        name: stylua --check
+        entry: stylua --check
+        language: system
+        types: [lua]
+        exclude: ^examples/
+
+      - id: luacheck
+        name: luacheck
+        entry: luacheck
+        language: system
+        types: [lua]
+        exclude: ^examples/
+
+      - id: busted
+        name: busted
+        entry: busted
+        language: system
+        pass_filenames: false
+        types: [lua]
