@@ -57,7 +57,8 @@ make install-test  # copy the test plugin to the device
 make install-all   # copy both
 make lint          # luacheck
 make format        # stylua
-make check         # lint + formatting check
+make test          # busted unit tests
+make check         # lint + formatting check + tests
 make help          # list all targets
 ```
 
@@ -65,5 +66,23 @@ The test plugin is a renamed copy of the production one with its own settings ke
 with different server configurations. `make install`/`install-test`/`install-all` wrap `scripts/copy_to_pocketbook.sh`, which
 can also be called directly with `production`, `test` or `all`.
 
-Linting and formatting need [luacheck](https://github.com/lunarmodules/luacheck) and
-[StyLua](https://github.com/JohnnyMorganz/StyLua); run `make tools` for install commands.
+Linting, formatting and testing need [luacheck](https://github.com/lunarmodules/luacheck),
+[StyLua](https://github.com/JohnnyMorganz/StyLua) and [busted](https://lunarmodules.github.io/busted/);
+run `make tools` for install commands.
+
+### Tests
+
+Unit tests live in `spec/` and run under busted, the same framework KOReader itself uses:
+
+```bash
+make test                        # the whole suite
+busted spec/settings_spec.lua    # one file
+busted --filter "ISBN"           # tests whose name matches
+```
+
+The plugin's modules `require` things that only exist inside KOReader (`logger`, `docsettings`,
+`ffi/sha2`). `spec/support/koreader/` holds thin stand-ins for those, and `.busted` puts that
+directory on `package.path`, so the plugin sources need no test-only branches. See
+[`spec/support/koreader/README.md`](spec/support/koreader/README.md) before adding a stub.
+
+Tests target Lua 5.1, matching the LuaJIT that KOReader runs plugins on.

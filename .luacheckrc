@@ -18,3 +18,8 @@ exclude_files = {
 	-- Captured KOReader metadata used as a test fixture, not our source.
 	"examples/",
 }
+
+-- Specs run under busted, which injects describe/it/assert and friends.
+files["spec/**/*_spec.lua"] = {
+	std = "luajit+busted",
+}
