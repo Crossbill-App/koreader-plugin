@@ -19,6 +19,7 @@ local SessionTracker = require("modules/sessiontracker")
 local DigestCache = require("modules/digest_cache")
 local DigestService = require("modules/digest_service")
 local FileUploader = require("modules/file_uploader")
+local HighlightImporter = require("modules/highlight_importer")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
@@ -77,9 +78,18 @@ function CrossbillSync:init()
 	self.digest_cache:init(DataStorage:getSettingsDir())
 	self.digest_service = DigestService:new(self.api_client, self.digest_cache)
 
+	-- Initialize the importer that writes pulled highlights back to the book
+	self.highlight_importer = HighlightImporter:new()
+
 	-- Initialize sync service with all dependencies
-	self.sync_service =
-		SyncService:new(self.api_client, self.file_uploader, self.session_tracker, self.settings, self.digest_service)
+	self.sync_service = SyncService:new(
+		self.api_client,
+		self.file_uploader,
+		self.session_tracker,
+		self.settings,
+		self.digest_service,
+		self.highlight_importer
+	)
 
 	-- Register menu
 	self.ui.menu:registerToMainMenu(self)
@@ -267,7 +277,7 @@ function CrossbillSync:doSync(is_autosync)
 
 	-- Show success message for manual syncs
 	if not is_autosync then
-		UI.showSyncSuccess(result.highlights_created, result.highlights_skipped)
+		UI.showSyncSuccess(result)
 	end
 end
 

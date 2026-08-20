@@ -39,14 +39,39 @@ end
 
 --- Show a syncing in progress message
 function UI.showSyncingMessage()
-	UI.showMessage(_("Syncing highlights..."), 2)
+	UI.showMessage(_("Syncing with Crossbill..."), 2)
 end
 
---- Show sync success message
--- @param created number Number of new highlights
--- @param skipped number Number of duplicate highlights
-function UI.showSyncSuccess(created, skipped)
-	UI.showMessage(string.format(_("Synced successfully!\n%d new, %d duplicates"), created or 0, skipped or 0), 3)
+--- Show the outcome of a sync: what was uploaded, and what the pull brought back
+-- @param result table Sync result with the upload counts and the pull outcome
+function UI.showSyncSuccess(result)
+	local lines = {}
+
+	local uploaded = result.highlights_created or 0
+	if uploaded > 0 then
+		table.insert(lines, string.format(_("Uploaded %d new highlights."), uploaded))
+	end
+
+	local pull = result.pull or {}
+	local pulled = pull.inserted or 0
+	if pulled > 0 then
+		table.insert(lines, string.format(_("Pulled %d highlights from Crossbill."), pulled))
+	end
+
+	local skipped = (pull.skipped_unplaceable or 0) + (pull.skipped_invalid or 0)
+	if skipped > 0 then
+		table.insert(lines, string.format(_("Skipped: %d"), skipped))
+	end
+
+	if result.pull_error then
+		table.insert(lines, _("Pull failed: ") .. tostring(result.pull_error))
+	end
+
+	if #lines == 0 then
+		table.insert(lines, _("Highlights are up to date."))
+	end
+
+	UI.showMessage(table.concat(lines, "\n"), 6)
 end
 
 --- Show sync error message

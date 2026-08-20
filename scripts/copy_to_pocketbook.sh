@@ -91,9 +91,9 @@ install_test() {
         -e 's/crossbill_sync_current_book/crossbill_test_sync_current_book/g' \
         -e 's/crossbill_show_chapter_summary/crossbill_test_show_chapter_summary/g' \
         -e 's/CrossbillSyncCurrentBook/CrossbillTestSyncCurrentBook/g' \
-        -e 's/CrossbillShowChapterSummary/CrossbillTestShowChapterSummary/g' \
+        -e 's/CrossbillShowChapterDigest/CrossbillTestShowChapterDigest/g' \
         -e 's/Sync current book with Crossbill/Sync current book with Crossbill Test/' \
-        -e 's/Crossbill chapter summary/Crossbill Test chapter summary/' \
+        -e 's/Crossbill chapter digest/Crossbill Test chapter digest/' \
         "$test_dir/main.lua"
     # Update require paths to use renamed modules directory (in main.lua and all module files)
     find "$test_dir" -name "*.lua" -exec sed -i 's|require("modules/|require("test_modules/|g' {} \;

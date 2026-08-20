@@ -84,16 +84,52 @@ describe("Settings", function()
 			assert.are.equal("ada", settings:getUsername())
 		end)
 
-		it("does not persist until save is called", function()
+		it("writes through to the namespace load registered", function()
+			-- `load` registers the plugin's table with G_reader_settings so that
+			-- instances and the shared accessors below all see one table; a set
+			-- is therefore visible without waiting for `save`.
 			Settings:new():load():set("username", "ada")
 
-			assert.is_nil(written())
+			assert.are.equal("ada", written().username)
 		end)
 
 		it("persists the whole settings table on save", function()
 			Settings:new():load():set("username", "ada"):save()
 
 			assert.are.equal("ada", written().username)
+		end)
+	end)
+
+	describe("shared namespace access", function()
+		it("reads a value an instance stored", function()
+			Settings:new():load():set("device_uuid", "abc-123"):save()
+
+			assert.are.equal("abc-123", Settings.readShared("device_uuid"))
+		end)
+
+		it("is nil for a key nothing has stored", function()
+			assert.is_nil(Settings.readShared("device_uuid"))
+		end)
+
+		it("persists a value an instance then loads", function()
+			Settings.saveShared("device_uuid", "abc-123")
+
+			assert.are.equal("abc-123", Settings:new():load():get("device_uuid"))
+		end)
+
+		it("registers the namespace when nothing was persisted", function()
+			Settings.saveShared("device_uuid", "abc-123")
+
+			assert.are.equal("abc-123", written().device_uuid)
+		end)
+
+		it("leaves the settings an instance already loaded intact", function()
+			local settings = Settings:new():load():setUsername("ada")
+
+			Settings.saveShared("device_uuid", "abc-123")
+
+			assert.are.equal("ada", settings:getUsername())
+			assert.are.equal("abc-123", settings:get("device_uuid"))
 		end)
 	end)
 

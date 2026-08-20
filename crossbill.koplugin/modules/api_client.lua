@@ -34,12 +34,13 @@ function ApiClient:getApiUrl()
 end
 
 --- Upload highlights to the server
--- @param book_data table Book metadata
+-- @param client_book_id string The client-side book ID (hash of title|author)
 -- @param highlights table Array of highlights
+-- @param device_id string|nil Identifier of the device the highlights came from
 -- @return boolean Success status
 -- @return table|nil Response data containing book_id, highlights_created, highlights_skipped
 -- @return string|nil Error message
-function ApiClient:uploadHighlights(client_book_id, highlights)
+function ApiClient:uploadHighlights(client_book_id, highlights, device_id)
 	local token, auth_err = self.auth:getValidToken()
 	if not token then
 		return false, nil, auth_err or "Authentication failed"
@@ -48,6 +49,7 @@ function ApiClient:uploadHighlights(client_book_id, highlights)
 	local payload = {
 		client_book_id = client_book_id,
 		highlights = highlights,
+		device_id = device_id,
 	}
 
 	local api_url = self:getApiUrl() .. "/highlights/upload"
@@ -131,6 +133,49 @@ function ApiClient:getBookDigest(client_book_id)
 		return code, nil, nil
 	else
 		logger.warn("Crossbill API: Fetch book digests failed with code:", code)
+		return code, nil, "Fetch failed: " .. tostring(code)
+	end
+end
+
+--- Get a book's highlights from the server by client_book_id
+-- The server is the master copy: this returns every live highlight of the book,
+-- including ones made on other devices.
+-- @param client_book_id string The client-side book ID (hash of title|author)
+-- @return number|nil HTTP status code
+-- @return table|nil Array of highlight items, empty when the book has none
+-- @return string|nil Error message
+function ApiClient:getHighlights(client_book_id)
+	local token, auth_err = self.auth:getValidToken()
+	if not token then
+		return nil, nil, auth_err or "Authentication failed"
+	end
+
+	local api_url = self:getApiUrl() .. "/ereader/books/" .. client_book_id .. "/highlights"
+	logger.dbg("Crossbill API: Fetching highlights from", api_url)
+
+	local code, response_data, err = Network.getJson(api_url, token)
+
+	if not code then
+		logger.err("Crossbill API: Network error fetching highlights:", err)
+		return nil, nil, err or "Network error"
+	end
+
+	if code == 200 and response_data then
+		-- An empty list decodes to the JSON library's array marker rather than a
+		-- plain table, so copy the items into one.
+		local items = {}
+		if type(response_data.items) == "table" then
+			for _, item in ipairs(response_data.items) do
+				table.insert(items, item)
+			end
+		end
+		logger.dbg("Crossbill API: Fetched", #items, "highlights")
+		return code, items, nil
+	elseif code == 404 then
+		logger.dbg("Crossbill API: Book not found for highlights (404)")
+		return code, nil, nil
+	else
+		logger.warn("Crossbill API: Fetch highlights failed with code:", code)
 		return code, nil, "Fetch failed: " .. tostring(code)
 	end
 end
