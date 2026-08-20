@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Versions are pinned so a tool release can't turn CI red on its own;
       # bump them deliberately and run `make format` in the same commit.
@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Lua 5.1 rather than a newer release: KOReader runs plugins on LuaJIT,
       # which is 5.1-compatible, so the tests see the language the device does.
