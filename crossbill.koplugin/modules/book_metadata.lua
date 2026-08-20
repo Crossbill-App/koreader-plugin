@@ -9,7 +9,6 @@ Extracts book metadata from KOReader documents including:
 ]]
 
 local DocSettings = require("docsettings")
-local FileManagerBookInfo = require("apps/filemanager/filemanagerbookinfo")
 local logger = require("logger")
 local md5 = require("ffi/sha2").md5
 

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Lint and format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Versions are pinned so a tool release can't turn CI red on its own;
+      # bump them deliberately and run `make format` in the same commit.
+      - name: Install luacheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends luarocks
+          sudo luarocks install luacheck 1.2.0
+
+      - name: Install stylua
+        run: npm install -g @johnnymorganz/stylua-bin@2.5.2
+
+      - name: Lint
+        run: make lint
+
+      # Runs even when linting failed, so one CI run reports both problems.
+      - name: Check formatting
+        if: ${{ !cancelled() }}
+        run: make format-check

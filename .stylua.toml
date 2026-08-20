@@ -1,0 +1,6 @@
+# Matches the existing plugin sources and KOReader's own formatting.
+column_width = 120
+indent_type = "Tabs"
+indent_width = 4
+quote_style = "AutoPreferDouble"
+call_parentheses = "Always"
