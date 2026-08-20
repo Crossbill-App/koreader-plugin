@@ -1,4 +1,6 @@
 local SyncService = require("modules/sync_service")
+local DocSettings = require("docsettings")
+local GlobalSettingsFake = require("global_settings_fake")
 
 local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
 
@@ -266,6 +268,127 @@ describe("SyncService", function()
 			assert.has_no.errors(function()
 				service:_stampNoteEdits(readerFor())
 			end)
+		end)
+	end)
+
+	describe("syncBook", function()
+		local fake
+
+		before_each(function()
+			DocSettings.reset()
+			fake = GlobalSettingsFake.install()
+		end)
+
+		after_each(function()
+			fake.uninstall()
+		end)
+
+		--- Build the api client syncBook talks to, every call succeeding
+		-- @param overrides table|nil Functions to replace
+		-- @return table An api client recording what it was given
+		local function apiForSyncBook(overrides)
+			local api = {
+				getBookMetadata = function()
+					return 200, { book_id = 1 }
+				end,
+				uploadHighlights = function(self, _, highlights, device_id)
+					self.uploaded = { highlights = highlights, device_id = device_id }
+					return true, { highlights_created = #highlights, highlights_skipped = 0 }
+				end,
+				getHighlights = function()
+					return 200, {}
+				end,
+				uploadReadingSessions = function(self, _, sessions)
+					self.sessions_uploaded = sessions
+					return true, {}
+				end,
+			}
+			for name, fn in pairs(overrides or {}) do
+				api[name] = fn
+			end
+			return api
+		end
+
+		--- Build the full reader context syncBook walks through
+		-- @param annotations table The in-memory annotation array
+		-- @return table A stand-in for `self.ui`
+		local function bookFor(annotations)
+			return {
+				rolling = true,
+				document = { file = "/books/dune.epub" },
+				doc_props = { title = "Dune", authors = "Frank Herbert" },
+				annotation = { annotations = annotations },
+			}
+		end
+
+		local function serviceFor(api, opts)
+			opts = opts or {}
+			local settings = {
+				isSessionTrackingEnabled = function()
+					return opts.session_tracker ~= nil
+				end,
+			}
+			local file_uploader = {
+				uploadEpub = function()
+					return true
+				end,
+			}
+			return SyncService:new(api, file_uploader, opts.session_tracker, settings, nil, opts.highlight_importer)
+		end
+
+		it("stamps an edited note before the highlights are extracted", function()
+			local api = apiForSyncBook()
+			local edited = {
+				drawer = "lighten",
+				pos0 = "/body/DocFragment[3]/p[1]/text()[0]",
+				pos1 = "/body/DocFragment[3]/p[1]/text()[9]",
+				text = "a passage",
+				note = "edited on the device",
+				crossbill_note_seen = "what the server holds",
+				datetime = "2024-01-01 10:00:00",
+			}
+			local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+			service:syncBook(bookFor({ edited }))
+
+			assert.are.equal(1, #api.uploaded.highlights)
+			assert.is_string(api.uploaded.highlights[1].datetime_updated)
+		end)
+
+		it("sends the device id with the highlights", function()
+			local api = apiForSyncBook()
+			local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+			service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+			assert.is_string(api.uploaded.device_id)
+			assert.is_not.equal("", api.uploaded.device_id)
+		end)
+
+		it("still uploads reading sessions when the pull failed", function()
+			local api = apiForSyncBook({
+				getHighlights = function()
+					return 500, nil, "server exploded"
+				end,
+			})
+			local session_tracker = {
+				getBookFileHash = function()
+					return "hash"
+				end,
+				getUnsyncedSessionsForBook = function()
+					return { { id = 7 } }
+				end,
+				markSessionsSynced = function(self, ids)
+					self.marked = ids
+				end,
+			}
+			local service = serviceFor(api, { session_tracker = session_tracker })
+
+			local result = service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+			assert.is_truthy(result.pull_error)
+			assert.are.equal(1, result.sessions_synced)
+			assert.are.same({ 7 }, session_tracker.marked)
 		end)
 	end)
 end)

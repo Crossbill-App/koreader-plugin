@@ -3,7 +3,10 @@ Stub for KOReader's `random`.
 
 The plugin calls `random.uuid()` once, to name a device that KOReader itself has
 not named. A random value would make the resulting id unassertable, so the stub
-hands out a fixed sequence instead, in the hyphenated shape the real one returns:
+hands out a fixed sequence instead. The real `uuid()` returns 32 uppercase hex
+characters with no dashes unless called as `uuid(true)`; the stub's hyphenated
+lowercase values are deliberately unlike it, proving that device_identity
+normalises whatever shape it is given:
 
 	random.uuid()  -- "00000000-0000-4000-8000-000000000001"
 

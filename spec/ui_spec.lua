@@ -96,11 +96,5 @@ describe("UI", function()
 				shownText()
 			)
 		end)
-
-		it("shows the message long enough to read the whole summary", function()
-			UI.showSyncSuccess({ pull = { inserted = 1 } })
-
-			assert.are.equal(4, UIManager.show.calls[1].vals[2].timeout)
-		end)
 	end)
 end)

@@ -518,6 +518,34 @@ describe("HighlightImporter", function()
 			assert.are.equal("kept", highlights[1].text)
 		end)
 
+		it("removes every stale highlight, not only the alternate ones", function()
+			-- A forward walk over the array while removing would shift the
+			-- survivors onto indexes already visited; three stale highlights in
+			-- a row plus an interleaved bookmark catch what one cannot.
+			local reader = readerFor({
+				annotations = {
+					deviceHighlight({ text = "stale 1" }),
+					deviceHighlight({ text = "stale 2", pos0 = XPOINT_C, pos1 = XPOINT_D }),
+					{ text = "in Chapter 2" },
+					deviceHighlight({ text = "stale 3", pos0 = XPOINT_A, pos1 = XPOINT_D }),
+				},
+			})
+
+			local result = importer:replaceHighlights(reader, { serverItem({ text = "fresh" }) })
+
+			local highlights = highlightsOf(reader)
+			assert.are.equal(1, #highlights)
+			assert.are.equal("fresh", highlights[1].text)
+			assert.are.equal(1, result.kept_bookmarks)
+			assert.are.equal("in Chapter 2", reader.annotations[1].text)
+		end)
+
+		-- Crossbill-App/crossbill-web#595: when the server sends an item this
+		-- copy of the book cannot place, the wholesale replace also deletes the
+		-- device's own valid copy of that highlight. Blocked on deciding between
+		-- server-side last-pusher-wins xpoints and a wider client guard.
+		pending("keeps the device's copy of a highlight the server sent but this book cannot place")
+
 		it("keeps page bookmarks and counts them", function()
 			local reader = readerFor({
 				annotations = { { text = "in Chapter 2" }, deviceHighlight({ text = "old" }) },
