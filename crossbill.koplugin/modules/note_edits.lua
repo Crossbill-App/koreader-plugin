@@ -16,8 +16,12 @@ local NoteEdits = {}
 
 --- Stamp every highlight whose note changed since the last sync
 -- A highlight seen for the first time is stamped only when it already carries a
--- note: that note was written before the plugin started tracking edits and has
--- never reached the server, so it should win rather than be reverted.
+-- note. Earlier plugin versions did upload notes, so the server usually holds
+-- the same text and the fresh stamp changes nothing; when the two differ, this
+-- one-time-per-device stamp makes the local text win whatever its real age.
+-- Between devices the merge is therefore last-sync-wins, not last-edit-wins:
+-- KOReader records no edit time for note text, so sync time is the best
+-- ordering available.
 -- @param annotations table The reader's live annotation array
 -- @return number Number of highlights stamped
 function NoteEdits.stamp(annotations)
