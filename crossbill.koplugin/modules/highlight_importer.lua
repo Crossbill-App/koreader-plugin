@@ -248,9 +248,9 @@ end
 
 --- Replace the open book's highlights with the server's copy
 -- Returns early when the book already holds exactly the server's highlights, so
--- a sync that changed nothing neither rewrites the sidecar nor backs it up.
--- Otherwise backs up the sidecar file first, keeps page bookmarks, and flushes
--- the new set to disk before returning.
+-- a sync that changed nothing does not rewrite the sidecar. Otherwise keeps
+-- page bookmarks, replaces the highlights, and flushes the new set to disk
+-- before returning.
 -- @param ui table The KOReader UI context
 -- @param items table Array of highlight items from the server
 -- @return table|nil Result with inserted, skipped_unplaceable, skipped_invalid,
