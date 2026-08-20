@@ -32,3 +32,22 @@ jobs:
       - name: Check formatting
         if: ${{ !cancelled() }}
         run: make format-check
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Lua 5.1 rather than a newer release: KOReader runs plugins on LuaJIT,
+      # which is 5.1-compatible, so the tests see the language the device does.
+      - name: Install busted
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.1 liblua5.1-0-dev luarocks
+          sudo luarocks --lua-version=5.1 install busted 2.3.0
+
+      - name: Run tests
+        run: make test

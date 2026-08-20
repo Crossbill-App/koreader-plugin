@@ -10,7 +10,11 @@ This is a KOReader plugin (Lua) that syncs book highlights and reading sessions 
 
 **Testing on device**: Use the Makefile with a `.env` file containing the path to your device's KOReader plugins folder (`KOREADER_PLUGINS_PATH`): `make install` (production), `make install-test` (test version), `make install-all` (both). These wrap `scripts/copy_to_pocketbook.sh`, which builds the test plugin as a renamed copy with its own settings key and databases so both versions can run side by side.
 
-**Linting and formatting**: `make lint` runs luacheck (config in `.luacheckrc`), `make format` runs StyLua (config in `.stylua.toml`), `make check` runs both. Keep `make check` green.
+**Linting and formatting**: `make lint` runs luacheck (config in `.luacheckrc`), `make format` runs StyLua (config in `.stylua.toml`).
+
+**Unit tests**: `make test` runs busted over `spec/` (config in `.busted`). Specs are named `<module>_spec.lua` and target Lua 5.1, matching the LuaJIT KOReader runs plugins on. Because the plugin's modules `require` KOReader internals that do not exist outside the reader, `spec/support/koreader/` holds thin stand-ins (`logger`, `docsettings`, `ffi/sha2`) that `.busted` puts on `package.path` — so plugin sources never need test-only branches. `G_reader_settings` is a global rather than a module; `spec/support/global_settings_fake.lua` installs and restores it around a test. When one test needs different behaviour, prefer busted's `stub`/`spy` over growing a stub module.
+
+`make check` runs lint, the formatting check and the tests. Keep `make check` green.
 
 **No build step required** - Lua files are loaded directly by KOReader.
 

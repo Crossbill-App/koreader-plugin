@@ -1,0 +1,15 @@
+-- busted configuration for the Crossbill KOReader plugin.
+-- Run with `make test` (or `busted` directly from the repo root).
+return {
+	_all = {
+		-- The plugin's own modules resolve as `modules/<name>`, exactly as they
+		-- do inside KOReader. `spec/support/koreader` shadows the KOReader
+		-- runtime modules (logger, docsettings, ffi/sha2, ...) that are not
+		-- available outside the reader; see spec/support/koreader/README.md.
+		lpath = "crossbill.koplugin/?.lua;spec/support/koreader/?.lua;spec/support/?.lua",
+	},
+	default = {
+		ROOT = { "spec" },
+		pattern = "_spec%.lua$",
+	},
+}
