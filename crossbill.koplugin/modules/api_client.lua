@@ -73,13 +73,19 @@ function ApiClient:_authorizedGet(path, what)
 end
 
 --- Upload highlights to the server
+-- Removals ride inside the upload rather than in a call of their own: one round
+-- trip on an e-reader's WiFi, and one server transaction, so a sync cannot die
+-- between the two halves. The field is left out entirely when there is nothing
+-- to remove, which is the payload every older plugin sent.
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @param highlights table Array of highlights
 -- @param device_id string|nil Identifier of the device the highlights came from
+-- @param removed_ids table|nil Server ids of highlights deleted on this device
 -- @return boolean Success status
--- @return table|nil Response data containing book_id, highlights_created, highlights_skipped
+-- @return table|nil Response data containing book_id, highlights_created,
+--   highlights_skipped, highlights_removed
 -- @return string|nil Error message
-function ApiClient:uploadHighlights(client_book_id, highlights, device_id)
+function ApiClient:uploadHighlights(client_book_id, highlights, device_id, removed_ids)
 	local token, auth_err = self.auth:getValidToken()
 	if not token then
 		return false, nil, auth_err or "Authentication failed"
@@ -87,8 +93,12 @@ function ApiClient:uploadHighlights(client_book_id, highlights, device_id)
 
 	local payload = {
 		client_book_id = client_book_id,
-		highlights = highlights,
+		-- An empty Lua table encodes as a JSON object, which the server rejects
+		-- where it expects a list. A removal-only push carries no highlights, so
+		-- the empty case has to be the decoder's array marker.
+		highlights = (#highlights > 0) and highlights or empty_array,
 		device_id = device_id,
+		removed_ids = (removed_ids and #removed_ids > 0) and removed_ids or nil,
 	}
 
 	local api_url = self:getApiUrl() .. "/highlights/upload"

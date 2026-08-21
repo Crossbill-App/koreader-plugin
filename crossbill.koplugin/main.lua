@@ -9,6 +9,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Dispatcher = require("dispatcher")
 local logger = require("logger")
 local DataStorage = require("datastorage")
+local Trapper = require("ui/trapper")
 local _ = require("gettext")
 
 local Settings = require("modules/settings")
@@ -239,6 +240,26 @@ function CrossbillSync:performSync(is_autosync)
 		return
 	end
 
+	if is_autosync then
+		-- An autosync runs while the book is being torn down and has nobody to
+		-- put a question to, so it stays a plain call that never blocks.
+		self:_runSync(true)
+		return
+	end
+
+	-- A manual sync may have to ask before withdrawing highlights from the
+	-- reader's other devices, and a ConfirmBox can only block inside a Trapper
+	-- coroutine. Everything after the question -- the summary, the restarted
+	-- session, the WiFi cleanup -- has to resume in that same coroutine, so the
+	-- whole sync goes inside the wrapper rather than just the dialog.
+	Trapper:wrap(function()
+		self:_runSync(false)
+	end)
+end
+
+--- Run one sync from start to finish, including what has to follow it
+-- @param is_autosync boolean If true, run in silent mode
+function CrossbillSync:_runSync(is_autosync)
 	if not is_autosync then
 		UI.showSyncingMessage()
 	end
@@ -271,7 +292,10 @@ end
 --- Execute the sync workflow
 -- @param is_autosync boolean If true, run in silent mode
 function CrossbillSync:doSync(is_autosync)
-	local result = self.sync_service:syncBook(self.ui)
+	local result = self.sync_service:syncBook(self.ui, {
+		-- Only a manual sync has a reader in front of it to answer.
+		confirm_removal = (not is_autosync) and UI.confirmRemoveAll or nil,
+	})
 
 	if not result.success and not is_autosync then
 		if result.error and result.error:match("^Authentication") then
