@@ -16,27 +16,32 @@ local logger = require("logger")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
 local HighlightExtractor = require("modules/highlight_extractor")
+local HighlightImporter = require("modules/highlight_importer")
 local NoteEdits = require("modules/note_edits")
 
 local SyncService = {}
 SyncService.__index = SyncService
 
 --- Create a new SyncService instance
--- @param api_client ApiClient instance for server communication
--- @param file_uploader FileUploader instance for file uploads
--- @param session_tracker SessionTracker instance for reading sessions
--- @param settings Settings instance for configuration
--- @param digest_service DigestService instance for digest refresh
--- @param highlight_importer HighlightImporter instance for the pull
+-- Collaborators come in a table rather than positionally: a caller that wants
+-- only some of them (a test, or a sync path that skips the digest refresh) can
+-- name those instead of counting nils.
+-- @param deps table Collaborators, all optional except api_client:
+--   api_client ApiClient instance for server communication
+--   file_uploader FileUploader instance for file uploads
+--   session_tracker SessionTracker instance for reading sessions
+--   settings Settings instance for configuration
+--   digest_service DigestService instance for digest refresh
+--   highlight_importer HighlightImporter instance for the pull
 -- @return SyncService instance
-function SyncService:new(api_client, file_uploader, session_tracker, settings, digest_service, highlight_importer)
+function SyncService:new(deps)
 	local instance = setmetatable({}, SyncService)
-	instance.api_client = api_client
-	instance.file_uploader = file_uploader
-	instance.session_tracker = session_tracker
-	instance.settings = settings
-	instance.digest_service = digest_service
-	instance.highlight_importer = highlight_importer
+	instance.api_client = deps.api_client
+	instance.file_uploader = deps.file_uploader
+	instance.session_tracker = deps.session_tracker
+	instance.settings = deps.settings
+	instance.digest_service = deps.digest_service
+	instance.highlight_importer = deps.highlight_importer
 	return instance
 end
 
@@ -152,9 +157,9 @@ end
 -- @param ui table The KOReader UI context
 -- @param client_book_id string The client book ID
 function SyncService:_applyPull(result, ui, client_book_id)
-	if not ui.rolling then
-		-- Pulled positions are xpointers, which mean nothing to a fixed-layout
-		-- book. Not a failure, so it is not worth reporting to the user.
+	if not HighlightImporter.isSupportedBook(ui) then
+		-- A book the importer cannot place highlights into is not a failure, so
+		-- it is not worth reporting to the user.
 		logger.dbg("Crossbill SyncService: No highlight pull for a fixed-layout book")
 		return
 	end
@@ -319,23 +324,6 @@ function SyncService:_getServerBookMetadata(client_book_id)
 	end
 
 	return metadata
-end
-
---- Upload reading sessions opportunistically (called from main when already online)
--- @param ui table The KOReader UI context
--- @return boolean Success status
--- @return number Number of sessions synced
-function SyncService:uploadReadingSessionsIfOnline(ui)
-	if not ui.document then
-		return true, 0
-	end
-
-	local book_metadata = BookMetadata:new(ui)
-	local book_data = book_metadata:extractBookData()
-	local doc_path = book_metadata:getDocPath()
-
-	local result = self:_syncReadingSessions(ui, book_data.client_book_id, doc_path)
-	return result.success, result.synced
 end
 
 return SyncService

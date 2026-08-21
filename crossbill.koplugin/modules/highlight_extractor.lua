@@ -1,13 +1,17 @@
 --[[
 Highlight Extractor Module for Crossbill Sync
 
-Extracts highlights from KOReader documents.
-Supports both modern annotations format and legacy highlight format.
+Extracts highlights from KOReader documents, from ReaderAnnotation's memory or
+from the sidecar on disk.
 Also handles chapter number mapping from table of contents.
 ]]
 
 local DocSettings = require("docsettings")
 local logger = require("logger")
+local TitleMatch = require("modules/title_match")
+
+-- Chapter titles are matched the same way everywhere; see modules/title_match.
+local normalizeTitle = TitleMatch.normalize
 
 local HighlightExtractor = {}
 HighlightExtractor.__index = HighlightExtractor
@@ -89,61 +93,28 @@ function HighlightExtractor:getHighlightsFromMemory()
 end
 
 --- Get highlights from document settings file (disk)
--- Supports both modern annotations format and legacy highlight format
+-- Only the annotations format is read. KOReader migrates a pre-ReaderAnnotation
+-- sidecar the moment it opens the book (2024.04), and this plugin needs that
+-- same ReaderAnnotation API, so a sidecar still holding the legacy `highlight`
+-- table cannot reach us.
 -- @param doc_path string Path to the document
 -- @return table|nil Array of highlights, or nil if none found
 function HighlightExtractor:getHighlightsFromDisk(doc_path)
 	local doc_settings = DocSettings:open(doc_path)
-	local results = {}
-
-	-- Try modern annotations format first
 	local annotations = doc_settings:readSetting("annotations")
-	if annotations then
-		for _, annotation in ipairs(annotations) do
-			if isHighlight(annotation) then
-				table.insert(results, formatHighlight(annotation))
-			end
-		end
-		logger.dbg("Crossbill Extractor: Found", #results, "highlights in modern format")
-		return results
-	end
-
-	-- Fallback to legacy highlight format
-	local highlights = doc_settings:readSetting("highlight")
-	if not highlights then
+	if not annotations then
 		logger.dbg("Crossbill Extractor: No highlights found in settings")
 		return nil
 	end
 
-	local bookmarks = doc_settings:readSetting("bookmarks") or {}
-
-	for _, items in pairs(highlights) do
-		for _, item in ipairs(items) do
-			local note = nil
-
-			-- Find matching bookmark for note (in legacy format, notes are in bookmarks)
-			for _, bookmark in pairs(bookmarks) do
-				if bookmark.datetime == item.datetime then
-					note = bookmark.text or nil
-					break
-				end
-			end
-
-			table.insert(results, {
-				text = item.text or "",
-				note = note,
-				datetime = item.datetime or "",
-				page = item.page,
-				start_xpoint = asXpoint(item.pos0),
-				end_xpoint = asXpoint(item.pos1),
-				chapter = item.chapter or nil,
-				color = item.color or nil,
-				drawer = item.drawer or nil,
-			})
+	local results = {}
+	for _, annotation in ipairs(annotations) do
+		if isHighlight(annotation) then
+			table.insert(results, formatHighlight(annotation))
 		end
 	end
 
-	logger.dbg("Crossbill Extractor: Found", #results, "highlights in legacy format")
+	logger.dbg("Crossbill Extractor: Found", #results, "highlights on disk")
 	return results
 end
 
@@ -152,23 +123,6 @@ end
 -- @return table|nil Array of highlights
 function HighlightExtractor:getHighlights(doc_path)
 	return self:getHighlightsFromMemory() or self:getHighlightsFromDisk(doc_path)
-end
-
---- Normalize a title for comparison: trim, collapse internal whitespace, lowercase
--- Non-string input (including JSON null sentinels) normalizes to nil. Mirrors the
--- normalizeTitle semantics used by digest_service.lua.
--- @param title string|nil The raw title
--- @return string|nil The normalized title, or nil for nil/non-string input
-local function normalizeTitle(title)
-	if type(title) ~= "string" then
-		return nil
-	end
-	local text = title
-	-- Collapse all runs of whitespace to single spaces
-	text = text:gsub("%s+", " ")
-	-- Trim leading/trailing whitespace
-	text = text:gsub("^%s*(.-)%s*$", "%1")
-	return text:lower()
 end
 
 --- Resolve a highlight's numeric page, following xpointers when needed

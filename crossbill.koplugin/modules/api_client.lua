@@ -33,6 +33,45 @@ function ApiClient:getApiUrl()
 	return self.settings:getBaseUrl() .. "/api/v1"
 end
 
+--- Fetch a JSON resource with the caller's bearer token
+-- Every GET the plugin makes answers the same three ways: 200 with a body, 404
+-- for a book the server has never been told about, and anything else a failure
+-- carrying its status.
+-- @param path string Path below the API root, starting with a slash
+-- @param what string What is being fetched, for the log lines
+-- @return number|nil HTTP status code
+-- @return table|nil Response data, nil for anything but a 200 with a body
+-- @return string|nil Error message
+function ApiClient:_authorizedGet(path, what)
+	local token, auth_err = self.auth:getValidToken()
+	if not token then
+		return nil, nil, auth_err or "Authentication failed"
+	end
+
+	local api_url = self:getApiUrl() .. path
+	logger.dbg("Crossbill API: Fetching", what, "from", api_url)
+
+	local code, response_data, err = Network.getJson(api_url, token)
+
+	if not code then
+		logger.err("Crossbill API: Network error fetching", what, err)
+		return nil, nil, err or "Network error"
+	end
+
+	if code == 200 and response_data then
+		logger.dbg("Crossbill API: Fetched", what)
+		return code, response_data, nil
+	end
+
+	if code == 404 then
+		logger.dbg("Crossbill API: Book not found (404) fetching", what)
+		return code, nil, nil
+	end
+
+	logger.warn("Crossbill API: Fetching", what, "failed with code:", code)
+	return code, nil, "Fetch failed: " .. tostring(code)
+end
+
 --- Upload highlights to the server
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @param highlights table Array of highlights
@@ -77,31 +116,7 @@ end
 -- @return table|nil Response data containing book_id, bookname, author, has_ebook
 -- @return string|nil Error message
 function ApiClient:getBookMetadata(client_book_id)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return nil, nil, auth_err or "Authentication failed"
-	end
-
-	local api_url = self:getApiUrl() .. "/ereader/books/" .. client_book_id
-	logger.dbg("Crossbill API: Fetching book metadata from", api_url)
-
-	local code, response_data, err = Network.getJson(api_url, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error fetching book metadata:", err)
-		return nil, nil, err or "Network error"
-	end
-
-	if code == 200 and response_data then
-		logger.dbg("Crossbill API: Book metadata fetched successfully")
-		return code, response_data, nil
-	elseif code == 404 then
-		logger.dbg("Crossbill API: Book not found (404)")
-		return code, nil, nil
-	else
-		logger.warn("Crossbill API: Fetch book metadata failed with code:", code)
-		return code, nil, "Fetch failed: " .. tostring(code)
-	end
+	return self:_authorizedGet("/ereader/books/" .. client_book_id, "book metadata")
 end
 
 --- Get a book's chapter digests from the server by client_book_id
@@ -110,31 +125,7 @@ end
 -- @return table|nil Response data containing an "items" array of chapter digests
 -- @return string|nil Error message
 function ApiClient:getBookDigest(client_book_id)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return nil, nil, auth_err or "Authentication failed"
-	end
-
-	local api_url = self:getApiUrl() .. "/ereader/books/" .. client_book_id .. "/digest"
-	logger.dbg("Crossbill API: Fetching book digests from", api_url)
-
-	local code, response_data, err = Network.getJson(api_url, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error fetching digests:", err)
-		return nil, nil, err or "Network error"
-	end
-
-	if code == 200 and response_data then
-		logger.dbg("Crossbill API: Book digests fetched successfully")
-		return code, response_data, nil
-	elseif code == 404 then
-		logger.dbg("Crossbill API: Book not found for digests (404)")
-		return code, nil, nil
-	else
-		logger.warn("Crossbill API: Fetch book digests failed with code:", code)
-		return code, nil, "Fetch failed: " .. tostring(code)
-	end
+	return self:_authorizedGet("/ereader/books/" .. client_book_id .. "/digest", "book digests")
 end
 
 --- Get a book's highlights from the server by client_book_id
@@ -145,39 +136,23 @@ end
 -- @return table|nil Array of highlight items, empty when the book has none
 -- @return string|nil Error message
 function ApiClient:getHighlights(client_book_id)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return nil, nil, auth_err or "Authentication failed"
+	local code, response_data, err =
+		self:_authorizedGet("/ereader/books/" .. client_book_id .. "/highlights", "highlights")
+	if not response_data then
+		return code, nil, err
 	end
 
-	local api_url = self:getApiUrl() .. "/ereader/books/" .. client_book_id .. "/highlights"
-	logger.dbg("Crossbill API: Fetching highlights from", api_url)
-
-	local code, response_data, err = Network.getJson(api_url, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error fetching highlights:", err)
-		return nil, nil, err or "Network error"
-	end
-
-	if code == 200 and response_data then
-		-- An empty list decodes to the JSON library's array marker rather than a
-		-- plain table, so copy the items into one.
-		local items = {}
-		if type(response_data.items) == "table" then
-			for _, item in ipairs(response_data.items) do
-				table.insert(items, item)
-			end
+	-- An empty list decodes to the JSON library's array marker rather than a
+	-- plain table, so copy the items into one.
+	local items = {}
+	if type(response_data.items) == "table" then
+		for _, item in ipairs(response_data.items) do
+			table.insert(items, item)
 		end
-		logger.dbg("Crossbill API: Fetched", #items, "highlights")
-		return code, items, nil
-	elseif code == 404 then
-		logger.dbg("Crossbill API: Book not found for highlights (404)")
-		return code, nil, nil
-	else
-		logger.warn("Crossbill API: Fetch highlights failed with code:", code)
-		return code, nil, "Fetch failed: " .. tostring(code)
 	end
+
+	logger.dbg("Crossbill API: Fetched", #items, "highlights")
+	return code, items, nil
 end
 
 --- Create a new book on the server

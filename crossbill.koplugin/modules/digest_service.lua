@@ -20,6 +20,10 @@ err_kind is one of:
 
 local logger = require("logger")
 local Network = require("modules/network")
+local TitleMatch = require("modules/title_match")
+
+-- Chapter titles are matched the same way everywhere; see modules/title_match.
+local normalizeTitle = TitleMatch.normalize
 
 local DigestService = {}
 DigestService.__index = DigestService
@@ -39,22 +43,6 @@ function DigestService:new(api_client, digest_cache)
 	instance.api_client = api_client
 	instance.cache = digest_cache
 	return instance
-end
-
---- Normalize a title for comparison: trim, collapse internal whitespace, lowercase
--- Non-string input (including JSON null sentinels) normalizes to nil.
--- @param title string|nil The raw title
--- @return string|nil The normalized title, or nil for nil/non-string input
-local function normalizeTitle(title)
-	if type(title) ~= "string" then
-		return nil
-	end
-	local text = title
-	-- Collapse all runs of whitespace to single spaces
-	text = text:gsub("%s+", " ")
-	-- Trim leading/trailing whitespace
-	text = text:gsub("^%s*(.-)%s*$", "%1")
-	return text:lower()
 end
 
 --- Get the current rendered page number from the UI, defensively

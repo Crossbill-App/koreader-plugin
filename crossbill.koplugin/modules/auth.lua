@@ -126,10 +126,4 @@ function Auth:getValidToken()
 	return self:login()
 end
 
---- Check if authentication is configured
--- @return boolean True if credentials are available
-function Auth:isConfigured()
-	return self.settings:hasCredentials()
-end
-
 return Auth

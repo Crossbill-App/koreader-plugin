@@ -10,7 +10,8 @@ local logger = require("logger")
 local Settings = {}
 Settings.__index = Settings
 
--- Default settings values
+-- Default settings values. Keys that default to nil are simply absent: the
+-- tokens are written by Auth once a login succeeds.
 local DEFAULTS = {
 	base_url = "http://localhost:8000",
 	username = "",
@@ -18,9 +19,6 @@ local DEFAULTS = {
 	autosync_enabled = false,
 	session_tracking_enabled = true,
 	min_reading_session_duration = 60,
-	access_token = nil,
-	refresh_token = nil,
-	token_expires_at = nil,
 }
 
 -- Settings key in KOReader's global settings

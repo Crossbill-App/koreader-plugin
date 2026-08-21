@@ -9,7 +9,10 @@ local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
 -- @return table The SyncService instance
 local function syncServiceWith(opts)
 	opts = opts or {}
-	return SyncService:new(opts.api_client, nil, nil, nil, nil, opts.highlight_importer)
+	return SyncService:new({
+		api_client = opts.api_client,
+		highlight_importer = opts.highlight_importer,
+	})
 end
 
 --- Build an api client that answers getHighlights with the given tuple
@@ -333,7 +336,13 @@ describe("SyncService", function()
 					return true
 				end,
 			}
-			return SyncService:new(api, file_uploader, opts.session_tracker, settings, nil, opts.highlight_importer)
+			return SyncService:new({
+				api_client = api,
+				file_uploader = file_uploader,
+				session_tracker = opts.session_tracker,
+				settings = settings,
+				highlight_importer = opts.highlight_importer,
+			})
 		end
 
 		it("stamps an edited note before the highlights are extracted", function()

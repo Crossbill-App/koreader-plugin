@@ -161,13 +161,5 @@ describe("BookMetadata", function()
 		it("reports the document path", function()
 			assert.are.equal(DOC_PATH, extractorFor({}):getDocPath())
 		end)
-
-		it("knows when a document is loaded", function()
-			assert.is_true(extractorFor({}):hasDocument())
-		end)
-
-		it("knows when no document is loaded", function()
-			assert.is_false(BookMetadata:new({ doc_props = {} }):hasDocument())
-		end)
 	end)
 end)

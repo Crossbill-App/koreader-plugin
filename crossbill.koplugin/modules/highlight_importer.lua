@@ -12,6 +12,7 @@ xpointers, which mean nothing to a fixed-layout document.
 local Event = require("ui/event")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
+local NoteEdits = require("modules/note_edits")
 
 local HighlightImporter = {}
 HighlightImporter.__index = HighlightImporter
@@ -31,6 +32,17 @@ local FALLBACK_DRAWER = "lighten"
 -- @return HighlightImporter instance
 function HighlightImporter:new()
 	return setmetatable({}, HighlightImporter)
+end
+
+--- Check whether the open book can take a pull at all
+-- The pulled positions are xpointers, which mean nothing to a fixed-layout
+-- document. Callers ask before pulling so they can tell "this book is not
+-- eligible" from "the pull went wrong"; replaceHighlights enforces the same
+-- rule for anyone who does not.
+-- @param ui table The KOReader UI context
+-- @return boolean True when the open book is reflowable
+function HighlightImporter.isSupportedBook(ui)
+	return ui ~= nil and ui.rolling ~= nil
 end
 
 --- Read a value that is only useful as a string
@@ -94,7 +106,7 @@ end
 local function buildItem(ui, source, start_xpoint, end_xpoint, defaults)
 	local drawer = asString(source.device_style)
 	local note = asNonEmptyString(source.note)
-	return {
+	local item = {
 		page = start_xpoint,
 		pos0 = start_xpoint,
 		pos1 = end_xpoint,
@@ -105,8 +117,11 @@ local function buildItem(ui, source, start_xpoint, end_xpoint, defaults)
 		color = asNonEmptyString(source.device_color) or defaults.color,
 		note = note,
 		chapter = chapterTitle(ui, source, start_xpoint),
-		crossbill_note_seen = note or "",
 	}
+	-- The note just pulled is by definition the one last seen, so the next sync
+	-- only stamps it if the reader edits it afterwards.
+	item[NoteEdits.SEEN_FIELD] = note or ""
+	return item
 end
 
 --- Turn the server's items into annotations, counting what had to be skipped
@@ -155,7 +170,7 @@ end
 
 --- Check whether the reader already holds exactly the highlights we would insert
 -- Bookmarks (annotations without a drawer) are left out: the replacement never
--- touches them. crossbill_note_seen is left out too, being the plugin's own
+-- touches them. NoteEdits.SEEN_FIELD is left out too, being the plugin's own
 -- bookkeeping rather than something the server sends.
 -- @param annotations table The reader's live annotation array
 -- @param built table Array of annotation items built from the server's copy
@@ -260,7 +275,7 @@ function HighlightImporter:replaceHighlights(ui, items)
 	if not ui.document or not ui.annotation or not ui.annotation.annotations then
 		return nil, "No book is open"
 	end
-	if not ui.rolling then
+	if not HighlightImporter.isSupportedBook(ui) then
 		return nil, "Only reflowable books (EPUB) are supported"
 	end
 

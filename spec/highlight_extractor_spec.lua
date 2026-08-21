@@ -157,7 +157,7 @@ describe("HighlightExtractor", function()
 			assert.is_nil(extractorFor():getHighlightsFromDisk(DOC_PATH))
 		end)
 
-		it("reads the modern annotations format", function()
+		it("reads the annotations the sidecar holds", function()
 			DocSettings.setFixture(DOC_PATH, {
 				annotations = {
 					{ drawer = "lighten", text = "a highlight", pageno = 3 },
@@ -172,88 +172,15 @@ describe("HighlightExtractor", function()
 			assert.are.equal(3, highlights[1].page)
 		end)
 
-		it("prefers the modern format even when legacy highlights are also present", function()
+		it("ignores a pre-ReaderAnnotation sidecar", function()
+			-- KOReader migrates one on open, so a sidecar that still holds only
+			-- the legacy `highlight` table belongs to a reader too old to run
+			-- this plugin at all.
 			DocSettings.setFixture(DOC_PATH, {
-				annotations = { { drawer = "lighten", text = "modern" } },
-				highlight = { [1] = { { text = "legacy" } } },
+				highlight = { [1] = { { text = "legacy", datetime = "2024-01-01 10:00:00" } } },
 			})
 
-			local highlights = extractorFor():getHighlightsFromDisk(DOC_PATH)
-
-			assert.are.equal(1, #highlights)
-			assert.are.equal("modern", highlights[1].text)
-		end)
-
-		it("flattens the legacy per-page highlight format", function()
-			DocSettings.setFixture(DOC_PATH, {
-				highlight = {
-					[1] = { { text = "first", datetime = "2024-01-01 10:00:00", page = 1 } },
-					[2] = { { text = "second", datetime = "2024-01-02 10:00:00", page = 2 } },
-				},
-			})
-
-			local highlights = extractorFor():getHighlightsFromDisk(DOC_PATH)
-
-			assert.are.equal(2, #highlights)
-		end)
-
-		it("pulls legacy notes from the matching bookmark", function()
-			DocSettings.setFixture(DOC_PATH, {
-				highlight = {
-					[1] = { { text = "first", datetime = "2024-01-01 10:00:00", page = 1 } },
-				},
-				bookmarks = {
-					{ datetime = "2024-01-01 10:00:00", text = "my note" },
-				},
-			})
-
-			assert.are.equal("my note", extractorFor():getHighlightsFromDisk(DOC_PATH)[1].note)
-		end)
-
-		it("leaves the note unset when no bookmark shares the timestamp", function()
-			DocSettings.setFixture(DOC_PATH, {
-				highlight = {
-					[1] = { { text = "first", datetime = "2024-01-01 10:00:00", page = 1 } },
-				},
-				bookmarks = { { datetime = "2024-06-06 06:00:00", text = "other note" } },
-			})
-
-			assert.is_nil(extractorFor():getHighlightsFromDisk(DOC_PATH)[1].note)
-		end)
-
-		it("keeps legacy xpointer positions and drops coordinate tables", function()
-			DocSettings.setFixture(DOC_PATH, {
-				highlight = {
-					[1] = {
-						{
-							text = "reflowable",
-							datetime = "2024-01-01 10:00:00",
-							pos0 = "/body/DocFragment[3]/p[1]/text()[0]",
-							pos1 = "/body/DocFragment[3]/p[1]/text()[9]",
-						},
-					},
-					[2] = {
-						{
-							text = "fixed layout",
-							datetime = "2024-01-02 10:00:00",
-							pos0 = { x = 10, y = 20, page = 2 },
-							pos1 = { x = 90, y = 20, page = 2 },
-						},
-					},
-				},
-			})
-
-			-- The legacy format is a map of pages, so the flattened order is not
-			-- guaranteed; look each highlight up by its text.
-			local by_text = {}
-			for _, highlight in ipairs(extractorFor():getHighlightsFromDisk(DOC_PATH)) do
-				by_text[highlight.text] = highlight
-			end
-
-			assert.are.equal("/body/DocFragment[3]/p[1]/text()[0]", by_text["reflowable"].start_xpoint)
-			assert.are.equal("/body/DocFragment[3]/p[1]/text()[9]", by_text["reflowable"].end_xpoint)
-			assert.is_nil(by_text["fixed layout"].start_xpoint)
-			assert.is_nil(by_text["fixed layout"].end_xpoint)
+			assert.is_nil(extractorFor():getHighlightsFromDisk(DOC_PATH))
 		end)
 	end)
 

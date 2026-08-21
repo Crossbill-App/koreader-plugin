@@ -21,7 +21,12 @@ function FileUploader:new(api_client)
 	return instance
 end
 
---- Upload EPUB file for a book if server doesn't have one
+--- Upload the book's EPUB to the server
+-- The upload is unconditional, including when server_metadata.has_ebook says a
+-- copy is already there: while the server's text extraction keeps changing, a
+-- re-upload is what guarantees it holds a copy it can still read. That costs a
+-- full EPUB over WiFi on every sync, so it is a deliberate trade to revisit
+-- rather than an oversight.
 -- @param client_book_id string The client book ID (hash of title|author)
 -- @param book_metadata BookMetadata instance for getting document path
 -- @param server_metadata table|nil Server metadata from getBookMetadata
@@ -32,12 +37,6 @@ function FileUploader:uploadEpub(client_book_id, book_metadata, server_metadata)
 		logger.dbg("Crossbill FileUploader: No server metadata, skipping EPUB upload")
 		return true, nil
 	end
-
-	-- TODO: Do not upload the book everytime in the future
-	--if server_metadata.has_ebook then
-	--	logger.dbg("Crossbill FileUploader: Server already has EPUB, skipping upload")
-	--	return true, nil
-	--end
 
 	local doc_path = book_metadata:getDocPath()
 	if not doc_path or not doc_path:match("%.epub$") then
