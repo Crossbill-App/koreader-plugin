@@ -20,6 +20,8 @@ local DigestCache = require("modules/digest_cache")
 local DigestService = require("modules/digest_service")
 local FileUploader = require("modules/file_uploader")
 local HighlightImporter = require("modules/highlight_importer")
+local HighlightSnapshot = require("modules/highlight_snapshot")
+local HighlightSnapshotStore = require("modules/highlight_snapshot_store")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
@@ -81,6 +83,10 @@ function CrossbillSync:init()
 	-- Initialize the importer that writes pulled highlights back to the book
 	self.highlight_importer = HighlightImporter:new()
 
+	-- Initialize the ledger (SQLite) of the server highlights last applied
+	self.highlight_snapshot = HighlightSnapshot:new({ store = HighlightSnapshotStore:new() })
+	self.highlight_snapshot:init(DataStorage:getSettingsDir())
+
 	-- Initialize sync service with all dependencies
 	self.sync_service = SyncService:new({
 		api_client = self.api_client,
@@ -89,6 +95,7 @@ function CrossbillSync:init()
 		settings = self.settings,
 		digest_service = self.digest_service,
 		highlight_importer = self.highlight_importer,
+		highlight_snapshot = self.highlight_snapshot,
 	})
 
 	-- Register menu
@@ -356,6 +363,9 @@ function CrossbillSync:onExit()
 	end
 	if self.digest_cache then
 		self.digest_cache:close()
+	end
+	if self.highlight_snapshot then
+		self.highlight_snapshot:close()
 	end
 	return false
 end

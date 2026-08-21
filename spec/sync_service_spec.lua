@@ -5,14 +5,32 @@ local GlobalSettingsFake = require("global_settings_fake")
 local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
 
 --- Build a SyncService with only the collaborators the pull touches
--- @param opts table|nil api_client and highlight_importer overrides
+-- @param opts table|nil api_client, highlight_importer and highlight_snapshot overrides
 -- @return table The SyncService instance
 local function syncServiceWith(opts)
 	opts = opts or {}
 	return SyncService:new({
 		api_client = opts.api_client,
 		highlight_importer = opts.highlight_importer,
+		highlight_snapshot = opts.highlight_snapshot,
 	})
+end
+
+--- Build a snapshot ledger recording what it was asked to remember
+-- @param opts table|nil throws
+-- @return table A ledger stand-in whose `calls` hold every record it took
+local function ledgerRecording(opts)
+	opts = opts or {}
+	return {
+		calls = {},
+		recordPlaced = function(self, client_book_id, placed)
+			if opts.throws then
+				error("snapshot store blew up")
+			end
+			table.insert(self.calls, { client_book_id = client_book_id, placed = placed })
+			return true
+		end,
+	}
 end
 
 --- Build an api client that answers getHighlights with the given tuple
@@ -243,6 +261,109 @@ describe("SyncService", function()
 			assert.is_true(result.success)
 			assert.are.equal(4, result.highlights_created)
 			assert.is_nil(result.error)
+		end)
+	end)
+
+	describe("the snapshot it records after a pull", function()
+		local placed = { { server_id = 7, text = "the spice must flow" } }
+
+		it("records the highlights the pull placed, for the book being synced", function()
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning({ inserted = 1, placed = placed }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.equal(1, #ledger.calls)
+			assert.are.equal(CLIENT_BOOK_ID, ledger.calls[1].client_book_id)
+			assert.are.same(placed, ledger.calls[1].placed)
+		end)
+
+		it("records the enrolment of a book that already matched the server", function()
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning({ unchanged = true, inserted = 0, placed = placed }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.same(placed, ledger.calls[1].placed)
+		end)
+
+		it("records nothing when the pull failed", function()
+			-- The snapshot has to keep describing the state the device is
+			-- actually in, which an aborted pull did not change.
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(500, nil, "Fetch failed: 500"),
+				highlight_importer = importerReturning({ inserted = 1, placed = placed }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.same({}, ledger.calls)
+		end)
+
+		it("records nothing when the importer refused the book", function()
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning(nil, "None of the server's highlights fit this book"),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.same({}, ledger.calls)
+		end)
+
+		it("records nothing for a fixed-layout book, which never pulls", function()
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning({ inserted = 1, placed = placed }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor({ rolling = false }), CLIENT_BOOK_ID)
+
+			assert.are.same({}, ledger.calls)
+		end)
+
+		it("records nothing when the importer reported no placed set", function()
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning({ inserted = 1 }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.same({}, ledger.calls)
+		end)
+
+		it("survives a ledger that throws, keeping the pull's result", function()
+			-- Bookkeeping never fails a sync whose push already succeeded.
+			local pull_result = { inserted = 1, placed = placed }
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning(pull_result),
+				highlight_snapshot = ledgerRecording({ throws = true }),
+			})
+			local result = { success = true }
+
+			service:_applyPull(result, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.equal(pull_result, result.pull)
+			assert.is_nil(result.pull_error)
+			assert.is_true(result.success)
 		end)
 	end)
 

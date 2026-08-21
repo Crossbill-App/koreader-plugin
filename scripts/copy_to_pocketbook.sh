@@ -114,6 +114,10 @@ install_test() {
     # Change database filename to avoid conflicts with production
     sed -i 's/crossbill_digests\.sqlite3/test_crossbill_digests.sqlite3/g' "$test_dir/test_modules/digest_cache.lua"
 
+    # Modify test_modules/highlight_snapshot_store.lua for test version
+    # Change database filename to avoid conflicts with production
+    sed -i 's/crossbill_highlights\.sqlite3/test_crossbill_highlights.sqlite3/g' "$test_dir/test_modules/highlight_snapshot_store.lua"
+
     # Copy test plugin to destination
     rm -rf "$KOREADER_PLUGINS_PATH/crossbill-test.koplugin"
     cp -R "$test_dir" "$KOREADER_PLUGINS_PATH/"
