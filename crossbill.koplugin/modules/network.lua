@@ -11,9 +11,30 @@ local https = require("ssl.https")
 local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local NetworkMgr = require("ui/network/manager")
+local JSON = require("json")
 local logger = require("logger")
 
 local Network = {}
+
+--- Decode a response body, keeping the status code the request came back with
+-- An empty body is not an error: some endpoints answer with a status only.
+-- @param code number The HTTP status code
+-- @param response_text string|nil The raw response body
+-- @return number HTTP status code
+-- @return table|nil Parsed JSON response
+-- @return string|nil Error message
+local function decodedResponse(code, response_text)
+	if not response_text or response_text == "" then
+		return code, nil, nil
+	end
+
+	local ok, response_data = pcall(JSON.decode, response_text)
+	if not ok then
+		return code, nil, "Invalid JSON response"
+	end
+
+	return code, response_data, nil
+end
 
 -- Track whether we enabled WiFi (so we can turn it off after sync)
 local wifi_enabled_by_us = false
@@ -95,7 +116,6 @@ end
 -- @return table|nil Parsed JSON response
 -- @return string|nil Error message
 function Network.postJson(url, data, token)
-	local JSON = require("json")
 	local body = JSON.encode(data)
 
 	local headers = {
@@ -118,16 +138,7 @@ function Network.postJson(url, data, token)
 		return nil, nil, err
 	end
 
-	if response_text and response_text ~= "" then
-		local ok, response_data = pcall(JSON.decode, response_text)
-		if ok then
-			return code, response_data, nil
-		else
-			return code, nil, "Invalid JSON response"
-		end
-	end
-
-	return code, nil, nil
+	return decodedResponse(code, response_text)
 end
 
 --- Make a JSON GET request
@@ -137,8 +148,6 @@ end
 -- @return table|nil Parsed JSON response
 -- @return string|nil Error message
 function Network.getJson(url, token)
-	local JSON = require("json")
-
 	local headers = {
 		["Accept"] = "application/json",
 	}
@@ -157,16 +166,7 @@ function Network.getJson(url, token)
 		return nil, nil, err
 	end
 
-	if response_text and response_text ~= "" then
-		local ok, response_data = pcall(JSON.decode, response_text)
-		if ok then
-			return code, response_data, nil
-		else
-			return code, nil, "Invalid JSON response"
-		end
-	end
-
-	return code, nil, nil
+	return decodedResponse(code, response_text)
 end
 
 --- Make a form-urlencoded POST request
@@ -176,8 +176,6 @@ end
 -- @return table|nil Parsed JSON response
 -- @return string|nil Error message
 function Network.postForm(url, data)
-	local JSON = require("json")
-
 	-- Build form-urlencoded body
 	local parts = {}
 	for key, value in pairs(data) do
@@ -201,16 +199,7 @@ function Network.postForm(url, data)
 		return nil, nil, err
 	end
 
-	if response_text and response_text ~= "" then
-		local ok, response_data = pcall(JSON.decode, response_text)
-		if ok then
-			return code, response_data, nil
-		else
-			return code, nil, "Invalid JSON response"
-		end
-	end
-
-	return code, nil, nil
+	return decodedResponse(code, response_text)
 end
 
 --- Make a multipart/form-data POST request
