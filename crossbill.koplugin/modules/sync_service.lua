@@ -51,6 +51,7 @@ end
 -- @field success boolean Whether sync completed successfully
 -- @field highlights_created number Number of new highlights synced
 -- @field highlights_skipped number Number of duplicate highlights skipped
+-- @field highlights_removed number Number of highlights withdrawn from devices
 -- @field sessions_synced number Number of reading sessions synced
 -- @field pull table|nil Importer result of the pull that followed the push
 -- @field pull_error string|nil Why the pull did not happen
@@ -58,12 +59,17 @@ end
 
 --- Execute the complete sync workflow for a book
 -- @param ui table The KOReader UI context
+-- @param opts table|nil Options for this sync:
+--   confirm_removal function(count) -> boolean, asked before every highlight of
+--     a book is withdrawn from the reader's devices. Absent means nobody can be
+--     asked, and the mass removal is skipped.
 -- @return table SyncResult with success status and counts
-function SyncService:syncBook(ui)
+function SyncService:syncBook(ui, opts)
 	local result = {
 		success = true,
 		highlights_created = 0,
 		highlights_skipped = 0,
+		highlights_removed = 0,
 		sessions_synced = 0,
 		error = nil,
 	}
@@ -93,8 +99,8 @@ function SyncService:syncBook(ui)
 	-- Stamp notes edited since the last sync, before they are extracted
 	self:_stampNoteEdits(ui)
 
-	-- Extract and upload highlights
-	local highlight_result = self:_syncHighlights(ui, book_data.client_book_id, doc_path)
+	-- Extract and upload highlights, together with what was deleted here
+	local highlight_result = self:_syncHighlights(ui, book_data.client_book_id, doc_path, opts)
 	if not highlight_result.success then
 		result.success = false
 		result.error = highlight_result.error
@@ -102,8 +108,11 @@ function SyncService:syncBook(ui)
 	end
 	result.highlights_created = highlight_result.created
 	result.highlights_skipped = highlight_result.skipped
+	result.highlights_removed = highlight_result.removed
 
-	-- Bring the server's copy back (best-effort; never fails the sync)
+	-- Bring the server's copy back (best-effort; never fails the sync). The push
+	-- above already carried the removals, so this replace confirms them instead
+	-- of handing the deleted highlights back to the device.
 	self:_applyPull(result, ui, book_data.client_book_id)
 
 	-- Upload reading sessions
@@ -230,31 +239,39 @@ end
 
 --- Sync highlights for the current book
 -- @param ui table The KOReader UI context
--- @param book_data table Book metadata
+-- @param client_book_id string The client book ID
 -- @param doc_path string Document file path
--- @return table Result with success, created, skipped, error
-function SyncService:_syncHighlights(ui, client_book_id, doc_path)
-	local result = { success = true, created = 0, skipped = 0, error = nil }
+-- @param opts table|nil Sync options; see syncBook
+-- @return table Result with success, created, skipped, removed, error
+function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
+	local result = { success = true, created = 0, skipped = 0, removed = 0, error = nil }
 
 	-- Extract highlights
 	local highlight_extractor = HighlightExtractor:new(ui)
-	local highlights = highlight_extractor:getHighlights(doc_path)
-
-	if not highlights or #highlights == 0 then
-		logger.dbg("Crossbill SyncService: No highlights found")
-		return result
-	end
+	local highlights = highlight_extractor:getHighlights(doc_path) or {}
 
 	logger.dbg("Crossbill SyncService: Found", #highlights, "highlights")
 
-	-- Add chapter numbers to highlights
-	highlight_extractor:addChapterNumbers(highlights)
+	if #highlights > 0 then
+		-- Add chapter numbers to highlights
+		highlight_extractor:addChapterNumbers(highlights)
+	end
+
+	-- Whatever the ledger remembers but the book no longer holds was deleted here
+	local removed_ids = self:_removedHighlightIds(client_book_id, highlights, opts)
+
+	if #highlights == 0 and #removed_ids == 0 then
+		logger.dbg("Crossbill SyncService: Nothing to push")
+		return result
+	end
 
 	-- Upload highlights to server
 	local upload_success, response, err =
-		self.api_client:uploadHighlights(client_book_id, highlights, DeviceIdentity.getDeviceId())
+		self.api_client:uploadHighlights(client_book_id, highlights, DeviceIdentity.getDeviceId(), removed_ids)
 
 	if not upload_success then
+		-- The removals stay unsent, and the snapshot only moves on after a
+		-- successful pull, so the next sync diffs them out again.
 		result.success = false
 		result.error = err
 		return result
@@ -263,9 +280,68 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path)
 	if response then
 		result.created = response.highlights_created or 0
 		result.skipped = response.highlights_skipped or 0
+		result.removed = response.highlights_removed or 0
 	end
 
 	return result
+end
+
+--- Work out which of the book's server highlights were deleted on this device
+-- The answer comes from the ledger, so a book that has never pulled -- a first
+-- sync, or a fixed-layout book, neither of which has a snapshot -- reports
+-- nothing and behaves exactly as it did before removals existed.
+-- @param client_book_id string The client book ID
+-- @param highlights table The highlights currently in the book
+-- @param opts table|nil Sync options; see syncBook
+-- @return table Array of server ids to remove, empty when there are none
+function SyncService:_removedHighlightIds(client_book_id, highlights, opts)
+	if not self.highlight_snapshot then
+		return {}
+	end
+
+	local ok, removed = pcall(function()
+		return self.highlight_snapshot:findRemoved(client_book_id, highlights)
+	end)
+
+	if not ok then
+		logger.warn("Crossbill SyncService: Failed to diff the highlight snapshot:", removed)
+		return {}
+	end
+
+	if not removed or #removed.ids == 0 then
+		return {}
+	end
+
+	if removed.mass_removal and not self:_confirmMassRemoval(#removed.ids, opts) then
+		logger.info("Crossbill SyncService: Keeping", #removed.ids, "highlights the device no longer has")
+		return {}
+	end
+
+	logger.info("Crossbill SyncService: Removing", #removed.ids, "highlights deleted on this device")
+	return removed.ids
+end
+
+--- Ask the reader before every highlight of a book leaves their devices
+-- A book whose highlights all vanished at once, leaving none behind, looks the
+-- same whether the reader deleted them or the sidecar was lost. Nobody to ask --
+-- an autosync during shutdown -- means the server's copy is kept.
+-- @param count number How many highlights the removal would cover
+-- @param opts table|nil Sync options; see syncBook
+-- @return boolean True when the removal may go ahead
+function SyncService:_confirmMassRemoval(count, opts)
+	local confirm = opts and opts.confirm_removal
+	if not confirm then
+		logger.info("Crossbill SyncService: No way to confirm a mass removal, skipping it")
+		return false
+	end
+
+	local ok, confirmed = pcall(confirm, count)
+	if not ok then
+		logger.warn("Crossbill SyncService: Removal confirmation failed:", confirmed)
+		return false
+	end
+
+	return confirmed == true
 end
 
 --- Sync reading sessions for the current book

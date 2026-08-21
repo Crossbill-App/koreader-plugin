@@ -17,18 +17,29 @@ local function syncServiceWith(opts)
 end
 
 --- Build a snapshot ledger recording what it was asked to remember
--- @param opts table|nil throws
+-- @param opts table|nil throws, removed and diff_throws:
+--   throws Make recordPlaced blow up
+--   removed The diff findRemoved answers with, nil for a book never pulled
+--   diff_throws Make findRemoved blow up
 -- @return table A ledger stand-in whose `calls` hold every record it took
 local function ledgerRecording(opts)
 	opts = opts or {}
 	return {
 		calls = {},
+		diffed = {},
 		recordPlaced = function(self, client_book_id, placed)
 			if opts.throws then
 				error("snapshot store blew up")
 			end
 			table.insert(self.calls, { client_book_id = client_book_id, placed = placed })
 			return true
+		end,
+		findRemoved = function(self, client_book_id, highlights)
+			if opts.diff_throws then
+				error("snapshot store blew up")
+			end
+			table.insert(self.diffed, { client_book_id = client_book_id, highlights = highlights })
+			return opts.removed
 		end,
 	}
 end
@@ -415,9 +426,14 @@ describe("SyncService", function()
 				getBookMetadata = function()
 					return 200, { book_id = 1 }
 				end,
-				uploadHighlights = function(self, _, highlights, device_id)
-					self.uploaded = { highlights = highlights, device_id = device_id }
-					return true, { highlights_created = #highlights, highlights_skipped = 0 }
+				uploadHighlights = function(self, _, highlights, device_id, removed_ids)
+					self.uploaded = { highlights = highlights, device_id = device_id, removed_ids = removed_ids }
+					return true,
+						{
+							highlights_created = #highlights,
+							highlights_skipped = 0,
+							highlights_removed = removed_ids and #removed_ids or 0,
+						}
 				end,
 				getHighlights = function()
 					return 200, {}
@@ -463,6 +479,7 @@ describe("SyncService", function()
 				session_tracker = opts.session_tracker,
 				settings = settings,
 				highlight_importer = opts.highlight_importer,
+				highlight_snapshot = opts.highlight_snapshot,
 			})
 		end
 
@@ -519,6 +536,185 @@ describe("SyncService", function()
 			assert.is_truthy(result.pull_error)
 			assert.are.equal(1, result.sessions_synced)
 			assert.are.same({ 7 }, session_tracker.marked)
+		end)
+
+		describe("the removals it sends with the push", function()
+			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
+
+			--- Sync a book whose ledger answers with the given diff
+			-- @param api table The api client stand-in
+			-- @param removed table|nil What findRemoved answers
+			-- @param opts table|nil confirm_removal and annotations
+			-- @return table The sync result
+			-- @return table The ledger stand-in
+			local function syncWithDiff(api, removed, opts)
+				opts = opts or {}
+				local ledger = ledgerRecording({ removed = removed })
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					highlight_snapshot = ledger,
+				})
+				local result = service:syncBook(
+					bookFor(opts.annotations or { A_HIGHLIGHT }),
+					{ confirm_removal = opts.confirm_removal }
+				)
+				return result, ledger
+			end
+
+			it("sends the ids of the highlights deleted on the device", function()
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = { 7, 12 }, mass_removal = false })
+
+				assert.are.same({ 7, 12 }, api.uploaded.removed_ids)
+			end)
+
+			it("diffs the extracted highlights against the book being synced", function()
+				local _, ledger = syncWithDiff(apiForSyncBook(), { ids = {}, mass_removal = false })
+
+				assert.are.equal(1, #ledger.diffed)
+				assert.are.equal(CLIENT_BOOK_ID, ledger.diffed[1].client_book_id)
+				assert.are.equal("a passage", ledger.diffed[1].highlights[1].text)
+			end)
+
+			it("sends no removals for a book that has never pulled", function()
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, nil)
+
+				assert.are.same({}, api.uploaded.removed_ids)
+			end)
+
+			it("reports how many the server withdrew", function()
+				local result = syncWithDiff(apiForSyncBook(), { ids = { 7, 12 }, mass_removal = false })
+
+				assert.are.equal(2, result.highlights_removed)
+			end)
+
+			it("pushes removals even when the book has no highlights left", function()
+				-- The upload is the only channel removals travel on, so a book
+				-- emptied on the device still has something to say.
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = { 7 }, mass_removal = false }, { annotations = {} })
+
+				assert.are.same({ 7 }, api.uploaded.removed_ids)
+				assert.are.same({}, api.uploaded.highlights)
+			end)
+
+			it("does not reach the server when there is nothing to push at all", function()
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = {}, mass_removal = false }, { annotations = {} })
+
+				assert.is_nil(api.uploaded)
+			end)
+
+			it("asks before removing every highlight the book had", function()
+				local asked = {}
+				syncWithDiff(apiForSyncBook(), { ids = { 7, 12 }, mass_removal = true }, {
+					annotations = {},
+					confirm_removal = function(count)
+						table.insert(asked, count)
+						return true
+					end,
+				})
+
+				assert.are.same({ 2 }, asked)
+			end)
+
+			it("sends the removals the reader confirmed", function()
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = { 7, 12 }, mass_removal = true }, {
+					annotations = {},
+					confirm_removal = function()
+						return true
+					end,
+				})
+
+				assert.are.same({ 7, 12 }, api.uploaded.removed_ids)
+			end)
+
+			it("keeps the server's copy when the reader declines", function()
+				local api = apiForSyncBook()
+
+				local result = syncWithDiff(api, { ids = { 7, 12 }, mass_removal = true }, {
+					confirm_removal = function()
+						return false
+					end,
+				})
+
+				assert.are.same({}, api.uploaded.removed_ids)
+				assert.is_true(result.success)
+				assert.are.equal(0, result.highlights_removed)
+			end)
+
+			it("keeps the server's copy when there is nobody to ask", function()
+				-- An autosync during shutdown has no reader in front of it, and
+				-- a lost sidecar must not empty the account unattended.
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = { 7, 12 }, mass_removal = true })
+
+				assert.are.same({}, api.uploaded.removed_ids)
+			end)
+
+			it("keeps the server's copy when the question itself failed", function()
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = { 7 }, mass_removal = true }, {
+					confirm_removal = function()
+						error("no widget to show")
+					end,
+				})
+
+				assert.are.same({}, api.uploaded.removed_ids)
+			end)
+
+			it("asks nothing for an ordinary removal", function()
+				local asked = 0
+				local api = apiForSyncBook()
+
+				syncWithDiff(api, { ids = { 7 }, mass_removal = false }, {
+					confirm_removal = function()
+						asked = asked + 1
+						return false
+					end,
+				})
+
+				assert.are.equal(0, asked)
+				assert.are.same({ 7 }, api.uploaded.removed_ids)
+			end)
+
+			it("still pushes the highlights when the ledger throws", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					highlight_snapshot = ledgerRecording({ diff_throws = true }),
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_true(result.success)
+				assert.are.equal(1, #api.uploaded.highlights)
+				assert.are.same({}, api.uploaded.removed_ids)
+			end)
+
+			it("fails the sync when the upload carrying the removals failed", function()
+				-- The snapshot only moves on after a successful pull, so the
+				-- next sync diffs the same removals out again.
+				local api = apiForSyncBook({
+					uploadHighlights = function()
+						return false, nil, "Connection refused"
+					end,
+				})
+
+				local result = syncWithDiff(api, { ids = { 7 }, mass_removal = false })
+
+				assert.is_false(result.success)
+				assert.are.equal("Connection refused", result.error)
+			end)
 		end)
 	end)
 end)

@@ -11,6 +11,7 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
+local Trapper = require("ui/trapper")
 local logger = require("logger")
 local _ = require("gettext")
 
@@ -52,6 +53,11 @@ function UI.showSyncSuccess(result)
 		table.insert(lines, string.format(_("Uploaded %d new highlights."), uploaded))
 	end
 
+	local removed = result.highlights_removed or 0
+	if removed > 0 then
+		table.insert(lines, string.format(_("%d removed from your devices."), removed))
+	end
+
 	local pull = result.pull or {}
 	local pulled = pull.inserted or 0
 	if pulled > 0 then
@@ -72,6 +78,28 @@ function UI.showSyncSuccess(result)
 	end
 
 	UI.showMessage(table.concat(lines, "\n"), 6)
+end
+
+--- Ask before a book's whole highlight set leaves the reader's devices
+-- Only ever asked when the device has none of them left, which is as much the
+-- signature of a lost sidecar as of a deliberate clear-out, so the question is
+-- worth the interruption. It blocks, which a ConfirmBox can only do inside a
+-- Trapper coroutine; without one Trapper answers "OK" by itself, so an
+-- unwrapped caller is refused rather than silently agreed with.
+-- @param count number How many highlights would be removed
+-- @return boolean True when the reader confirmed the removal
+function UI.confirmRemoveAll(count)
+	if not coroutine.running() then
+		logger.warn("Crossbill: Cannot ask about removing highlights outside a Trapper coroutine")
+		return false
+	end
+
+	local confirmed = Trapper:confirm(
+		string.format(_("Remove all %d highlights of this book from your devices?"), count),
+		_("Keep"),
+		_("Remove")
+	)
+	return confirmed == true
 end
 
 --- Show sync error message

@@ -6,9 +6,10 @@ highlight, holding the server's id and the sha256 of its text. Without that
 memory the plugin cannot tell a highlight deleted on the device from one that
 never existed here, nor a fresh highlight from a stale echo of a removed one.
 
-Nothing reads the ledger yet; it only records. A book enrols on its first
-successful pull, and only highlights the importer actually placed are recorded:
-an unplaceable one would later read as "deleted on the device".
+A book enrols on its first successful pull, and only highlights the importer
+actually placed are recorded: an unplaceable one would later read as "deleted on
+the device". `findRemoved` then diffs the book's current highlights against that
+memory, which is how a deletion made on the device is recognised.
 
 The snapshot mirrors server state, so it is keyed by client_book_id (the hash of
 "title|author") rather than by the file path: it survives moves and is shared by
@@ -208,6 +209,64 @@ function HighlightSnapshot:hasBook(client_book_id)
 	end
 
 	return has == true
+end
+
+--- Diff a book's recorded highlights against the ones now on the device
+-- Matching is by text hash and set-based: a recorded highlight counts as gone
+-- only when no device highlight carries its text at all. The server's identity
+-- for a highlight is that same content hash, so it cannot hold two highlights
+-- with one text -- counting occurrences would only ever remove a highlight the
+-- reader still has.
+-- @param rows table Array of {server_id, text_hash} recorded for the book
+-- @param highlights table Array of the highlights currently on the device
+-- @return table {ids, mass_removal} as described on findRemoved
+local function diffRows(rows, highlights)
+	local on_device = {}
+	local device_count = 0
+
+	for _, highlight in ipairs(highlights) do
+		local text_hash = HighlightSnapshot.hashText(highlight.text)
+		if text_hash then
+			on_device[text_hash] = true
+			device_count = device_count + 1
+		end
+	end
+
+	local ids = {}
+	for _, row in ipairs(rows) do
+		if not on_device[row.text_hash] then
+			table.insert(ids, row.server_id)
+		end
+	end
+
+	return {
+		ids = ids,
+		-- Every recorded highlight gone and nothing left on the device is the
+		-- signature of a lost or emptied sidecar, not of a reader deleting
+		-- them one by one. The caller asks before acting on it.
+		mass_removal = #ids > 0 and #ids == #rows and device_count == 0,
+	}
+end
+
+--- Work out which of a book's highlights the reader deleted on the device
+-- A book with no snapshot cannot be diffed -- it has never pulled, so nothing
+-- says whether a missing highlight was deleted here or never arrived.
+-- @param client_book_id string The client book ID
+-- @param highlights table|nil The highlights currently on the device
+-- @return table|nil {ids = array of server ids to remove, mass_removal =
+--   boolean}, or nil when the book has no snapshot to diff against
+function HighlightSnapshot:findRemoved(client_book_id, highlights)
+	local rows = self:getBook(client_book_id)
+	if not rows then
+		return nil
+	end
+
+	if type(highlights) ~= "table" then
+		logger.warn("Crossbill HighlightSnapshot: Cannot diff a highlight set that is not a list")
+		return nil
+	end
+
+	return diffRows(rows, highlights)
 end
 
 return HighlightSnapshot

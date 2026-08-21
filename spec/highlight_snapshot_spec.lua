@@ -217,6 +217,131 @@ describe("HighlightSnapshot", function()
 		end)
 	end)
 
+	describe("findRemoved", function()
+		--- Enrol a book with the given highlights, then diff it against others
+		-- @param recorded table Array of {server_id, text} the pull placed
+		-- @param on_device table Array of {text} the book holds now
+		-- @return table|nil The diff
+		local function diffAfterRecording(recorded, on_device)
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, recorded)
+			return snapshot:findRemoved(CLIENT_BOOK_ID, on_device)
+		end
+
+		it("names the server ids the device no longer holds", function()
+			local removed = diffAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 12, text = "The spice must flow" },
+			}, { { text = "The spice must flow" } })
+
+			assert.are.same({ 7 }, removed.ids)
+		end)
+
+		it("finds nothing removed when the book still holds every recorded highlight", function()
+			local removed = diffAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 12, text = "The spice must flow" },
+			}, {
+				{ text = "The spice must flow" },
+				{ text = "Fear is the mind-killer" },
+			})
+
+			assert.are.same({}, removed.ids)
+			assert.is_false(removed.mass_removal)
+		end)
+
+		it("ignores highlights the device made that the server has never seen", function()
+			local removed = diffAfterRecording({ { server_id = 7, text = "Fear is the mind-killer" } }, {
+				{ text = "Fear is the mind-killer" },
+				{ text = "made on this device just now" },
+			})
+
+			assert.are.same({}, removed.ids)
+		end)
+
+		it("keeps a recorded highlight whose text is still somewhere in the book", function()
+			-- The server's identity for a highlight is the hash of its text, so
+			-- it cannot hold two with one text. Counting occurrences would only
+			-- ever remove a highlight the reader still has in front of them.
+			local removed = diffAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 8, text = "Fear is the mind-killer" },
+			}, { { text = "Fear is the mind-killer" } })
+
+			assert.are.same({}, removed.ids)
+		end)
+
+		it("refuses to diff a book that has never pulled", function()
+			-- Nothing says whether a missing highlight was deleted here or has
+			-- simply never arrived, so a first sync removes nothing.
+			local snapshot = ledgerWith()
+
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, { { text = "Fear is the mind-killer" } }))
+		end)
+
+		it("removes everything a book enrolled with highlights has lost", function()
+			local removed = diffAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 12, text = "The spice must flow" },
+			}, {})
+
+			assert.are.same({ 7, 12 }, removed.ids)
+		end)
+
+		it("flags an emptied book as a mass removal", function()
+			-- Every recorded highlight gone at once, with none left behind, is
+			-- as much the signature of a lost sidecar as of a real clear-out.
+			local removed = diffAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 12, text = "The spice must flow" },
+			}, {})
+
+			assert.is_true(removed.mass_removal)
+		end)
+
+		it("does not flag a book that still holds highlights of its own", function()
+			-- The reader replaced the server's highlights rather than losing
+			-- them: the sidecar is plainly intact, so there is nothing to ask.
+			local removed = diffAfterRecording({ { server_id = 7, text = "Fear is the mind-killer" } }, {
+				{ text = "a passage highlighted since" },
+			})
+
+			assert.are.same({ 7 }, removed.ids)
+			assert.is_false(removed.mass_removal)
+		end)
+
+		it("does not flag a book enrolled with no highlights at all", function()
+			-- Nothing to remove is not a mass removal, however empty the book.
+			local removed = diffAfterRecording({}, {})
+
+			assert.are.same({}, removed.ids)
+			assert.is_false(removed.mass_removal)
+		end)
+
+		it("treats a highlight without usable text as absent", function()
+			local removed = diffAfterRecording({ { server_id = 7, text = "Fear is the mind-killer" } }, {
+				{ text = "" },
+				{ text = JSON_NULL },
+			})
+
+			assert.are.same({ 7 }, removed.ids)
+			assert.is_true(removed.mass_removal)
+		end)
+
+		it("refuses a highlight set that is not a list", function()
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, nil))
+		end)
+
+		it("answers before the ledger was opened rather than throwing", function()
+			local snapshot = ledgerWith({ init = false })
+
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, {}))
+		end)
+	end)
+
 	describe("close", function()
 		it("closes the store", function()
 			local snapshot, store = ledgerWith()

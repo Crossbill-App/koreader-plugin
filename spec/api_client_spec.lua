@@ -8,7 +8,9 @@ local json = require("json")
 -- put back afterwards so nothing else sees the fake.
 local NetworkFake = {
 	get_result = { nil, nil, nil },
+	post_result = { nil, nil, nil },
 	requested = {},
+	posted = {},
 }
 
 --- Answer `getJson` with whatever the current test has queued
@@ -28,10 +30,30 @@ function NetworkFake.setGetResult(code, body, err)
 	NetworkFake.get_result = { code, body, err }
 end
 
---- Forget the requests made and the queued answer
+--- Answer `postJson` with whatever the current test has queued
+-- @param url string The URL being posted to
+-- @param data table The payload the client built
+-- @param token string|nil The bearer token
+-- @return number|nil, table|nil, string|nil The queued status, body and error
+function NetworkFake.postJson(url, data, token)
+	table.insert(NetworkFake.posted, { url = url, data = data, token = token })
+	return NetworkFake.post_result[1], NetworkFake.post_result[2], NetworkFake.post_result[3]
+end
+
+--- Queue the tuple the next `postJson` should return
+-- @param code number|nil The HTTP status
+-- @param body table|nil The decoded response body
+-- @param err string|nil The error message
+function NetworkFake.setPostResult(code, body, err)
+	NetworkFake.post_result = { code, body, err }
+end
+
+--- Forget the requests made and the queued answers
 function NetworkFake.reset()
 	NetworkFake.get_result = { nil, nil, nil }
+	NetworkFake.post_result = { nil, nil, nil }
 	NetworkFake.requested = {}
+	NetworkFake.posted = {}
 end
 
 local real_network = package.loaded["modules/network"]
@@ -62,6 +84,94 @@ end
 describe("ApiClient", function()
 	before_each(function()
 		NetworkFake.reset()
+	end)
+
+	describe("uploadHighlights", function()
+		local A_HIGHLIGHT = { text = "Fear is the mind-killer" }
+
+		--- Upload with a successful server answer and hand back the payload sent
+		-- @param highlights table The highlights to upload
+		-- @param removed_ids table|nil The ids to remove
+		-- @return table The payload the client built
+		local function payloadFor(highlights, removed_ids)
+			NetworkFake.setPostResult(200, { highlights_created = 0, highlights_skipped = 0, highlights_removed = 0 })
+			clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, highlights, "device-1", removed_ids)
+			return NetworkFake.posted[1].data
+		end
+
+		it("sends the highlights, the book and the device", function()
+			local payload = payloadFor({ A_HIGHLIGHT })
+
+			assert.are.equal(BASE_URL .. "/api/v1/highlights/upload", NetworkFake.posted[1].url)
+			assert.are.equal(TOKEN, NetworkFake.posted[1].token)
+			assert.are.equal(CLIENT_BOOK_ID, payload.client_book_id)
+			assert.are.equal("device-1", payload.device_id)
+			assert.are.same({ A_HIGHLIGHT }, payload.highlights)
+		end)
+
+		it("sends the ids deleted on the device alongside them", function()
+			local payload = payloadFor({ A_HIGHLIGHT }, { 7, 12 })
+
+			assert.are.same({ 7, 12 }, payload.removed_ids)
+		end)
+
+		it("leaves the removals out when there are none", function()
+			-- Exactly the payload every older plugin sent, so nothing changes
+			-- for a sync that deleted nothing.
+			assert.is_nil(payloadFor({ A_HIGHLIGHT }, {}).removed_ids)
+			assert.is_nil(payloadFor({ A_HIGHLIGHT }, nil).removed_ids)
+		end)
+
+		it("sends an empty highlight set as an array, not as an object", function()
+			-- A removal-only push carries no highlights, and a bare Lua table
+			-- would reach the server as `{}` where it expects a list.
+			local payload = payloadFor({}, { 7 })
+
+			assert.are.equal(json.EMPTY_ARRAY, payload.highlights)
+		end)
+
+		it("returns the counts the server reported", function()
+			NetworkFake.setPostResult(200, { highlights_created = 2, highlights_skipped = 1, highlights_removed = 3 })
+
+			local ok, response, err = clientWithToken(TOKEN):uploadHighlights(
+				CLIENT_BOOK_ID,
+				{ A_HIGHLIGHT },
+				nil,
+				{ 7 }
+			)
+
+			assert.is_true(ok)
+			assert.are.equal(3, response.highlights_removed)
+			assert.is_nil(err)
+		end)
+
+		it("reports a failed upload with its status", function()
+			NetworkFake.setPostResult(500, nil)
+
+			local ok, response, err = clientWithToken(TOKEN):uploadHighlights(
+				CLIENT_BOOK_ID,
+				{ A_HIGHLIGHT },
+				nil,
+				{ 7 }
+			)
+
+			assert.is_false(ok)
+			assert.is_nil(response)
+			assert.are.equal("Upload failed: 500", err)
+		end)
+
+		it("does not reach the network when authentication fails", function()
+			local ok, _, err = clientWithToken(nil, "Invalid credentials"):uploadHighlights(
+				CLIENT_BOOK_ID,
+				{ A_HIGHLIGHT },
+				nil,
+				{ 7 }
+			)
+
+			assert.is_false(ok)
+			assert.are.equal("Invalid credentials", err)
+			assert.are.same({}, NetworkFake.posted)
+		end)
 	end)
 
 	describe("getHighlights", function()
