@@ -222,13 +222,11 @@ end
 -- @return table {ids, mass_removal} as described on findRemoved
 local function diffRows(rows, highlights)
 	local on_device = {}
-	local device_count = 0
 
 	for _, highlight in ipairs(highlights) do
 		local text_hash = HighlightSnapshot.hashText(highlight.text)
 		if text_hash then
 			on_device[text_hash] = true
-			device_count = device_count + 1
 		end
 	end
 
@@ -241,10 +239,13 @@ local function diffRows(rows, highlights)
 
 	return {
 		ids = ids,
-		-- Every recorded highlight gone and nothing left on the device is the
-		-- signature of a lost or emptied sidecar, not of a reader deleting
-		-- them one by one. The caller asks before acting on it.
-		mass_removal = #ids > 0 and #ids == #rows and device_count == 0,
+		-- Losing every recorded highlight at once rarely means the reader
+		-- deleted them one by one. It is equally the signature of a lost
+		-- sidecar, or of a second file with the same title and author being
+		-- diffed against this ledger -- the key is "title|author", so copies of
+		-- one book share it while holding different highlights. What the device
+		-- still has of its own says nothing either way, so the caller asks.
+		mass_removal = #ids > 0 and #ids == #rows,
 	}
 end
 

@@ -81,9 +81,10 @@ function UI.showSyncSuccess(result)
 end
 
 --- Ask before a book's whole highlight set leaves the reader's devices
--- Only ever asked when the device has none of them left, which is as much the
--- signature of a lost sidecar as of a deliberate clear-out, so the question is
--- worth the interruption. It blocks, which a ConfirmBox can only do inside a
+-- Only ever asked when every highlight the device last pulled has gone at once,
+-- which is as much the signature of a lost sidecar or of a second copy of the
+-- book as of a deliberate clear-out, so the question is worth the
+-- interruption. It blocks, which a ConfirmBox can only do inside a
 -- Trapper coroutine; without one Trapper answers "OK" by itself, so an
 -- unwrapped caller is refused rather than silently agreed with.
 -- @param count number How many highlights would be removed

@@ -299,12 +299,26 @@ describe("HighlightSnapshot", function()
 			assert.is_true(removed.mass_removal)
 		end)
 
-		it("does not flag a book that still holds highlights of its own", function()
-			-- The reader replaced the server's highlights rather than losing
-			-- them: the sidecar is plainly intact, so there is nothing to ask.
+		it("flags a book holding a different set entirely as a mass removal", function()
+			-- The ledger is keyed by "title|author", so a second file of the
+			-- same book reads its ledger while holding its own highlights.
+			-- Diffed blind that empties the account for every device, so what
+			-- the device still has of its own cannot wave the question away.
 			local removed = diffAfterRecording({ { server_id = 7, text = "Fear is the mind-killer" } }, {
-				{ text = "a passage highlighted since" },
+				{ text = "a passage highlighted in another copy" },
 			})
+
+			assert.are.same({ 7 }, removed.ids)
+			assert.is_true(removed.mass_removal)
+		end)
+
+		it("does not flag a book that kept some of what it pulled", function()
+			-- Highlights deleted one by one leave the rest behind, which no
+			-- lost sidecar and no foreign copy ever does.
+			local removed = diffAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 12, text = "The spice must flow" },
+			}, { { text = "The spice must flow" } })
 
 			assert.are.same({ 7 }, removed.ids)
 			assert.is_false(removed.mass_removal)

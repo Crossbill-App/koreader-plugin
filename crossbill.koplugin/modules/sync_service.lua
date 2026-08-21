@@ -322,8 +322,9 @@ function SyncService:_removedHighlightIds(client_book_id, highlights, opts)
 end
 
 --- Ask the reader before every highlight of a book leaves their devices
--- A book whose highlights all vanished at once, leaving none behind, looks the
--- same whether the reader deleted them or the sidecar was lost. Nobody to ask --
+-- A book that lost its whole recorded set at once looks the same whether the
+-- reader cleared it out, the sidecar was lost, or a second file of the same
+-- title and author is being diffed against this one's ledger. Nobody to ask --
 -- an autosync during shutdown -- means the server's copy is kept.
 -- @param count number How many highlights the removal would cover
 -- @param opts table|nil Sync options; see syncBook
