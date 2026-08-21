@@ -33,6 +33,7 @@ SyncService.__index = SyncService
 --   settings Settings instance for configuration
 --   digest_service DigestService instance for digest refresh
 --   highlight_importer HighlightImporter instance for the pull
+--   highlight_snapshot HighlightSnapshot ledger of the last applied pull
 -- @return SyncService instance
 function SyncService:new(deps)
 	local instance = setmetatable({}, SyncService)
@@ -42,6 +43,7 @@ function SyncService:new(deps)
 	instance.settings = deps.settings
 	instance.digest_service = deps.digest_service
 	instance.highlight_importer = deps.highlight_importer
+	instance.highlight_snapshot = deps.highlight_snapshot
 	return instance
 end
 
@@ -172,12 +174,34 @@ function SyncService:_applyPull(result, ui, client_book_id)
 		result.pull_error = tostring(pull_result)
 	elseif pull_result then
 		result.pull = pull_result
+		self:_recordSnapshot(client_book_id, pull_result.placed)
 	else
 		result.pull_error = pull_err or "Highlight pull failed"
 	end
 
 	if result.pull_error then
 		logger.warn("Crossbill SyncService: Highlight pull failed:", result.pull_error)
+	end
+end
+
+--- Remember the highlights the pull just placed in the book
+-- Only a pull that reached the book gets recorded, so an aborted one leaves the
+-- previous snapshot describing the state the device is actually in. Like the
+-- digest refresh, this is bookkeeping: it never fails a sync whose push already
+-- succeeded.
+-- @param client_book_id string The client book ID
+-- @param placed table|nil Array of {server_id, text} the importer reported
+function SyncService:_recordSnapshot(client_book_id, placed)
+	if not self.highlight_snapshot or not placed then
+		return
+	end
+
+	local ok, err = pcall(function()
+		self.highlight_snapshot:recordPlaced(client_book_id, placed)
+	end)
+
+	if not ok then
+		logger.warn("Crossbill SyncService: Failed to record the highlight snapshot:", err)
 	end
 end
 

@@ -96,6 +96,7 @@ end
 -- @return table One item as the server's highlight list holds it
 local function serverItem(fields)
 	local item = {
+		id = 1,
 		placeable = true,
 		start_xpoint = XPOINT_A,
 		end_xpoint = XPOINT_B,
@@ -609,6 +610,78 @@ describe("HighlightImporter", function()
 			importer:replaceHighlights(reader, { serverItem({ text = "new" }) })
 
 			assert.are.equal(0, #reader:eventsNamed("FlushSettings"))
+		end)
+	end)
+
+	describe("the set it reports as placed", function()
+		it("reports each placed highlight's server id and text", function()
+			local reader = readerFor()
+
+			local result = importer:replaceHighlights(reader, {
+				serverItem({ id = 7 }),
+				serverItem({
+					id = 12,
+					start_xpoint = XPOINT_C,
+					end_xpoint = XPOINT_D,
+					text = "fear is the mind-killer",
+				}),
+			})
+
+			assert.are.same({
+				{ server_id = 7, text = "the spice must flow" },
+				{ server_id = 12, text = "fear is the mind-killer" },
+			}, result.placed)
+		end)
+
+		it("reports the placed set when the device already matched the server", function()
+			-- The early return skips the replacement, but this is exactly the
+			-- book that has to enrol: nothing about it is ever going to change.
+			local reader = readerFor({ annotations = { deviceHighlight() } })
+
+			local result = importer:replaceHighlights(reader, { serverItem({ id = 7 }) })
+
+			assert.is_true(result.unchanged)
+			assert.are.same({ { server_id = 7, text = "the spice must flow" } }, result.placed)
+		end)
+
+		it("reports an empty set when the server has no highlights left", function()
+			local reader = readerFor({ annotations = { deviceHighlight() } })
+
+			local result = importer:replaceHighlights(reader, {})
+
+			assert.are.same({}, result.placed)
+		end)
+
+		it("leaves out an item the server could not place", function()
+			-- A highlight that never reached the book must not be remembered as
+			-- applied, or the next diff reads it as deleted on the device.
+			local reader = readerFor()
+
+			local result = importer:replaceHighlights(reader, {
+				serverItem({ id = 7, placeable = false }),
+				serverItem({ id = 12, start_xpoint = XPOINT_C, end_xpoint = XPOINT_D }),
+			})
+
+			assert.are.same({ { server_id = 12, text = "the spice must flow" } }, result.placed)
+		end)
+
+		it("leaves out an item whose position does not resolve in this book", function()
+			local reader = readerFor({ resolves = { [XPOINT_A] = true, [XPOINT_B] = true } })
+
+			local result = importer:replaceHighlights(reader, {
+				serverItem({ id = 7, start_xpoint = XPOINT_C, end_xpoint = XPOINT_D }),
+				serverItem({ id = 12 }),
+			})
+
+			assert.are.same({ { server_id = 12, text = "the spice must flow" } }, result.placed)
+		end)
+
+		it("reports the text the annotation got, so a null text reads as empty", function()
+			local reader = readerFor()
+
+			local result = importer:replaceHighlights(reader, { serverItem({ id = 7, text = JSON_NULL }) })
+
+			assert.are.same({ { server_id = 7, text = "" } }, result.placed)
 		end)
 	end)
 end)
