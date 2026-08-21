@@ -26,6 +26,7 @@ local HighlightSnapshotStore = require("modules/highlight_snapshot_store")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
+local DocumentSupport = require("modules/document_support")
 
 local CrossbillSync = WidgetContainer:extend({
 	name = "Crossbill",
@@ -56,9 +57,19 @@ function CrossbillSync:onDispatcherRegisterActions()
 end
 
 --- Initialize the plugin
+-- Everything below the document check is skipped on a non-EPUB: no menu, no
+-- databases, no session. The gesture actions are registered first regardless,
+-- because they are global configuration -- a reader must be able to bind the
+-- gesture while a PDF happens to be open, even though it will do nothing here.
 function CrossbillSync:init()
 	-- Register gesture-bindable actions
 	self:onDispatcherRegisterActions()
+
+	self.is_supported_document = DocumentSupport.isSupportedDocument(self.ui)
+	if not self.is_supported_document then
+		logger.info("Crossbill: Not an EPUB, plugin stays inactive for this document")
+		return
+	end
 
 	-- Initialize settings
 	self.settings = Settings:new():load()
@@ -168,6 +179,11 @@ end
 
 --- Show the current chapter's digest
 function CrossbillSync:showChapterDigest()
+	if not self.is_supported_document then
+		logger.warn("Crossbill: Cannot show digest - the open document is not an EPUB")
+		return
+	end
+
 	if not self.ui.document then
 		logger.warn("Crossbill: Cannot show digest - no document available")
 		return
@@ -212,12 +228,17 @@ end
 --- Check if session tracking is currently active
 -- @return boolean True if session tracking is enabled and tracker is available
 function CrossbillSync:isSessionTrackingActive()
-	return self.settings:isSessionTrackingEnabled() and self.session_tracker ~= nil
+	return self.is_supported_document and self.settings:isSessionTrackingEnabled() and self.session_tracker ~= nil
 end
 
 --- Sync the currently open book's data
 -- @param is_autosync boolean If true, run in silent mode (no UI feedback)
 function CrossbillSync:syncCurrentBook(is_autosync)
+	if not self.is_supported_document then
+		logger.warn("Crossbill: Cannot sync - the open document is not an EPUB")
+		return
+	end
+
 	local callback = function()
 		self:performSync(is_autosync)
 	end
@@ -362,6 +383,9 @@ end
 
 --- Called when device goes to sleep/suspend
 function CrossbillSync:onSuspend()
+	if not self.is_supported_document then
+		return false
+	end
 	if self:isSessionTrackingActive() then
 		self.session_tracker:endSession(self.ui.document, self.ui, "suspend")
 	end
@@ -374,6 +398,9 @@ end
 
 --- Called when KOReader exits
 function CrossbillSync:onExit()
+	if not self.is_supported_document then
+		return false
+	end
 	if self:isSessionTrackingActive() then
 		self.session_tracker:endSession(self.ui.document, self.ui, "app_exit")
 	end
