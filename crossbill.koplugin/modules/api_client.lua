@@ -78,7 +78,9 @@ end
 -- between the two halves. The field is left out entirely when there is nothing
 -- to remove, which is the payload every older plugin sent.
 -- @param client_book_id string The client-side book ID (hash of title|author)
--- @param highlights table Array of highlights
+-- @param highlights table Array of highlights; one the device made since its
+--   last pull carries is_new, which lets the server revive a copy it had
+--   removed or deleted under the same text
 -- @param device_id string|nil Identifier of the device the highlights came from
 -- @param removed_ids table|nil Server ids of highlights deleted on this device
 -- @return boolean Success status

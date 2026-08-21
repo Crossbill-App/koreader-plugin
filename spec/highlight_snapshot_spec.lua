@@ -356,6 +356,106 @@ describe("HighlightSnapshot", function()
 		end)
 	end)
 
+	describe("flagNew", function()
+		--- Enrol a book with the given highlights, then flag a push against it
+		-- @param recorded table|nil Array of {server_id, text} the pull placed, nil
+		--   to leave the book unenrolled
+		-- @param pushed table Array of the highlights about to be uploaded
+		-- @return number How many were flagged
+		-- @return table The pushed highlights, flagged in place
+		local function flagAfterRecording(recorded, pushed)
+			local snapshot = ledgerWith()
+			if recorded then
+				snapshot:recordPlaced(CLIENT_BOOK_ID, recorded)
+			end
+			return snapshot:flagNew(CLIENT_BOOK_ID, pushed), pushed
+		end
+
+		it("flags a highlight whose text the snapshot has never held", function()
+			local flagged, pushed = flagAfterRecording({ { server_id = 7, text = "Fear is the mind-killer" } }, {
+				{ text = "Fear is the mind-killer" },
+				{ text = "made on this device just now" },
+			})
+
+			assert.are.equal(1, flagged)
+			assert.is_nil(pushed[1].is_new)
+			assert.is_true(pushed[2].is_new)
+		end)
+
+		it("leaves a highlight the pull placed unflagged", function()
+			-- Pushing back what the server just sent is an echo, not a decision, so
+			-- it must not revive anything the account has since removed.
+			local flagged, pushed = flagAfterRecording({
+				{ server_id = 7, text = "Fear is the mind-killer" },
+				{ server_id = 12, text = "The spice must flow" },
+			}, {
+				{ text = "Fear is the mind-killer" },
+				{ text = "The spice must flow" },
+			})
+
+			assert.are.equal(0, flagged)
+			assert.is_nil(pushed[1].is_new)
+			assert.is_nil(pushed[2].is_new)
+		end)
+
+		it("flags everything a book enrolled with no highlights pushes", function()
+			local flagged, pushed = flagAfterRecording({}, { { text = "Fear is the mind-killer" } })
+
+			assert.are.equal(1, flagged)
+			assert.is_true(pushed[1].is_new)
+		end)
+
+		it("flags nothing for a book that has never pulled", function()
+			-- A fresh device's sidecar may predate every web deletion the account
+			-- has made, and flagging it blind would revive all of them at once. The
+			-- book enrols on its first pull and flags from then on.
+			local flagged, pushed = flagAfterRecording(nil, { { text = "Fear is the mind-killer" } })
+
+			assert.are.equal(0, flagged)
+			assert.is_nil(pushed[1].is_new)
+		end)
+
+		it("re-flags a highlight the reader deleted and highlighted again", function()
+			-- The passage left the book, so the removal already went out and the
+			-- next pull dropped it from the snapshot. Highlighting it again is the
+			-- deliberate act the flag exists for.
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+			snapshot:recordPlaced(CLIENT_BOOK_ID, {})
+
+			local pushed = { { text = "Fear is the mind-killer" } }
+
+			assert.are.equal(1, snapshot:flagNew(CLIENT_BOOK_ID, pushed))
+			assert.is_true(pushed[1].is_new)
+		end)
+
+		it("leaves a highlight without usable text unflagged", function()
+			-- The server hashes the text to match it, so text it could not have
+			-- hashed matches nothing there either.
+			local flagged, pushed = flagAfterRecording({ { server_id = 7, text = "Fear is the mind-killer" } }, {
+				{ text = "" },
+				{ text = JSON_NULL },
+			})
+
+			assert.are.equal(0, flagged)
+			assert.is_nil(pushed[1].is_new)
+			assert.is_nil(pushed[2].is_new)
+		end)
+
+		it("refuses a highlight set that is not a list", function()
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, nil))
+		end)
+
+		it("answers before the ledger was opened rather than throwing", function()
+			local snapshot = ledgerWith({ init = false })
+
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, { { text = "Fear is the mind-killer" } }))
+		end)
+	end)
+
 	describe("close", function()
 		it("closes the store", function()
 			local snapshot, store = ledgerWith()

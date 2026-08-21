@@ -17,16 +17,19 @@ local function syncServiceWith(opts)
 end
 
 --- Build a snapshot ledger recording what it was asked to remember
--- @param opts table|nil throws, removed and diff_throws:
+-- @param opts table|nil throws, removed, diff_throws, new_texts and flag_throws:
 --   throws Make recordPlaced blow up
 --   removed The diff findRemoved answers with, nil for a book never pulled
 --   diff_throws Make findRemoved blow up
+--   new_texts Set of texts flagNew treats as made on this device
+--   flag_throws Make flagNew blow up
 -- @return table A ledger stand-in whose `calls` hold every record it took
 local function ledgerRecording(opts)
 	opts = opts or {}
 	return {
 		calls = {},
 		diffed = {},
+		flagged = {},
 		recordPlaced = function(self, client_book_id, placed)
 			if opts.throws then
 				error("snapshot store blew up")
@@ -40,6 +43,20 @@ local function ledgerRecording(opts)
 			end
 			table.insert(self.diffed, { client_book_id = client_book_id, highlights = highlights })
 			return opts.removed
+		end,
+		flagNew = function(self, client_book_id, highlights)
+			if opts.flag_throws then
+				error("snapshot store blew up")
+			end
+			table.insert(self.flagged, { client_book_id = client_book_id, highlights = highlights })
+			local count = 0
+			for _, highlight in ipairs(highlights) do
+				if opts.new_texts and opts.new_texts[highlight.text] then
+					highlight.is_new = true
+					count = count + 1
+				end
+			end
+			return count
 		end,
 	}
 end
@@ -714,6 +731,78 @@ describe("SyncService", function()
 
 				assert.is_false(result.success)
 				assert.are.equal("Connection refused", result.error)
+			end)
+		end)
+
+		describe("the highlights it flags as new on this device", function()
+			local A_PASSAGE = { drawer = "lighten", text = "a passage" }
+			local ANOTHER_PASSAGE = { drawer = "lighten", text = "another passage" }
+
+			--- Sync a book whose ledger calls the given texts new
+			-- @param api table The api client stand-in
+			-- @param opts table|nil new_texts, flag_throws and annotations
+			-- @return table The sync result
+			-- @return table The ledger stand-in
+			local function syncWithFlagging(api, opts)
+				opts = opts or {}
+				local ledger = ledgerRecording({
+					new_texts = opts.new_texts,
+					flag_throws = opts.flag_throws,
+				})
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					highlight_snapshot = ledger,
+				})
+				local result = service:syncBook(bookFor(opts.annotations or { A_PASSAGE, ANOTHER_PASSAGE }))
+				return result, ledger
+			end
+
+			it("marks a highlight the ledger has never pulled", function()
+				local api = apiForSyncBook()
+
+				syncWithFlagging(api, { new_texts = { ["another passage"] = true } })
+
+				assert.is_nil(api.uploaded.highlights[1].is_new)
+				assert.is_true(api.uploaded.highlights[2].is_new)
+			end)
+
+			it("flags the extracted highlights of the book being synced", function()
+				local _, ledger = syncWithFlagging(apiForSyncBook())
+
+				assert.are.equal(1, #ledger.flagged)
+				assert.are.equal(CLIENT_BOOK_ID, ledger.flagged[1].client_book_id)
+				assert.are.equal("a passage", ledger.flagged[1].highlights[1].text)
+			end)
+
+			it("marks nothing when every pushed highlight came from the server", function()
+				local api = apiForSyncBook()
+
+				syncWithFlagging(api)
+
+				assert.is_nil(api.uploaded.highlights[1].is_new)
+				assert.is_nil(api.uploaded.highlights[2].is_new)
+			end)
+
+			it("still pushes the highlights when the ledger throws", function()
+				-- Unflagged highlights are the behaviour that shipped before
+				-- the flag existed, which beats a sync lost to bookkeeping.
+				local api = apiForSyncBook()
+
+				local result = syncWithFlagging(api, { flag_throws = true })
+
+				assert.is_true(result.success)
+				assert.are.equal(2, #api.uploaded.highlights)
+				assert.is_nil(api.uploaded.highlights[1].is_new)
+			end)
+
+			it("pushes unflagged highlights when there is no ledger at all", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+				local result = service:syncBook(bookFor({ A_PASSAGE }))
+
+				assert.is_true(result.success)
+				assert.is_nil(api.uploaded.highlights[1].is_new)
 			end)
 		end)
 	end)
