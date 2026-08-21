@@ -282,12 +282,6 @@ function Network.disableWifiIfNeeded()
 	end
 end
 
---- Check if we enabled WiFi
--- @return boolean True if we enabled WiFi
-function Network.didWeEnableWifi()
-	return wifi_enabled_by_us
-end
-
 --- Check whether the device currently has a network connection
 -- Never prompts and never turns WiFi on; use it to decide whether an optional
 -- network call is worth attempting. Anything other than a definite yes counts

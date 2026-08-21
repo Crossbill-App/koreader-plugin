@@ -294,8 +294,7 @@ end
 
 --- Show server configuration dialog
 -- @param settings Settings instance
--- @param on_save function Callback when settings are saved
-function UI.showConfigureServerDialog(settings, on_save)
+function UI.showConfigureServerDialog(settings)
 	local dialog
 	dialog = MultiInputDialog:new({
 		title = _("Crossbill Settings"),
@@ -334,10 +333,6 @@ function UI.showConfigureServerDialog(settings, on_save)
 						settings:updateServerConfig(base_url, username, password)
 						UIManager:close(dialog)
 						UI.showSettingsSaved()
-
-						if on_save then
-							on_save()
-						end
 					end,
 				},
 			},
@@ -350,8 +345,7 @@ end
 
 --- Show minimum reading session duration configuration dialog
 -- @param settings Settings instance
--- @param on_save function Callback when settings are saved
-function UI.showMinSessionDurationDialog(settings, on_save)
+function UI.showMinSessionDurationDialog(settings)
 	local dialog
 	dialog = MultiInputDialog:new({
 		title = _("Minimum Reading Session Duration"),
@@ -382,10 +376,6 @@ function UI.showMinSessionDurationDialog(settings, on_save)
 							settings:save()
 							UIManager:close(dialog)
 							UI.showSettingsSaved()
-
-							if on_save then
-								on_save()
-							end
 						else
 							UI.showMessage(_("Invalid duration. Please enter a number greater than 0."), 3)
 						end

@@ -322,21 +322,4 @@ function SyncService:_getServerBookMetadata(client_book_id)
 	return metadata
 end
 
---- Upload reading sessions opportunistically (called from main when already online)
--- @param ui table The KOReader UI context
--- @return boolean Success status
--- @return number Number of sessions synced
-function SyncService:uploadReadingSessionsIfOnline(ui)
-	if not ui.document then
-		return true, 0
-	end
-
-	local book_metadata = BookMetadata:new(ui)
-	local book_data = book_metadata:extractBookData()
-	local doc_path = book_metadata:getDocPath()
-
-	local result = self:_syncReadingSessions(ui, book_data.client_book_id, doc_path)
-	return result.success, result.synced
-end
-
 return SyncService
