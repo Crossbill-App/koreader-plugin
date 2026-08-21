@@ -270,4 +270,48 @@ function HighlightSnapshot:findRemoved(client_book_id, highlights)
 	return diffRows(rows, highlights)
 end
 
+--- Mark the highlights this device made since its last pull
+-- A highlight whose text the snapshot does not hold has never come from the
+-- server, so pushing it is a deliberate act: the server takes the flag as leave
+-- to revive a highlight it had removed or soft-deleted under that same text.
+--
+-- A book with no snapshot is left unflagged. Its sidecar may predate everything
+-- the account has since deleted on the web, and flagging it blind would revive
+-- all of it on the book's first sync from a fresh device. The book enrols on its
+-- first pull and flags normally from then on.
+--
+-- @param client_book_id string The client book ID
+-- @param highlights table|nil The highlights about to be pushed, flagged in place
+-- @return number How many highlights were flagged
+function HighlightSnapshot:flagNew(client_book_id, highlights)
+	local rows = self:getBook(client_book_id)
+	if not rows then
+		return 0
+	end
+
+	if type(highlights) ~= "table" then
+		logger.warn("Crossbill HighlightSnapshot: Cannot flag a highlight set that is not a list")
+		return 0
+	end
+
+	local from_server = {}
+	for _, row in ipairs(rows) do
+		from_server[row.text_hash] = true
+	end
+
+	local flagged = 0
+	for _, highlight in ipairs(highlights) do
+		local text_hash = HighlightSnapshot.hashText(highlight.text)
+		-- Text the server could not have hashed has no identity to compare, and
+		-- the server cannot match it to anything either, so it stays unflagged.
+		if text_hash and not from_server[text_hash] then
+			highlight.is_new = true
+			flagged = flagged + 1
+		end
+	end
+
+	logger.dbg("Crossbill HighlightSnapshot: Flagged", flagged, "new highlights for", client_book_id)
+	return flagged
+end
+
 return HighlightSnapshot

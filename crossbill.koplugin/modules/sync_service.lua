@@ -265,6 +265,9 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 		return result
 	end
 
+	-- Whatever the book holds that the ledger never pulled was made here
+	self:_flagNewHighlights(client_book_id, highlights)
+
 	-- Upload highlights to server
 	local upload_success, response, err =
 		self.api_client:uploadHighlights(client_book_id, highlights, DeviceIdentity.getDeviceId(), removed_ids)
@@ -284,6 +287,34 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 	end
 
 	return result
+end
+
+--- Mark the highlights this device made itself before they are pushed
+-- A flagged highlight tells the server the reader highlighted the passage
+-- deliberately, so a copy it had removed or deleted is revived rather than
+-- swallowed as a stale echo. Like the diff, this leans on the ledger: a book
+-- that has never pulled flags nothing and pushes exactly as it did before.
+-- @param client_book_id string The client book ID
+-- @param highlights table The highlights about to be pushed, flagged in place
+function SyncService:_flagNewHighlights(client_book_id, highlights)
+	if not self.highlight_snapshot then
+		return
+	end
+
+	local ok, flagged = pcall(function()
+		return self.highlight_snapshot:flagNew(client_book_id, highlights)
+	end)
+
+	if not ok then
+		-- Unflagged highlights are the old behaviour, which is worth more than
+		-- a sync that fails over bookkeeping.
+		logger.warn("Crossbill SyncService: Failed to flag new highlights:", flagged)
+		return
+	end
+
+	if flagged > 0 then
+		logger.info("Crossbill SyncService: Flagging", flagged, "highlights as new on this device")
+	end
 end
 
 --- Work out which of the book's server highlights were deleted on this device
