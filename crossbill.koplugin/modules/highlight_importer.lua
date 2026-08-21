@@ -125,13 +125,19 @@ local function buildItem(ui, source, start_xpoint, end_xpoint, defaults)
 end
 
 --- Turn the server's items into annotations, counting what had to be skipped
+-- The second array is what the caller records as applied: the server's id and
+-- the text of every highlight that made it into the book. It stays beside the
+-- annotations rather than inside them, because annotations are written to the
+-- sidecar and the server's id has no business there.
 -- @param ui table The KOReader UI context
 -- @param items table Array of highlight items from the server
 -- @param defaults table Fallback drawer and color
 -- @param result table Result table whose skip counters are updated
 -- @return table Array of annotation items, in the server's order
+-- @return table Array of {server_id, text}, one per annotation item
 local function buildItems(ui, items, defaults, result)
 	local built = {}
+	local placed = {}
 
 	for _, source in ipairs(items) do
 		local start_xpoint = asNonEmptyString(source.start_xpoint)
@@ -141,11 +147,13 @@ local function buildItems(ui, items, defaults, result)
 		elseif not isInDocument(ui.document, start_xpoint) or not isInDocument(ui.document, end_xpoint) then
 			result.skipped_invalid = result.skipped_invalid + 1
 		else
-			table.insert(built, buildItem(ui, source, start_xpoint, end_xpoint, defaults))
+			local item = buildItem(ui, source, start_xpoint, end_xpoint, defaults)
+			table.insert(built, item)
+			table.insert(placed, { server_id = source.id, text = item.text })
 		end
 	end
 
-	return built
+	return built, placed
 end
 
 --- Key an annotation by the position pair that identifies it
@@ -269,7 +277,8 @@ end
 -- @param ui table The KOReader UI context
 -- @param items table Array of highlight items from the server
 -- @return table|nil Result with inserted, skipped_unplaceable, skipped_invalid,
---   kept_bookmarks and unchanged, or nil on failure
+--   kept_bookmarks, unchanged and placed (the {server_id, text} of every
+--   highlight that reached the book), or nil on failure
 -- @return string|nil Error message
 function HighlightImporter:replaceHighlights(ui, items)
 	if not ui.document or not ui.annotation or not ui.annotation.annotations then
@@ -291,7 +300,11 @@ function HighlightImporter:replaceHighlights(ui, items)
 		drawer = highlight_settings.saved_drawer or FALLBACK_DRAWER,
 		color = highlight_settings.saved_color,
 	}
-	local built = buildItems(ui, items, defaults, result)
+	local built, placed = buildItems(ui, items, defaults, result)
+	-- Reported on every path that returns a result, the unchanged one included:
+	-- a book that already matches the server is exactly the book whose snapshot
+	-- would otherwise never be written.
+	result.placed = placed
 
 	if sameHighlightSet(ui.annotation.annotations, built) then
 		result.unchanged = true
