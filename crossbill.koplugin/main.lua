@@ -82,14 +82,14 @@ function CrossbillSync:init()
 	self.highlight_importer = HighlightImporter:new()
 
 	-- Initialize sync service with all dependencies
-	self.sync_service = SyncService:new(
-		self.api_client,
-		self.file_uploader,
-		self.session_tracker,
-		self.settings,
-		self.digest_service,
-		self.highlight_importer
-	)
+	self.sync_service = SyncService:new({
+		api_client = self.api_client,
+		file_uploader = self.file_uploader,
+		session_tracker = self.session_tracker,
+		settings = self.settings,
+		digest_service = self.digest_service,
+		highlight_importer = self.highlight_importer,
+	})
 
 	-- Register menu
 	self.ui.menu:registerToMainMenu(self)

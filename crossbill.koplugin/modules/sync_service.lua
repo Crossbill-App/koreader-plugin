@@ -23,21 +23,25 @@ local SyncService = {}
 SyncService.__index = SyncService
 
 --- Create a new SyncService instance
--- @param api_client ApiClient instance for server communication
--- @param file_uploader FileUploader instance for file uploads
--- @param session_tracker SessionTracker instance for reading sessions
--- @param settings Settings instance for configuration
--- @param digest_service DigestService instance for digest refresh
--- @param highlight_importer HighlightImporter instance for the pull
+-- Collaborators come in a table rather than positionally: a caller that wants
+-- only some of them (a test, or a sync path that skips the digest refresh) can
+-- name those instead of counting nils.
+-- @param deps table Collaborators, all optional except api_client:
+--   api_client ApiClient instance for server communication
+--   file_uploader FileUploader instance for file uploads
+--   session_tracker SessionTracker instance for reading sessions
+--   settings Settings instance for configuration
+--   digest_service DigestService instance for digest refresh
+--   highlight_importer HighlightImporter instance for the pull
 -- @return SyncService instance
-function SyncService:new(api_client, file_uploader, session_tracker, settings, digest_service, highlight_importer)
+function SyncService:new(deps)
 	local instance = setmetatable({}, SyncService)
-	instance.api_client = api_client
-	instance.file_uploader = file_uploader
-	instance.session_tracker = session_tracker
-	instance.settings = settings
-	instance.digest_service = digest_service
-	instance.highlight_importer = highlight_importer
+	instance.api_client = deps.api_client
+	instance.file_uploader = deps.file_uploader
+	instance.session_tracker = deps.session_tracker
+	instance.settings = deps.settings
+	instance.digest_service = deps.digest_service
+	instance.highlight_importer = deps.highlight_importer
 	return instance
 end
 
