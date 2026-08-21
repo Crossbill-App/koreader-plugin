@@ -8,6 +8,10 @@ Also handles chapter number mapping from table of contents.
 
 local DocSettings = require("docsettings")
 local logger = require("logger")
+local TitleMatch = require("modules/title_match")
+
+-- Chapter titles are matched the same way everywhere; see modules/title_match.
+local normalizeTitle = TitleMatch.normalize
 
 local HighlightExtractor = {}
 HighlightExtractor.__index = HighlightExtractor
@@ -119,23 +123,6 @@ end
 -- @return table|nil Array of highlights
 function HighlightExtractor:getHighlights(doc_path)
 	return self:getHighlightsFromMemory() or self:getHighlightsFromDisk(doc_path)
-end
-
---- Normalize a title for comparison: trim, collapse internal whitespace, lowercase
--- Non-string input (including JSON null sentinels) normalizes to nil. Mirrors the
--- normalizeTitle semantics used by digest_service.lua.
--- @param title string|nil The raw title
--- @return string|nil The normalized title, or nil for nil/non-string input
-local function normalizeTitle(title)
-	if type(title) ~= "string" then
-		return nil
-	end
-	local text = title
-	-- Collapse all runs of whitespace to single spaces
-	text = text:gsub("%s+", " ")
-	-- Trim leading/trailing whitespace
-	text = text:gsub("^%s*(.-)%s*$", "%1")
-	return text:lower()
 end
 
 --- Resolve a highlight's numeric page, following xpointers when needed
