@@ -16,6 +16,7 @@ local logger = require("logger")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
 local HighlightExtractor = require("modules/highlight_extractor")
+local HighlightImporter = require("modules/highlight_importer")
 local NoteEdits = require("modules/note_edits")
 
 local SyncService = {}
@@ -152,9 +153,9 @@ end
 -- @param ui table The KOReader UI context
 -- @param client_book_id string The client book ID
 function SyncService:_applyPull(result, ui, client_book_id)
-	if not ui.rolling then
-		-- Pulled positions are xpointers, which mean nothing to a fixed-layout
-		-- book. Not a failure, so it is not worth reporting to the user.
+	if not HighlightImporter.isSupportedBook(ui) then
+		-- A book the importer cannot place highlights into is not a failure, so
+		-- it is not worth reporting to the user.
 		logger.dbg("Crossbill SyncService: No highlight pull for a fixed-layout book")
 		return
 	end

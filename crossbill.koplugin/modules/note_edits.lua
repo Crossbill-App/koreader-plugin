@@ -14,6 +14,11 @@ before the highlights are extracted for upload.
 
 local NoteEdits = {}
 
+-- The annotation field holding the note text this module last saw. It is this
+-- module's own bookkeeping, but the importer writes it too, so that a highlight
+-- pulled from the server starts out agreeing with the note the server sent.
+NoteEdits.SEEN_FIELD = "crossbill_note_seen"
+
 --- Stamp every highlight whose note changed since the last sync
 -- A highlight seen for the first time is stamped only when it already carries a
 -- note. Earlier plugin versions did upload notes, so the server usually holds
@@ -31,12 +36,12 @@ function NoteEdits.stamp(annotations)
 	for _, item in ipairs(annotations) do
 		if item.drawer then
 			local note = item.note or ""
-			local seen = item.crossbill_note_seen
+			local seen = item[NoteEdits.SEEN_FIELD]
 			if (seen == nil and note ~= "") or (seen ~= nil and seen ~= note) then
 				item.datetime_updated = now
 				stamped = stamped + 1
 			end
-			item.crossbill_note_seen = note
+			item[NoteEdits.SEEN_FIELD] = note
 		end
 	end
 
