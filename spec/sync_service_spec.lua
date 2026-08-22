@@ -544,6 +544,7 @@ describe("SyncService", function()
 				file_uploader = file_uploader,
 				session_tracker = opts.session_tracker,
 				settings = settings,
+				digest_service = opts.digest_service,
 				highlight_importer = opts.highlight_importer,
 				highlight_snapshot = opts.highlight_snapshot,
 			})
@@ -1170,6 +1171,53 @@ describe("SyncService", function()
 
 				assert.is_false(result.success)
 				assert.is_nil(api.pushed)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("stops when creating the book is the first call to be refused", function()
+				-- A book the server has never heard of makes the metadata fetch a
+				-- 404 rather than a refusal, so the create is where a device that
+				-- has never synced this book first hears it.
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 404
+					end,
+					createBook = function()
+						return false, nil, REFUSAL
+					end,
+					uploadHighlights = function(self)
+						self.pushed = true
+						return true, {}
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.are.equal(REFUSAL, result.upgrade_required)
+				assert.is_nil(api.pushed)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("stops when the digest refresh at the end is the call that is refused", function()
+				-- Everything before it succeeded, so the sync is over bar the
+				-- bookkeeping -- but a refused refresh still means the reader has
+				-- to update, and nothing else is going to say so.
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					digest_service = {
+						refreshBook = function()
+							return false, UpgradeRequired.KIND, REFUSAL
+						end,
+					},
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.are.equal(REFUSAL, result.upgrade_required)
 				assert.are.same({ REFUSAL }, told)
 			end)
 

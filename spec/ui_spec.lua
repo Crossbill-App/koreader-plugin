@@ -1,6 +1,7 @@
 local UI = require("modules/ui")
 local UIManager = require("ui/uimanager")
 local Trapper = require("ui/trapper")
+local UpgradeRequired = require("modules/upgrade_required")
 
 describe("UI", function()
 	before_each(function()
@@ -11,10 +12,16 @@ describe("UI", function()
 		UIManager.show:revert()
 	end)
 
+	--- The widget the last call put on screen
+	-- @return table The widget
+	local function shownWidget()
+		return UIManager.show.calls[1].vals[2]
+	end
+
 	--- The text of the message the last call put on screen
 	-- @return string The message text
 	local function shownText()
-		return UIManager.show.calls[1].vals[2].text
+		return shownWidget().text
 	end
 
 	describe("showSyncSuccess", function()
@@ -86,6 +93,72 @@ describe("UI", function()
 			UI.showSyncSuccess({ highlights_created = 1, highlights_removed = 0 })
 
 			assert.are.equal("Uploaded 1 new highlights.", shownText())
+		end)
+	end)
+
+	describe("showUpgradeRequired", function()
+		local REFUSAL = UpgradeRequired.fromResponse(426, {
+			detail = {
+				min_supported_version = "0.13.0",
+				received_version = "0.12.0",
+				update_url = "https://github.com/Crossbill-App/koreader-plugin",
+			},
+		})
+
+		it("names the version the reader has and the one the server wants", function()
+			UI.showUpgradeRequired(REFUSAL)
+
+			assert.are.equal(
+				"Your Crossbill plugin (0.12.0) is too old for this server. "
+					.. "Please update to 0.13.0 or newer.\n"
+					.. "https://github.com/Crossbill-App/koreader-plugin",
+				shownText()
+			)
+		end)
+
+		it("asks the reader nothing, so a sync at shutdown is never held up", function()
+			-- An autosync fires while the book or the device is closing, with
+			-- nobody there to dismiss a dialog.
+			UI.showUpgradeRequired(REFUSAL)
+
+			assert.is_nil(shownWidget().buttons)
+		end)
+
+		it("stays up long enough to read an address off it", function()
+			UI.showUpgradeRequired(REFUSAL)
+
+			assert.are.equal(10, shownWidget().timeout)
+		end)
+
+		it("still says something when there is no refusal to go on", function()
+			UI.showUpgradeRequired(nil)
+
+			assert.is_string(shownText())
+		end)
+	end)
+
+	describe("dismiss", function()
+		before_each(function()
+			stub(UIManager, "close")
+		end)
+
+		after_each(function()
+			UIManager.close:revert()
+		end)
+
+		it("takes down the message it is handed", function()
+			-- The stub records a copy of what it was called with rather than the
+			-- widget itself, so the message is recognised by its text.
+			UI.dismiss(UI.showSyncingMessage())
+
+			assert.are.equal("Syncing with Crossbill...", UIManager.close.calls[1].vals[2].text)
+		end)
+
+		it("does nothing when there is no message to take down", function()
+			-- An autosync never put one up, and it calls this all the same.
+			UI.dismiss(nil)
+
+			assert.are.same({}, UIManager.close.calls)
 		end)
 	end)
 
