@@ -27,6 +27,7 @@ local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
 local DocumentSupport = require("modules/document_support")
+local UpgradeRequired = require("modules/upgrade_required")
 
 local CrossbillSync = WidgetContainer:extend({
 	name = "Crossbill",
@@ -162,9 +163,14 @@ end
 --- Show a digest result: popup on success, matching info message otherwise
 -- @param item table|nil The matched digest item
 -- @param err_kind string|nil The error kind returned by the digest service
-function CrossbillSync:_showDigestResult(item, err_kind)
+-- @param err table|nil The refusal, when that is the error kind
+function CrossbillSync:_showDigestResult(item, err_kind, err)
 	if item then
 		UI.showDigestPopup(item)
+	elseif err_kind == UpgradeRequired.KIND then
+		-- The digest is beside the point: the server serves this plugin nothing
+		-- until it is updated, and that is the same message the sync shows.
+		UI.showUpgradeRequired(err)
 	elseif err_kind == "book_unknown" then
 		UI.showDigestBookUnknown()
 	elseif err_kind == "no_digest_for_book" then
@@ -199,18 +205,18 @@ function CrossbillSync:showChapterDigest()
 	end
 
 	local client_book_id = book_data.client_book_id
-	local item, err_kind = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
+	local item, err_kind, err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
 
 	-- Anything other than a missing cache can be shown immediately (no network needed).
 	if err_kind ~= "no_cache" then
-		self:_showDigestResult(item, err_kind)
+		self:_showDigestResult(item, err_kind, err)
 		return
 	end
 
 	-- Nothing cached and the fetch failed: retry once online if WiFi is off.
 	local callback = function()
-		local retry_item, retry_err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
-		self:_showDigestResult(retry_item, retry_err)
+		local retry_item, retry_err_kind, retry_err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
+		self:_showDigestResult(retry_item, retry_err_kind, retry_err)
 		Network.disableWifiIfNeeded()
 	end
 
@@ -221,7 +227,7 @@ function CrossbillSync:showChapterDigest()
 	end
 
 	-- Already online but still no cache: the fetch genuinely failed
-	self:_showDigestResult(item, err_kind)
+	self:_showDigestResult(item, err_kind, err)
 	Network.disableWifiIfNeeded()
 end
 
@@ -317,6 +323,12 @@ function CrossbillSync:doSync(is_autosync)
 		-- Only a manual sync has a reader in front of it to answer.
 		confirm_removal = (not is_autosync) and UI.confirmRemoveAll or nil,
 	})
+
+	if result.upgrade_required then
+		-- The sync already put the one message it is allowed on screen, for a
+		-- silent autosync as much as for this one.
+		return
+	end
 
 	if not result.success and not is_autosync then
 		if result.error and result.error:match("^Authentication") then

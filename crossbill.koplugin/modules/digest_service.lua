@@ -7,8 +7,8 @@ cached digest items using a small, staged matching algorithm.
 
 Public API:
   DigestService:new(api_client, digest_cache)
-  DigestService:refreshBook(client_book_id) -> ok, err_kind
-  DigestService:getForCurrentChapter(ui, client_book_id) -> item, err_kind
+  DigestService:refreshBook(client_book_id) -> ok, err_kind, err
+  DigestService:getForCurrentChapter(ui, client_book_id) -> item, err_kind, err
 
 err_kind is one of:
   nil                      matched, item returned
@@ -16,11 +16,16 @@ err_kind is one of:
   "book_unknown"           the server returned 404 for this book
   "no_digest_for_book" the book is known but has no digest yet
   "chapter_not_matched"    could not match the current chapter to a cached item
+  "client_upgrade_required" the server refuses to serve this plugin version
+
+The third return value is only filled in for that last kind, and carries the
+refusal itself so the reader can be told which version the server wants.
 ]]
 
 local logger = require("logger")
 local Network = require("modules/network")
 local TitleMatch = require("modules/title_match")
+local UpgradeRequired = require("modules/upgrade_required")
 
 -- Chapter titles are matched the same way everywhere; see modules/title_match.
 local normalizeTitle = TitleMatch.normalize
@@ -239,13 +244,22 @@ end
 -- Caller is responsible for WiFi lifecycle.
 -- @param client_book_id string The client book ID
 -- @return boolean ok True if fetched and cached successfully
--- @return string|nil err_kind "book_unknown" (404) or "fetch_failed", nil on success
+-- @return string|nil err_kind "book_unknown" (404), "client_upgrade_required"
+--   or "fetch_failed", nil on success
+-- @return table|nil err The refusal, for "client_upgrade_required" only
 function DigestService:refreshBook(client_book_id)
 	if not client_book_id then
 		return false, "fetch_failed"
 	end
 
 	local code, data, err = self.api_client:getBookDigest(client_book_id)
+
+	if UpgradeRequired.is(err) then
+		-- Not a digest problem at all: the server will not serve this plugin
+		-- anything until it is updated, which is what the reader has to hear.
+		logger.warn("Crossbill DigestService: The server refuses this plugin version")
+		return false, UpgradeRequired.KIND, err
+	end
 
 	if code == 404 then
 		logger.dbg("Crossbill DigestService: Book unknown to server (404)")
@@ -305,6 +319,7 @@ end
 -- @param client_book_id string The client book ID
 -- @return table|nil item The matched digest item, or nil
 -- @return string|nil err_kind One of the documented error kinds, nil on success
+-- @return table|nil err The refusal, for "client_upgrade_required" only
 function DigestService:getForCurrentChapter(ui, client_book_id)
 	if not client_book_id then
 		return nil, "no_cache"
@@ -312,10 +327,15 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 
 	-- Populate the cache if this book has never been fetched.
 	if not self.cache:hasBook(client_book_id) then
-		local ok, refresh_err = self:refreshBook(client_book_id)
+		local ok, refresh_err, err = self:refreshBook(client_book_id)
 		if not ok then
 			if refresh_err == "book_unknown" then
 				return nil, "book_unknown"
+			end
+			if refresh_err == UpgradeRequired.KIND then
+				-- Worth passing on rather than reporting as an empty cache: no
+				-- amount of waiting for WiFi will fix a plugin the server refuses.
+				return nil, refresh_err, err
 			end
 			return nil, "no_cache"
 		end
