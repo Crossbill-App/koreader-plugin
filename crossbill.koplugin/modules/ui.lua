@@ -32,16 +32,32 @@ local UI = {}
 --- Show an informational message to the user
 -- @param text string The message to display
 -- @param timeout number|nil Auto-dismiss timeout in seconds (nil = no auto-dismiss)
+-- @return table The widget now on screen, for a caller that has to take it down
+--   before its timeout does
 function UI.showMessage(text, timeout)
-	UIManager:show(InfoMessage:new({
+	local message = InfoMessage:new({
 		text = text,
 		timeout = timeout,
-	}))
+	})
+	UIManager:show(message)
+	return message
+end
+
+--- Take a message this module put on screen back down
+-- @param widget table|nil A widget an earlier show returned, nil to do nothing
+function UI.dismiss(widget)
+	if not widget then
+		return
+	end
+
+	UIManager:close(widget)
 end
 
 --- Show a syncing in progress message
+-- @return table The message widget, which a sync that ends before the timeout
+--   does can dismiss rather than stack its own message on top of
 function UI.showSyncingMessage()
-	UI.showMessage(_("Syncing with Crossbill..."), 2)
+	return UI.showMessage(_("Syncing with Crossbill..."), 2)
 end
 
 --- Show the outcome of a sync: what was uploaded, and what the pull brought back

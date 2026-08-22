@@ -19,7 +19,6 @@ local DeviceIdentity = require("modules/device_identity")
 local HighlightExtractor = require("modules/highlight_extractor")
 local HighlightImporter = require("modules/highlight_importer")
 local NoteEdits = require("modules/note_edits")
-local UI = require("modules/ui")
 local UpgradeRequired = require("modules/upgrade_required")
 
 local SyncService = {}
@@ -78,29 +77,54 @@ end
 -- @field pull_error string|nil Why the pull did not happen
 -- @field error string|nil Error message if sync failed
 -- @field upgrade_required table|nil The server's refusal to serve this plugin
---   version, which the sync has already reported to the reader itself
+--   version, which the sync has already handed to opts.on_upgrade_required
 
 --- Stop the sync when the server has turned this plugin away as too old
 -- Every step asks, and the first refusal ends the sync where it stands: the
 -- remaining calls would only collect the same answer, and a sync that pushed
--- half of what it had is worse than one that pushed nothing. The reader is told
--- here, once for the whole attempt, rather than once per refused call -- and
--- from here rather than by the caller, because an autosync fires while the book
--- or the device is closing and has nobody watching its return value.
+-- half of what it had is worse than one that pushed nothing.
 -- @param result table The sync result to record the refusal on
 -- @param err any The error a step came back with, if any
+-- @param opts table|nil Sync options; see syncBook
 -- @return boolean True when the sync was aborted
-function SyncService:_abortIfTooOld(result, err)
+function SyncService:_abortIfTooOld(result, err, opts)
 	if not UpgradeRequired.is(err) then
 		return false
 	end
 
 	logger.warn("Crossbill SyncService: The server refuses this plugin version, abandoning the sync")
+	if not result.upgrade_required then
+		-- Once for the whole attempt rather than once per refused call: a reader
+		-- met with the same message twice would only wonder what else broke.
+		self:_reportRefusal(err, opts)
+	end
 	result.success = false
 	result.upgrade_required = err
 	result.error = UpgradeRequired.message(err)
-	UI.showUpgradeRequired(err)
 	return true
+end
+
+--- Hand the refusal to whoever can put it in front of the reader
+-- Reported from within the sync rather than left to its return value, because
+-- an autosync fires while the book or the device is closing and has nobody
+-- watching what it came back with. Reported through the caller's callback
+-- rather than by showing a widget from here, because this service knows nothing
+-- about screens and is worth keeping that way. A sync given nobody to tell --
+-- as a test is, and as a future caller with no reader in front of it would be
+-- -- still stops; it just stops quietly.
+-- @param err table The refusal
+-- @param opts table|nil Sync options; see syncBook
+function SyncService:_reportRefusal(err, opts)
+	local report = opts and opts.on_upgrade_required
+	if not report then
+		logger.dbg("Crossbill SyncService: Nobody to tell that the server refuses this plugin version")
+		return
+	end
+
+	local ok, report_err = pcall(report, err)
+	if not ok then
+		logger.warn("Crossbill SyncService: Reporting the refusal failed:", report_err)
+	end
 end
 
 --- Execute the complete sync workflow for a book
@@ -109,6 +133,10 @@ end
 --   confirm_removal function(count) -> boolean, asked before every highlight of
 --     a book is withdrawn from the reader's devices. Absent means nobody can be
 --     asked, and the mass removal is skipped.
+--   on_upgrade_required function(err), called at most once per attempt with the
+--     server's refusal to serve this plugin version, for a caller that has a
+--     screen to put it on. Absent means the refusal is only reported in the
+--     result.
 -- @return table SyncResult with success status and counts
 function SyncService:syncBook(ui, opts)
 	local result = {
@@ -127,7 +155,7 @@ function SyncService:syncBook(ui, opts)
 
 	-- Fetch or create book on server
 	local server_metadata, metadata_err = self:_getServerBookMetadata(book_data.client_book_id)
-	if self:_abortIfTooOld(result, metadata_err) then
+	if self:_abortIfTooOld(result, metadata_err, opts) then
 		return result
 	end
 
@@ -136,7 +164,7 @@ function SyncService:syncBook(ui, opts)
 		logger.info("Crossbill SyncService: Book not found on server, creating it")
 		local create_success, created_metadata, create_err = self.api_client:createBook(book_data)
 		if not create_success then
-			if self:_abortIfTooOld(result, create_err) then
+			if self:_abortIfTooOld(result, create_err, opts) then
 				return result
 			end
 			result.success = false
@@ -148,7 +176,7 @@ function SyncService:syncBook(ui, opts)
 
 	-- Upload files (EPUB)
 	local files_err = self:_syncFiles(book_data.client_book_id, book_metadata, server_metadata)
-	if self:_abortIfTooOld(result, files_err) then
+	if self:_abortIfTooOld(result, files_err, opts) then
 		return result
 	end
 
@@ -158,7 +186,7 @@ function SyncService:syncBook(ui, opts)
 	-- Extract and upload highlights, together with what was deleted here
 	local highlight_result = self:_syncHighlights(ui, book_data.client_book_id, doc_path, opts)
 	if not highlight_result.success then
-		if self:_abortIfTooOld(result, highlight_result.error) then
+		if self:_abortIfTooOld(result, highlight_result.error, opts) then
 			return result
 		end
 		result.success = false
@@ -173,13 +201,13 @@ function SyncService:syncBook(ui, opts)
 	-- above already carried the removals, so this replace confirms them instead
 	-- of handing the deleted highlights back to the device.
 	self:_applyPull(result, ui, book_data.client_book_id, doc_path)
-	if self:_abortIfTooOld(result, result.pull_error) then
+	if self:_abortIfTooOld(result, result.pull_error, opts) then
 		return result
 	end
 
 	-- Upload reading sessions
 	local session_result = self:_syncReadingSessions(ui, book_data.client_book_id, doc_path)
-	if self:_abortIfTooOld(result, session_result.error) then
+	if self:_abortIfTooOld(result, session_result.error, opts) then
 		return result
 	end
 	result.sessions_synced = session_result.synced
@@ -187,7 +215,7 @@ function SyncService:syncBook(ui, opts)
 	-- Refresh cached digests (best-effort; never fails the sync, except when the
 	-- server turns the plugin away -- there is no sync to speak of then)
 	local digest_err = self:_refreshDigest(book_data.client_book_id)
-	self:_abortIfTooOld(result, digest_err)
+	self:_abortIfTooOld(result, digest_err, opts)
 
 	return result
 end

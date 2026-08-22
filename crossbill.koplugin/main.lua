@@ -288,7 +288,7 @@ end
 -- @param is_autosync boolean If true, run in silent mode
 function CrossbillSync:_runSync(is_autosync)
 	if not is_autosync then
-		UI.showSyncingMessage()
+		self.syncing_message = UI.showSyncingMessage()
 	end
 
 	-- End current session before sync so it gets included
@@ -299,6 +299,10 @@ function CrossbillSync:_runSync(is_autosync)
 	local success, err = pcall(function()
 		self:doSync(is_autosync)
 	end)
+
+	-- Whatever is left of it is the timeout's to clear from here on; nothing
+	-- after the sync has any business closing a widget this attempt is done with.
+	self.syncing_message = nil
 
 	if not success then
 		logger.err("Crossbill: Error in sync:", err)
@@ -316,16 +320,32 @@ function CrossbillSync:_runSync(is_autosync)
 	Network.disableWifiIfNeeded()
 end
 
+--- Tell the reader the server has turned this plugin away
+-- The "Syncing..." message is still on screen when a manual sync is refused,
+-- and it clears itself on a timeout rather than when the sync ends, so the
+-- refusal would otherwise land on top of it. An autosync never put one up.
+-- @param err table The server's refusal
+function CrossbillSync:_reportUpgradeRequired(err)
+	UI.dismiss(self.syncing_message)
+	self.syncing_message = nil
+	UI.showUpgradeRequired(err)
+end
+
 --- Execute the sync workflow
 -- @param is_autosync boolean If true, run in silent mode
 function CrossbillSync:doSync(is_autosync)
 	local result = self.sync_service:syncBook(self.ui, {
 		-- Only a manual sync has a reader in front of it to answer.
 		confirm_removal = (not is_autosync) and UI.confirmRemoveAll or nil,
+		-- Both kinds of sync say this one: an autosync that has quietly stopped
+		-- working is exactly the case a reader needs told about.
+		on_upgrade_required = function(err)
+			self:_reportUpgradeRequired(err)
+		end,
 	})
 
 	if result.upgrade_required then
-		-- The sync already put the one message it is allowed on screen, for a
+		-- The refusal above is the one message this attempt is allowed, for a
 		-- silent autosync as much as for this one.
 		return
 	end

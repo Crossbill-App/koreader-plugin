@@ -4,7 +4,6 @@ local UpgradeRequired = require("modules/upgrade_required")
 local FakeSnapshotStore = require("fake_snapshot_store")
 local DocSettings = require("docsettings")
 local GlobalSettingsFake = require("global_settings_fake")
-local UIManager = require("ui/uimanager")
 
 local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
 -- Two copies of one book: the same title and author, so the same client book
@@ -1000,12 +999,19 @@ describe("SyncService", function()
 				},
 			})
 
-			before_each(function()
-				stub(UIManager, "show")
-			end)
+			-- The refusals the sync handed to whoever asked to hear about them, and
+			-- the options that ask. A caller with a screen puts them on it; the
+			-- service itself knows nothing about screens.
+			local told
+			local telling
 
-			after_each(function()
-				UIManager.show:revert()
+			before_each(function()
+				told = {}
+				telling = {
+					on_upgrade_required = function(err)
+						table.insert(told, err)
+					end,
+				}
 			end)
 
 			--- Build an api client the server refuses every call of
@@ -1034,56 +1040,61 @@ describe("SyncService", function()
 				return api
 			end
 
-			--- The text of the message the sync put on screen
-			-- @return string|nil The message text
-			local function shownText()
-				local shown = UIManager.show.calls[1]
-				return shown and shown.vals[2].text
-			end
-
 			it("gives up at the first refusal instead of collecting it again", function()
 				local api = apiRefusingEverything()
 				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
 
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
 				assert.are.same({ "getBookMetadata" }, api.calls)
 				assert.is_false(result.success)
 				assert.is_true(UpgradeRequired.is(result.upgrade_required))
 			end)
 
-			it("tells the reader once for the whole sync attempt", function()
+			it("hands the refusal on once for the whole sync attempt", function()
 				local api = apiRefusingEverything()
 				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
 
-				service:syncBook(bookFor({ A_HIGHLIGHT }))
+				service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
-				assert.are.equal(1, #UIManager.show.calls)
+				assert.are.same({ REFUSAL }, told)
 			end)
 
-			it("names the version the reader has and the one the server wants", function()
+			it("hands on the refusal itself, so the words are the caller's to choose", function()
+				-- What a reader is shown is composed from the versions the server
+				-- named, which is why the refusal travels rather than a string.
 				local service = serviceFor(apiRefusingEverything(), {})
 
-				service:syncBook(bookFor({ A_HIGHLIGHT }))
+				service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
-				assert.are.equal(
-					"Your Crossbill plugin (0.12.0) is too old for this server. "
-						.. "Please update to 0.13.0 or newer.\n"
-						.. "https://github.com/Crossbill-App/koreader-plugin",
-					shownText()
-				)
+				assert.are.equal("0.12.0", told[1].received_version)
+				assert.are.equal("0.13.0", told[1].min_supported_version)
 			end)
 
-			it("asks the reader nothing, so a sync at shutdown is never held up", function()
-				-- An autosync fires while the book or the device is closing, with
-				-- nobody there to dismiss a dialog.
+			it("stops just the same when there is nobody to tell", function()
+				-- A caller with no screen -- a test, or a future one -- gets the
+				-- refusal in the result, and nothing blows up for want of a
+				-- callback.
+				local api = apiRefusingEverything()
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.same({ "getBookMetadata" }, api.calls)
+				assert.are.equal(REFUSAL, result.upgrade_required)
+			end)
+
+			it("finishes the abort even when telling the reader blows up", function()
 				local service = serviceFor(apiRefusingEverything(), {})
 
-				service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), {
+					on_upgrade_required = function()
+						error("no screen to show it on")
+					end,
+				})
 
-				local shown = UIManager.show.calls[1].vals[2]
-				assert.is_nil(shown.buttons)
-				assert.is_number(shown.timeout)
+				assert.is_false(result.success)
+				assert.are.equal(REFUSAL, result.upgrade_required)
 			end)
 
 			it("reports the refusal as a message the caller can still read", function()
@@ -1091,7 +1102,7 @@ describe("SyncService", function()
 				-- them matches on it.
 				local service = serviceFor(apiRefusingEverything(), {})
 
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
 				assert.is_string(result.error)
 				assert.is_truthy(result.error:match("^Your Crossbill plugin"))
@@ -1129,13 +1140,13 @@ describe("SyncService", function()
 					highlight_importer = importerReturning({ inserted = 0 }),
 				})
 
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
 				assert.is_false(result.success)
 				assert.is_nil(api.pulled)
 				assert.is_nil(api.sessions_uploaded)
 				assert.is_nil(session_tracker.marked)
-				assert.are.equal(1, #UIManager.show.calls)
+				assert.are.same({ REFUSAL }, told)
 			end)
 
 			it("stops when the EPUB upload is the call that is refused", function()
@@ -1155,11 +1166,11 @@ describe("SyncService", function()
 					},
 				})
 
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
 				assert.is_false(result.success)
 				assert.is_nil(api.pushed)
-				assert.are.equal(1, #UIManager.show.calls)
+				assert.are.same({ REFUSAL }, told)
 			end)
 
 			it("stops when the refusal only comes back from the pull", function()
@@ -1185,15 +1196,15 @@ describe("SyncService", function()
 					},
 				})
 
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
 				assert.is_false(result.success)
 				assert.is_nil(api.sessions_uploaded)
-				assert.are.equal(1, #UIManager.show.calls)
+				assert.are.same({ REFUSAL }, told)
 			end)
 
 			it("leaves an ordinary failure to be reported as it always was", function()
-				-- Only a refusal ends a sync early and puts a message on screen.
+				-- Only a refusal ends a sync early and is handed on to be shown.
 				local api = apiForSyncBook({
 					getHighlights = function()
 						return 500, nil, "server exploded"
@@ -1201,11 +1212,11 @@ describe("SyncService", function()
 				})
 				local service = serviceFor(api, {})
 
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
 				assert.is_true(result.success)
 				assert.is_nil(result.upgrade_required)
-				assert.are.same({}, UIManager.show.calls)
+				assert.are.same({}, told)
 			end)
 		end)
 	end)
