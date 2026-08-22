@@ -52,8 +52,7 @@ function NetworkFake.setPostResult(code, body, err)
 end
 
 --- Answer `postMultipart` with whatever the current test has queued
--- Unlike the JSON helpers this one answers with the body undecoded, exactly as
--- the real module does.
+-- Answers with the body undecoded, as the real module does.
 -- @param url string The URL being posted to
 -- @param files table The files the client built
 -- @param token string|nil The bearer token
@@ -374,8 +373,8 @@ describe("ApiClient", function()
 		end)
 
 		it("reports a refused EPUB upload the same way", function()
-			-- The multipart helper hands back an undecoded body, so this is the
-			-- one path that has to read the refusal's detail for itself.
+			-- The multipart helper hands back an undecoded body, so this path
+			-- reads the refusal's detail for itself.
 			NetworkFake.setMultipartResult(426, '{"detail": {}}')
 			stub(json, "decode", REFUSAL)
 
@@ -387,8 +386,6 @@ describe("ApiClient", function()
 		end)
 
 		it("still reports a refusal whose body could not be read", function()
-			-- A body that never arrived, or that no decoder could make sense of,
-			-- leaves the versions unknown -- but the plugin was still refused.
 			NetworkFake.setGetResult(426, nil, "Invalid JSON response")
 
 			local _, _, err = clientWithToken(TOKEN):getHighlights(CLIENT_BOOK_ID)

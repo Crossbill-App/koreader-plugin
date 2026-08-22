@@ -1,16 +1,15 @@
 --[[
-`modules/network` is the module that opens sockets, so the rest of the suite
-keeps it out of the run by faking it (see spec/support/koreader/README.md).
-This spec goes the other way: it loads the real module with LuaSocket, the
-JSON library and KOReader's network manager faked underneath it. Nothing here
-can reach the wire, and the header every request has to carry -- the one that
-tells the server which plugin version is calling -- becomes observable.
+The rest of the suite fakes `modules/network` to keep sockets out of the run
+(see spec/support/koreader/README.md). This spec loads the real module instead,
+with LuaSocket, the JSON library and KOReader's network manager faked underneath
+it, so the client header every request carries is observable without reaching
+the wire.
 ]]
 
 local meta = require("_meta")
 
--- Stands in for both `socket.http` and `ssl.https`: one recorder for both
--- schemes, so a request cannot pick the scheme that is not being watched.
+-- Stands in for both `socket.http` and `ssl.https`, so a request cannot pick
+-- the scheme that is not being watched.
 local HttpFake = { requests = {}, status = 200, body = "" }
 
 --- Record a request and answer it the way LuaSocket does
@@ -67,8 +66,8 @@ function SocketUtilFake:reset_timeout() end
 -- Only WiFi handling touches the manager, and no test here does.
 local NetworkMgrFake = {}
 
--- The support stub decodes only the one literal `modules/api_client` needs, so
--- this spec brings its own: `postJson` encodes a payload before it can send it.
+-- The support stub decodes only the one literal `modules/api_client` needs, and
+-- `postJson` has a payload to encode, so this spec brings its own.
 local JsonFake = { encoded = {}, decoded = nil }
 
 --- Encode a payload, remembering what it was handed
@@ -95,9 +94,8 @@ local FAKES = {
 	["json"] = JsonFake,
 }
 
--- The module is loaded with the fakes in place and everything is then put back,
--- the module itself included: no other spec should end up with the copy this
--- one bound to the fakes.
+-- Everything is put back after the load, the module included: no other spec
+-- should end up with the copy bound to these fakes.
 local saved = { ["modules/network"] = package.loaded["modules/network"] }
 for name, fake in pairs(FAKES) do
 	saved[name] = package.loaded[name]
@@ -129,9 +127,8 @@ describe("Network", function()
 
 	describe("the client it identifies itself as", function()
 		it("names the plugin and the version _meta.lua declares", function()
-			-- The server decides whether to serve this plugin by what it reads
-			-- here, so the version must be the one the release workflow set and
-			-- not a copy that can drift from it.
+			-- The server decides by what it reads here, so the version must be
+			-- _meta.lua's own and not a copy that can drift from it.
 			Network.request({ url = URL })
 
 			assert.are.equal("koreader-plugin/" .. meta.version, clientHeader())

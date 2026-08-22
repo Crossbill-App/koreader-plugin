@@ -9,10 +9,8 @@ local function refusalBody(detail)
 	return { detail = detail }
 end
 
--- What a decoded JSON `null` actually is. KOReader's decoder does not map it to
--- nil -- it hands back a placeholder value, which is truthy and prints as
--- "userdata: 0x...". A table stands in for it here; what matters is that it is
--- truthy and is not a string.
+-- KOReader's decoder maps JSON null to a truthy placeholder rather than to nil.
+-- This table stands in for it: truthy, and not a string.
 local JSON_NULL = setmetatable({}, {
 	__tostring = function()
 		return "userdata: 0x55d3a1c0"
@@ -122,10 +120,8 @@ describe("UpgradeRequired", function()
 			end
 
 			it("is not the version the reader is told they are running", function()
-				-- The server sends `"received_version": null` whenever it cannot
-				-- parse the version the plugin claimed, and the decoder's stand-in
-				-- for null is truthy: unguarded, the reader is told their plugin
-				-- is "userdata: 0x...".
+				-- The server sends `"received_version": null` when it cannot parse
+				-- the version claimed, and the stand-in for null is truthy.
 				local message = messageFor({
 					min_supported_version = "0.13.0",
 					received_version = JSON_NULL,
@@ -169,8 +165,7 @@ describe("UpgradeRequired", function()
 	describe("the error as it travels through the plugin", function()
 		it("prints as its message wherever a string was expected", function()
 			-- It rides in the error slot everything else fills with a string, so
-			-- a path that logs or appends what it was handed must not blow up on
-			-- a table.
+			-- a path that logs or appends it must not blow up on a table.
 			local err = UpgradeRequired.new(refusalBody(FULL_DETAIL))
 
 			assert.are.equal(UpgradeRequired.message(err), tostring(err))

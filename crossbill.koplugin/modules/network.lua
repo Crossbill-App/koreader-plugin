@@ -18,9 +18,7 @@ local meta = require("_meta")
 local Network = {}
 
 -- Identifies the plugin to the server, which refuses versions it no longer
--- supports. The version is read from `_meta.lua` -- the file the release
--- workflow bumps -- rather than repeated here, so the header can never claim a
--- version the plugin is not.
+-- supports. Read from `_meta.lua` rather than repeated here, so it cannot drift.
 Network.CLIENT_HEADER = "X-Crossbill-Client"
 Network.CLIENT_HEADER_VALUE = "koreader-plugin/" .. tostring(meta.version)
 
@@ -81,8 +79,7 @@ function Network.request(options)
 		headers["Content-Length"] = tostring(#body)
 	end
 
-	-- Every call to the server passes through here, so identifying the plugin
-	-- here is the one way no call site can forget to.
+	-- Every call passes through here, so no call site can forget it.
 	headers[Network.CLIENT_HEADER] = Network.CLIENT_HEADER_VALUE
 
 	local response_body = {}

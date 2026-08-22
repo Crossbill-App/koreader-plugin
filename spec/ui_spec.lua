@@ -147,8 +147,8 @@ describe("UI", function()
 		end)
 
 		it("takes down the message it is handed", function()
-			-- The stub records a copy of what it was called with rather than the
-			-- widget itself, so the message is recognised by its text.
+			-- The stub records a copy rather than the widget itself, so the
+			-- message is recognised by its text.
 			UI.dismiss(UI.showSyncingMessage())
 
 			assert.are.equal("Syncing with Crossbill...", UIManager.close.calls[1].vals[2].text)

@@ -32,8 +32,7 @@ local UI = {}
 --- Show an informational message to the user
 -- @param text string The message to display
 -- @param timeout number|nil Auto-dismiss timeout in seconds (nil = no auto-dismiss)
--- @return table The widget now on screen, for a caller that has to take it down
---   before its timeout does
+-- @return table The widget now on screen, for a caller that may dismiss it early
 function UI.showMessage(text, timeout)
 	local message = InfoMessage:new({
 		text = text,
@@ -54,8 +53,7 @@ function UI.dismiss(widget)
 end
 
 --- Show a syncing in progress message
--- @return table The message widget, which a sync that ends before the timeout
---   does can dismiss rather than stack its own message on top of
+-- @return table The message widget, for a sync that ends before its timeout
 function UI.showSyncingMessage()
 	return UI.showMessage(_("Syncing with Crossbill..."), 2)
 end
@@ -133,10 +131,9 @@ function UI.showSyncFailed(code)
 end
 
 --- Tell the reader the server has turned this plugin away as too old
--- A plain message with nothing to answer: this is shown by a sync, and a sync
--- can be running while the book or the whole device is closing, where a dialog
--- waiting to be dismissed would hold the shutdown up. It stays on screen long
--- enough to read an address off it.
+-- A plain message with nothing to answer: a sync can be running while the book
+-- or the device is closing, where a dialog awaiting dismissal would hold that
+-- up. It stays on screen long enough to read an address off it.
 -- @param err table|nil The refusal, or nil when there is nothing to go on
 function UI.showUpgradeRequired(err)
 	UI.showMessage(UpgradeRequired.message(err), 10)

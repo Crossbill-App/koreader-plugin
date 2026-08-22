@@ -5,18 +5,12 @@
 # Usage: scripts/check_version_unchanged.sh <base-ref> <head-ref>
 #
 # The Release workflow owns the version line: it bumps it, commits it to main and
-# tags the result. A branch that bumps it by hand either collides with that or
-# quietly ships a version no release ever made.
+# tags the result.
 #
 # What is compared is the version each side *evaluates to*, not the text of the
-# line that sets it. A diff of the file can be talked out of noticing a bump --
-# a `-diff` attribute makes it binary, a second `version = ...` key in the same
-# table changes the answer without touching the first line -- whereas the value
-# Lua ends up with is the one the plugin will report to the server.
-#
-# The comparison is against the merge base rather than the tip of the base
-# branch, so a release that landed on main after the branch was cut is not
-# mistaken for the branch's own doing.
+# line that sets it: a second `version` key or a `-diff` attribute can hide a
+# bump from a diff. The comparison is against the merge base, so a release that
+# landed on main after the branch was cut is not read as the branch's own doing.
 
 set -euo pipefail
 
@@ -30,8 +24,8 @@ fi
 BASE_REF="$1"
 HEAD_REF="$2"
 
-# Any Lua will do -- _meta.lua is a table constructor. Prefer the 5.1 the plugin
-# actually runs under where it is installed.
+# _meta.lua is a table constructor, so any Lua will do; prefer the 5.1 the
+# plugin actually runs under.
 LUA_BIN="${LUA:-}"
 if [ -z "$LUA_BIN" ]; then
     for candidate in lua5.1 luajit lua; do
@@ -49,9 +43,8 @@ fi
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-# _meta.lua asks KOReader for a translator. Standing one in lets the file be
-# evaluated outside the reader, and lets an old revision of it be evaluated
-# without depending on what the rest of the tree looked like back then.
+# _meta.lua asks KOReader for a translator; standing one in lets any revision of
+# it be evaluated outside the reader, whatever the rest of that tree held.
 cat >"$WORKDIR/gettext.lua" <<'LUA'
 return function(text)
 	return text

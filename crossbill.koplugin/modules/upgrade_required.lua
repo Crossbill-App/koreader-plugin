@@ -1,16 +1,14 @@
 --[[
 Upgrade Required Module for Crossbill Sync
 
-The server refuses plugin versions it no longer supports, answering 426 with
+The server answers 426 when it will no longer serve this plugin version, naming
 the versions involved and where to get a newer plugin. This module is the one
-place that knows what that answer looks like: the api client turns a 426 into
-the error built here, and every screen that has to report it asks here for the
-words, so a reader is told the same thing wherever the refusal surfaces.
+place that knows what that answer looks like, so a reader is told the same thing
+wherever the refusal surfaces.
 
 The error travels in the plugin's usual error slot, which everything else fills
-with a string, so it carries a `__tostring` and a `__concat`: an older path that
-logs or appends whatever it was handed still prints the message instead of
-blowing up on a table.
+with a string, so it carries `__tostring` and `__concat`: a path that logs or
+appends whatever it was handed prints the message instead of blowing up.
 ]]
 
 local _ = require("gettext")
@@ -23,19 +21,15 @@ UpgradeRequired.STATUS = 426
 -- What this failure is called wherever it travels as an error kind
 UpgradeRequired.KIND = "client_upgrade_required"
 
--- Where a reader gets a newer plugin. The server names it too; this stands in
--- for an answer that arrived without one.
+-- Where a reader gets a newer plugin, for an answer that named no address
 local FALLBACK_UPDATE_URL = "https://github.com/Crossbill-App/koreader-plugin"
 
 local mt = {}
 
 --- What the server actually named, as opposed to what merely arrived
--- A JSON `null` does not decode to nil: KOReader's decoder hands back a
--- placeholder of its own, which is a perfectly truthy value. The server sends
--- `"received_version": null` whenever it cannot make sense of the version the
--- plugin claimed, so a truthiness check alone would put "userdata: 0x7f..." in
--- front of a reader. Only a string counts as named; anything else is treated as
--- an answer that left the field out.
+-- Decoded JSON null is a truthy sentinel, not nil, and the server sends
+-- `"received_version": null` when it cannot parse the version claimed; only a
+-- real string may reach the message.
 -- @param value any The field as it came off the decoded body
 -- @return string|nil The value when it is a string, nil otherwise
 local function named(value)
@@ -47,9 +41,8 @@ local function named(value)
 end
 
 --- The message a reader is shown when the server turns the plugin away
--- Composed here from the versions the server reported rather than shown as the
--- server phrased it: the text belongs to the plugin, which is what can
--- translate it and what knows it is talking to a reader rather than to a log.
+-- Composed from the versions the server reported rather than shown as the
+-- server phrased it: the plugin's own text is what can be translated.
 -- @param err table|nil The error, or nil when there is nothing to go on
 -- @return string The message, ending in the address to update from
 function UpgradeRequired.message(err)
@@ -77,9 +70,8 @@ mt.__concat = function(left, right)
 end
 
 --- Build the error from what a 426 answer carried
--- A body that never arrived, or one nothing could be made of, still produces
--- the error: being turned away is the fact worth reporting, and the versions
--- only sharpen the wording.
+-- A missing or unreadable body still produces the error: being turned away is
+-- the fact worth reporting, and the versions only sharpen the wording.
 -- @param body table|nil The decoded response body
 -- @return table The error, carrying whatever the body named
 function UpgradeRequired.new(body)

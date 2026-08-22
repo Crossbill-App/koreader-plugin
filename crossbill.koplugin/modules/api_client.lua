@@ -15,9 +15,8 @@ local JSON = require("json")
 local empty_array = JSON.decode("[]") or {}
 
 --- Fetch JSON, recognising a server that refuses this plugin version
--- These three wrappers are the only way this module reaches the network, so a
--- refusal is spotted in one place rather than at every call site: a call added
--- later inherits the handling instead of having to remember it.
+-- These three wrappers are this module's only route to the network, so the
+-- refusal is recognised in one place and a call added later inherits it.
 -- @param url string The URL to fetch
 -- @param token string|nil Bearer token for authorization
 -- @return number|nil HTTP status code
@@ -53,9 +52,8 @@ local function postMultipart(url, files, token)
 		return code, response_text, err
 	end
 
-	-- Unlike the JSON helpers, a multipart upload hands back an undecoded body,
-	-- so the refusal's detail is decoded here. One that will not decode is still
-	-- a refusal; there is simply nothing to sharpen the message with.
+	-- A multipart upload hands back an undecoded body, so the detail is decoded
+	-- here; one that will not decode is still a refusal, only a vaguer one.
 	local decoded, body = pcall(JSON.decode, response_text)
 	return code, response_text, UpgradeRequired.new(decoded and body or nil)
 end

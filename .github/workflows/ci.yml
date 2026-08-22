@@ -58,8 +58,7 @@ jobs:
 
   version:
     name: Version line
-    # Pull requests only: the Release workflow bumps the line itself and pushes
-    # the bump straight to main, where this check would turn its own release red.
+    # Pull requests only: the Release workflow pushes its own bump to main.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
@@ -67,12 +66,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
-          # Both ends of the pull request, and enough history between them for
-          # the merge base to be found.
+          # Enough history for the merge base to be found.
           fetch-depth: 0
 
-      # The same 5.1 the plugin runs under on a device, which is what evaluates
-      # _meta.lua on both sides of the comparison.
+      # The 5.1 the plugin runs under on a device evaluates _meta.lua here too.
       - name: Install Lua
         run: |
           sudo apt-get update

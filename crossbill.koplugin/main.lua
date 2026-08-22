@@ -168,8 +168,8 @@ function CrossbillSync:_showDigestResult(item, err_kind, err)
 	if item then
 		UI.showDigestPopup(item)
 	elseif err_kind == UpgradeRequired.KIND then
-		-- The digest is beside the point: the server serves this plugin nothing
-		-- until it is updated, and that is the same message the sync shows.
+		-- The digest is beside the point: nothing is served to this plugin
+		-- until it is updated.
 		UI.showUpgradeRequired(err)
 	elseif err_kind == "book_unknown" then
 		UI.showDigestBookUnknown()
@@ -300,8 +300,7 @@ function CrossbillSync:_runSync(is_autosync)
 		self:doSync(is_autosync)
 	end)
 
-	-- Whatever is left of it is the timeout's to clear from here on; nothing
-	-- after the sync has any business closing a widget this attempt is done with.
+	-- Past this point the message is the timeout's to clear, not the sync's.
 	self.syncing_message = nil
 
 	if not success then
@@ -321,9 +320,8 @@ function CrossbillSync:_runSync(is_autosync)
 end
 
 --- Tell the reader the server has turned this plugin away
--- The "Syncing..." message is still on screen when a manual sync is refused,
--- and it clears itself on a timeout rather than when the sync ends, so the
--- refusal would otherwise land on top of it. An autosync never put one up.
+-- A manual sync's "Syncing..." message clears on a timeout rather than when the
+-- sync ends, so it has to come down before the refusal replaces it.
 -- @param err table The server's refusal
 function CrossbillSync:_reportUpgradeRequired(err)
 	UI.dismiss(self.syncing_message)
@@ -337,16 +335,15 @@ function CrossbillSync:doSync(is_autosync)
 	local result = self.sync_service:syncBook(self.ui, {
 		-- Only a manual sync has a reader in front of it to answer.
 		confirm_removal = (not is_autosync) and UI.confirmRemoveAll or nil,
-		-- Both kinds of sync say this one: an autosync that has quietly stopped
-		-- working is exactly the case a reader needs told about.
+		-- An autosync says it too: one that has quietly stopped working is
+		-- exactly what a reader needs told about.
 		on_upgrade_required = function(err)
 			self:_reportUpgradeRequired(err)
 		end,
 	})
 
 	if result.upgrade_required then
-		-- The refusal above is the one message this attempt is allowed, for a
-		-- silent autosync as much as for this one.
+		-- The refusal is the one message this attempt gets.
 		return
 	end
 

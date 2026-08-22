@@ -1,12 +1,10 @@
 local UpgradeRequired = require("modules/upgrade_required")
 
--- `modules/digest_service` reaches for `modules/network` to ask whether the
--- device is online. That is the plugin's own module rather than one of
--- KOReader's, so it cannot be shadowed from spec/support: seeding the package
--- cache before requiring the service keeps the socket layer out of the run,
--- the same trick spec/api_client_spec.lua uses and for the same reason.
--- Offline unless a spec says otherwise: the paths that re-check the server are
--- the exception, and they say so out loud.
+-- `modules/digest_service` asks `modules/network` whether the device is online.
+-- That is the plugin's own module rather than one of KOReader's, so it cannot be
+-- shadowed from spec/support: seeding the package cache before requiring the
+-- service keeps the socket layer out of the run (see spec/api_client_spec.lua).
+-- Offline unless a spec says otherwise.
 local NetworkFake = { connected = false }
 NetworkFake.isConnected = function()
 	return NetworkFake.connected
@@ -56,8 +54,8 @@ describe("DigestService", function()
 		end)
 
 		it("passes the refusal on to whoever opened the chapter's digest", function()
-			-- Reported as a missing cache instead, the reader would be told to
-			-- sync the book while online -- which is exactly what cannot help.
+			-- Reported as a missing cache, this would tell the reader to sync
+			-- while online, which is exactly what cannot help.
 			local item, err_kind, err = serviceAnswering(426, REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
 
 			assert.is_nil(item)
@@ -75,9 +73,8 @@ describe("DigestService", function()
 		end)
 
 		describe("a book cached back when it had no digests", function()
-			-- Opening the popup re-checks the server for a book whose empty cache
-			-- is older than the re-fetch window, and that re-check meets the same
-			-- refusal every other call does.
+			-- Opening the popup re-checks the server when a book's empty cache is
+			-- older than the re-fetch window.
 			local BEYOND_THE_REFETCH_WINDOW = 1000
 
 			before_each(function()
@@ -111,8 +108,8 @@ describe("DigestService", function()
 			end
 
 			it("passes on the refusal the re-fetch met", function()
-				-- Reported as an empty book instead, the reader would be sent to
-				-- the web app to generate a digest that may well already exist.
+				-- Reported as an empty book, this would send the reader off to
+				-- generate a digest that may well already exist.
 				local item, err_kind, err = serviceRefetching(426, REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
 
 				assert.is_nil(item)

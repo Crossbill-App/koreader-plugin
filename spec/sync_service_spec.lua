@@ -1000,9 +1000,8 @@ describe("SyncService", function()
 				},
 			})
 
-			-- The refusals the sync handed to whoever asked to hear about them, and
-			-- the options that ask. A caller with a screen puts them on it; the
-			-- service itself knows nothing about screens.
+			-- The refusals the sync handed on, and the options that ask to hear
+			-- about them.
 			local told
 			local telling
 
@@ -1062,8 +1061,8 @@ describe("SyncService", function()
 			end)
 
 			it("hands on the refusal itself, so the words are the caller's to choose", function()
-				-- What a reader is shown is composed from the versions the server
-				-- named, which is why the refusal travels rather than a string.
+				-- The message is composed from the versions the server named,
+				-- which is why the refusal travels rather than a string.
 				local service = serviceFor(apiRefusingEverything(), {})
 
 				service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
@@ -1073,9 +1072,7 @@ describe("SyncService", function()
 			end)
 
 			it("stops just the same when there is nobody to tell", function()
-				-- A caller with no screen -- a test, or a future one -- gets the
-				-- refusal in the result, and nothing blows up for want of a
-				-- callback.
+				-- A caller with no screen gets the refusal in the result instead.
 				local api = apiRefusingEverything()
 				local service = serviceFor(api, {})
 
@@ -1110,8 +1107,8 @@ describe("SyncService", function()
 			end)
 
 			it("stops before the pull and the sessions when the push is refused", function()
-				-- Nothing half-done: the removals stay unsent and the sessions stay
-				-- unsynced, so the sync that follows an update carries them all.
+				-- Nothing half-done: the sync that follows an update carries the
+				-- removals and the sessions alike.
 				local api = apiForSyncBook({
 					uploadHighlights = function()
 						return false, nil, REFUSAL
@@ -1175,9 +1172,8 @@ describe("SyncService", function()
 			end)
 
 			it("stops when creating the book is the first call to be refused", function()
-				-- A book the server has never heard of makes the metadata fetch a
-				-- 404 rather than a refusal, so the create is where a device that
-				-- has never synced this book first hears it.
+				-- A new book makes the metadata fetch a 404 rather than a refusal,
+				-- so the create is where a first sync meets it.
 				local api = apiForSyncBook({
 					getBookMetadata = function()
 						return 404
@@ -1201,9 +1197,8 @@ describe("SyncService", function()
 			end)
 
 			it("stops when the digest refresh at the end is the call that is refused", function()
-				-- Everything before it succeeded, so the sync is over bar the
-				-- bookkeeping -- but a refused refresh still means the reader has
-				-- to update, and nothing else is going to say so.
+				-- The sync is over bar the bookkeeping by then, but a refused
+				-- refresh still means the reader has to update.
 				local api = apiForSyncBook()
 				local service = serviceFor(api, {
 					highlight_importer = importerReturning({ inserted = 0 }),
@@ -1251,7 +1246,7 @@ describe("SyncService", function()
 				assert.are.same({ REFUSAL }, told)
 			end)
 
-			it("leaves an ordinary failure to be reported as it always was", function()
+			it("leaves an ordinary failure to the sync's usual reporting", function()
 				-- Only a refusal ends a sync early and is handed on to be shown.
 				local api = apiForSyncBook({
 					getHighlights = function()

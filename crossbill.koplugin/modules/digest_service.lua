@@ -255,8 +255,8 @@ function DigestService:refreshBook(client_book_id)
 	local code, data, err = self.api_client:getBookDigest(client_book_id)
 
 	if UpgradeRequired.is(err) then
-		-- Not a digest problem at all: the server will not serve this plugin
-		-- anything until it is updated, which is what the reader has to hear.
+		-- Not a digest problem: the server serves this plugin nothing until it
+		-- is updated, and that is what the reader has to hear.
 		logger.warn("Crossbill DigestService: The server refuses this plugin version")
 		return false, UpgradeRequired.KIND, err
 	end
@@ -309,9 +309,8 @@ function DigestService:_refetchStaleEmptyBook(client_book_id)
 	logger.dbg("Crossbill DigestService: Re-fetching empty digest cache, last fetched", age, "seconds ago")
 	local ok, err_kind, err = self:refreshBook(client_book_id)
 	if not ok then
-		-- Why it failed is the caller's to weigh: an ordinary failure leaves the
-		-- book looking as empty as it did before, but a refusal is not about
-		-- this book at all and must not be reported as a missing digest.
+		-- Why it failed is the caller's to weigh: a refusal is not about this
+		-- book at all and must not be reported as a missing digest.
 		return {}, err_kind, err
 	end
 
@@ -339,8 +338,8 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 				return nil, "book_unknown"
 			end
 			if refresh_err == UpgradeRequired.KIND then
-				-- Worth passing on rather than reporting as an empty cache: no
-				-- amount of waiting for WiFi will fix a plugin the server refuses.
+				-- Not an empty cache: no amount of waiting for WiFi will fix a
+				-- plugin the server refuses.
 				return nil, refresh_err, err
 			end
 			return nil, "no_cache"
@@ -354,9 +353,8 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 		local refetch_kind, refetch_err
 		items, refetch_kind, refetch_err = self:_refetchStaleEmptyBook(client_book_id)
 		if refetch_kind == UpgradeRequired.KIND then
-			-- The same answer every other digest path gives it. Swallowed here,
-			-- the refusal would surface as "no digest for this book yet" and send
-			-- the reader off to generate one that may well already exist.
+			-- Swallowed here, the refusal would surface as "no digest for this
+			-- book yet" and send the reader off to generate one that may exist.
 			return nil, refetch_kind, refetch_err
 		end
 	end

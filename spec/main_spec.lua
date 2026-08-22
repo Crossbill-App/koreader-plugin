@@ -1,13 +1,11 @@
 local UIManager = require("ui/uimanager")
 local UpgradeRequired = require("modules/upgrade_required")
 
--- Requiring main.lua pulls in every module the plugin has, and one of them --
--- `modules/network` -- reaches for a socket the moment it loads. That is the
--- plugin's own module rather than one of KOReader's, so it cannot be shadowed
--- from spec/support: seeding the package cache before requiring main keeps the
--- wire out of the run, the same trick spec/api_client_spec.lua uses. What it
--- leaves behind is a plugin whose WiFi handling is these three answers, which is
--- what the sync paths below want anyway: already online, nothing to clean up.
+-- Requiring main.lua loads `modules/network`, which reaches for a socket. It is
+-- the plugin's own module rather than one of KOReader's, so it cannot be
+-- shadowed from spec/support: seeding the package cache before requiring main
+-- keeps the wire out of the run (see spec/api_client_spec.lua). The fake leaves
+-- the sync paths below already online, with nothing to clean up.
 local NetworkFake = {
 	ensureWifiEnabled = function()
 		return true
@@ -46,8 +44,7 @@ describe("CrossbillSync", function()
 
 	--- Build the plugin without letting init() near the databases
 	-- `init` opens three SQLite files and registers a menu, none of which the
-	-- paths below touch. Each spec hands over only the collaborators its path
-	-- reaches for, which doubles as a statement of what that path depends on.
+	-- paths below touch; each spec hands over only what its path reaches for.
 	-- @param fields table|nil The instance's fields
 	-- @return table The plugin instance
 	local function pluginWith(fields)
@@ -55,8 +52,7 @@ describe("CrossbillSync", function()
 	end
 
 	--- Build a sync service whose every sync is refused by the server
-	-- Refused the way the real one refuses: the refusal goes to the caller's
-	-- callback first, and only then comes back in the result.
+	-- Refused the way the real one does: the callback first, then the result.
 	-- @return table The sync service stand-in
 	local function syncServiceRefusing()
 		return {
@@ -107,9 +103,8 @@ describe("CrossbillSync", function()
 
 	describe("doSync", function()
 		it("says nothing more once the server has refused the plugin", function()
-			-- The refusal is the one message the attempt gets. "Sync failed: Your
-			-- Crossbill plugin (0.12.0) is too old for this server..." stacked on
-			-- top of it would read as a second, separate thing going wrong.
+			-- A "Sync failed: ..." message on top of the refusal would read as a
+			-- second, separate thing going wrong.
 			local plugin = pluginWith({ ui = {}, sync_service = syncServiceRefusing() })
 
 			plugin:doSync(false)
@@ -119,7 +114,7 @@ describe("CrossbillSync", function()
 
 		it("tells the reader even when the sync that was refused was a silent one", function()
 			-- An autosync says nothing about what it did, but a reader whose
-			-- syncing has quietly stopped working is exactly who needs telling.
+			-- syncing has stopped working needs telling.
 			local plugin = pluginWith({ ui = {}, sync_service = syncServiceRefusing() })
 
 			plugin:doSync(true)
@@ -127,7 +122,7 @@ describe("CrossbillSync", function()
 			assert.are.same({ UpgradeRequired.message(REFUSAL) }, shownTexts())
 		end)
 
-		it("still reports an ordinary failure the way it always did", function()
+		it("still reports an ordinary failure as a failed sync", function()
 			-- Only the refusal ends the reporting early.
 			local plugin = pluginWith({ ui = {}, sync_service = syncServiceFailing("Upload failed: 500") })
 
@@ -139,9 +134,8 @@ describe("CrossbillSync", function()
 
 	describe("a manual sync the server refuses", function()
 		it("takes the syncing message down before putting the refusal up", function()
-			-- "Syncing with Crossbill..." clears itself on a timeout rather than
-			-- when the sync ends, so the refusal would otherwise land on top of a
-			-- message saying the sync is still going.
+			-- "Syncing with Crossbill..." clears on a timeout rather than when the
+			-- sync ends, so the refusal would otherwise land on top of it.
 			local plugin = pluginWith({
 				ui = { document = {} },
 				sync_service = syncServiceRefusing(),
@@ -157,8 +151,7 @@ describe("CrossbillSync", function()
 		end)
 
 		it("leaves nothing behind for a later sync to close", function()
-			-- The widget is gone by the time the next attempt runs, and closing it
-			-- twice would take down whatever has taken its place.
+			-- Closing it twice would take down whatever has taken its place.
 			local plugin = pluginWith({
 				ui = { document = {} },
 				sync_service = syncServiceRefusing(),
@@ -187,14 +180,14 @@ describe("CrossbillSync", function()
 
 	describe("_showDigestResult", function()
 		it("shows the refusal rather than a word about digests", function()
-			-- The digest is beside the point: the server serves this plugin
-			-- nothing until it is updated.
+			-- The digest is beside the point: nothing is served to this plugin
+			-- until it is updated.
 			pluginWith({}):_showDigestResult(nil, UpgradeRequired.KIND, REFUSAL)
 
 			assert.are.same({ UpgradeRequired.message(REFUSAL) }, shownTexts())
 		end)
 
-		it("still reports a book the server has no digest for as it did", function()
+		it("still reports a book the server has no digest for", function()
 			pluginWith({}):_showDigestResult(nil, "no_digest_for_book", nil)
 
 			assert.are.same({

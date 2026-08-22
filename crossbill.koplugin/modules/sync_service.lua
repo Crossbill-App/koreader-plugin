@@ -80,9 +80,8 @@ end
 --   version, which the sync has already handed to opts.on_upgrade_required
 
 --- Stop the sync when the server has turned this plugin away as too old
--- Every step asks, and the first refusal ends the sync where it stands: the
--- remaining calls would only collect the same answer, and a sync that pushed
--- half of what it had is worse than one that pushed nothing.
+-- The first refusal ends the sync where it stands: the remaining calls would
+-- only collect the same answer, and half a sync is worse than none.
 -- @param result table The sync result to record the refusal on
 -- @param err any The error a step came back with, if any
 -- @param opts table|nil Sync options; see syncBook
@@ -94,8 +93,7 @@ function SyncService:_abortIfTooOld(result, err, opts)
 
 	logger.warn("Crossbill SyncService: The server refuses this plugin version, abandoning the sync")
 	if not result.upgrade_required then
-		-- Once for the whole attempt rather than once per refused call: a reader
-		-- met with the same message twice would only wonder what else broke.
+		-- Once for the whole attempt, not once per refused call.
 		self:_reportRefusal(err, opts)
 	end
 	result.success = false
@@ -105,13 +103,9 @@ function SyncService:_abortIfTooOld(result, err, opts)
 end
 
 --- Hand the refusal to whoever can put it in front of the reader
--- Reported from within the sync rather than left to its return value, because
--- an autosync fires while the book or the device is closing and has nobody
--- watching what it came back with. Reported through the caller's callback
--- rather than by showing a widget from here, because this service knows nothing
--- about screens and is worth keeping that way. A sync given nobody to tell --
--- as a test is, and as a future caller with no reader in front of it would be
--- -- still stops; it just stops quietly.
+-- Reported from within the sync because an autosync's return value has nobody
+-- watching it, and through the caller's callback because this service knows
+-- nothing about screens. A sync with nobody to tell still stops, quietly.
 -- @param err table The refusal
 -- @param opts table|nil Sync options; see syncBook
 function SyncService:_reportRefusal(err, opts)
@@ -134,9 +128,8 @@ end
 --     a book is withdrawn from the reader's devices. Absent means nobody can be
 --     asked, and the mass removal is skipped.
 --   on_upgrade_required function(err), called at most once per attempt with the
---     server's refusal to serve this plugin version, for a caller that has a
---     screen to put it on. Absent means the refusal is only reported in the
---     result.
+--     server's refusal to serve this plugin version. Absent means the refusal is
+--     only reported in the result.
 -- @return table SyncResult with success status and counts
 function SyncService:syncBook(ui, opts)
 	local result = {
@@ -213,7 +206,7 @@ function SyncService:syncBook(ui, opts)
 	result.sessions_synced = session_result.synced
 
 	-- Refresh cached digests (best-effort; never fails the sync, except when the
-	-- server turns the plugin away -- there is no sync to speak of then)
+	-- server turns the plugin away)
 	local digest_err = self:_refreshDigest(book_data.client_book_id)
 	self:_abortIfTooOld(result, digest_err, opts)
 
@@ -315,7 +308,7 @@ end
 
 --- Refresh a book's cached digests after a successful sync
 -- Delegates to the digest service. Failures are logged only and never
--- propagate to the sync result -- except the server's refusal to serve this
+-- propagate to the sync result, except the server's refusal to serve this
 -- plugin version, which is handed back for the sync to report.
 -- @param client_book_id string The client book ID
 -- @return any|nil The refusal, when that is what the refresh ran into
@@ -545,8 +538,7 @@ end
 -- @param client_book_id string The client book ID
 -- @param book_metadata BookMetadata instance
 -- @param server_metadata table Server metadata containing has_ebook, etc.
--- @return any|nil The error the upload failed with, which the sync only acts on
---   when it is the server refusing this plugin version
+-- @return any|nil The error the upload failed with
 function SyncService:_syncFiles(client_book_id, book_metadata, server_metadata)
 	-- Upload EPUB file if available (errors are logged but don't fail sync)
 	local epub_ok, epub_err = self.file_uploader:uploadEpub(client_book_id, book_metadata, server_metadata)
@@ -560,8 +552,7 @@ end
 
 --- Fetch book metadata from the server
 -- A book the server has never heard of is not an error: it is created next.
--- Everything else that went wrong is handed back, because the first call of the
--- sync is where the server's refusal to serve this plugin usually turns up.
+-- Everything else that went wrong is handed back for the sync to weigh.
 -- @param client_book_id string The client book ID (hash of title|author)
 -- @return table|nil Server metadata containing has_ebook, etc. or nil if not found
 -- @return any|nil The error the fetch failed with
