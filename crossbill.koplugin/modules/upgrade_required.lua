@@ -29,6 +29,23 @@ local FALLBACK_UPDATE_URL = "https://github.com/Crossbill-App/koreader-plugin"
 
 local mt = {}
 
+--- What the server actually named, as opposed to what merely arrived
+-- A JSON `null` does not decode to nil: KOReader's decoder hands back a
+-- placeholder of its own, which is a perfectly truthy value. The server sends
+-- `"received_version": null` whenever it cannot make sense of the version the
+-- plugin claimed, so a truthiness check alone would put "userdata: 0x7f..." in
+-- front of a reader. Only a string counts as named; anything else is treated as
+-- an answer that left the field out.
+-- @param value any The field as it came off the decoded body
+-- @return string|nil The value when it is a string, nil otherwise
+local function named(value)
+	if type(value) ~= "string" then
+		return nil
+	end
+
+	return value
+end
+
 --- The message a reader is shown when the server turns the plugin away
 -- Composed here from the versions the server reported rather than shown as the
 -- server phrased it: the text belongs to the plugin, which is what can
@@ -36,15 +53,15 @@ local mt = {}
 -- @param err table|nil The error, or nil when there is nothing to go on
 -- @return string The message, ending in the address to update from
 function UpgradeRequired.message(err)
-	local update_url = (err and err.update_url) or FALLBACK_UPDATE_URL
-	local received = err and err.received_version
-	local minimum = err and err.min_supported_version
+	local update_url = named(err and err.update_url) or FALLBACK_UPDATE_URL
+	local received = named(err and err.received_version)
+	local minimum = named(err and err.min_supported_version)
 
 	if received and minimum then
 		return string.format(
 			_("Your Crossbill plugin (%s) is too old for this server. Please update to %s or newer."),
-			tostring(received),
-			tostring(minimum)
+			received,
+			minimum
 		) .. "\n" .. update_url
 	end
 

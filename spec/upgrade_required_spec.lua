@@ -9,6 +9,16 @@ local function refusalBody(detail)
 	return { detail = detail }
 end
 
+-- What a decoded JSON `null` actually is. KOReader's decoder does not map it to
+-- nil -- it hands back a placeholder value, which is truthy and prints as
+-- "userdata: 0x...". A table stands in for it here; what matters is that it is
+-- truthy and is not a string.
+local JSON_NULL = setmetatable({}, {
+	__tostring = function()
+		return "userdata: 0x55d3a1c0"
+	end,
+})
+
 local FULL_DETAIL = {
 	code = "client_upgrade_required",
 	client = "koreader-plugin",
@@ -101,6 +111,58 @@ describe("UpgradeRequired", function()
 
 		it("says something even when there is no error at all", function()
 			assert.is_string(UpgradeRequired.message(nil))
+		end)
+
+		describe("a field the server sent as JSON null", function()
+			--- The message for a refusal whose detail carries the given fields
+			-- @param detail table What the server put under `detail`
+			-- @return string The message a reader would be shown
+			local function messageFor(detail)
+				return UpgradeRequired.message(UpgradeRequired.new(refusalBody(detail)))
+			end
+
+			it("is not the version the reader is told they are running", function()
+				-- The server sends `"received_version": null` whenever it cannot
+				-- parse the version the plugin claimed, and the decoder's stand-in
+				-- for null is truthy: unguarded, the reader is told their plugin
+				-- is "userdata: 0x...".
+				local message = messageFor({
+					min_supported_version = "0.13.0",
+					received_version = JSON_NULL,
+				})
+
+				assert.are.equal(
+					"Your Crossbill plugin is too old for this server. Please update it.\n" .. UPDATE_URL,
+					message
+				)
+			end)
+
+			it("is not the version the reader is told to update to", function()
+				local message = messageFor({
+					min_supported_version = JSON_NULL,
+					received_version = "0.12.0",
+				})
+
+				assert.are.equal(
+					"Your Crossbill plugin is too old for this server. Please update it.\n" .. UPDATE_URL,
+					message
+				)
+			end)
+
+			it("is not the address the reader is sent to", function()
+				local message = messageFor({
+					min_supported_version = "0.13.0",
+					received_version = "0.12.0",
+					update_url = JSON_NULL,
+				})
+
+				assert.are.equal(
+					"Your Crossbill plugin (0.12.0) is too old for this server. "
+						.. "Please update to 0.13.0 or newer.\n"
+						.. UPDATE_URL,
+					message
+				)
+			end)
 		end)
 	end)
 
