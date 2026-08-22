@@ -55,3 +55,29 @@ jobs:
 
       - name: Run tests
         run: make test
+
+  version:
+    name: Version line
+    # Pull requests only: the Release workflow bumps the line itself and pushes
+    # the bump straight to main, where this check would turn its own release red.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # Both ends of the pull request have to be present to diff them.
+          fetch-depth: 0
+
+      - name: Check the version was not bumped by hand
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if git diff "$BASE_SHA" "$HEAD_SHA" -- crossbill.koplugin/_meta.lua \
+            | grep -qE '^[-+][[:space:]]*version = "'; then
+            echo "This pull request changes the version in crossbill.koplugin/_meta.lua."
+            echo "The Release workflow owns this line — never bump it by hand."
+            exit 1
+          fi
