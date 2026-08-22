@@ -67,17 +67,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
-          # Both ends of the pull request have to be present to diff them.
+          # Both ends of the pull request, and enough history between them for
+          # the merge base to be found.
           fetch-depth: 0
+
+      # The same 5.1 the plugin runs under on a device, which is what evaluates
+      # _meta.lua on both sides of the comparison.
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.1
 
       - name: Check the version was not bumped by hand
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if git diff "$BASE_SHA" "$HEAD_SHA" -- crossbill.koplugin/_meta.lua \
-            | grep -qE '^[-+][[:space:]]*version = "'; then
-            echo "This pull request changes the version in crossbill.koplugin/_meta.lua."
-            echo "The Release workflow owns this line — never bump it by hand."
-            exit 1
-          fi
+        run: scripts/check_version_unchanged.sh "$BASE_SHA" "$HEAD_SHA"
