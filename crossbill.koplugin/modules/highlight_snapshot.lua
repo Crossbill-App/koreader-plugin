@@ -12,8 +12,29 @@ the device". `findRemoved` then diffs the book's current highlights against that
 memory, which is how a deletion made on the device is recognised.
 
 The snapshot mirrors server state, so it is keyed by client_book_id (the hash of
-"title|author") rather than by the file path: it survives moves and is shared by
-copies of the same book.
+"title|author") rather than by the file path: the pull is the same for every copy
+of a book, because the server is the master and hands each of them the same
+highlights.
+
+The removal diff is not. It asks what THIS file has lost since THIS file last
+pulled, and each copy of a book carries its own KOReader sidecar, so diffing one
+file's highlights against another's snapshot reads the other copy's highlights as
+deletions made here (#609). Every snapshot therefore records the hash of the file
+that wrote it, and `findRemoved` and `flagNew` refuse a book owned by another
+file -- exactly as they refuse a book that has never pulled. The same sync's pull
+re-stamps the ownership, so a refused diff costs one sync and never a highlight.
+A refused flagNew is not as free: the unflagged push cannot revive a highlight
+the server had deleted under the same text, and that sync's pull then drops it
+from the device -- the never-pulled behaviour from before #602, accepted here
+because flagging against another copy's snapshot would revive highlights the
+reader deleted on the web.
+
+The owner is the hash of the file's path, the identity SessionTracker already
+uses. Hashing the file's content instead would not do: two byte-identical copies
+in different folders still hold independent sidecars, so they would share an
+owner and recreate the bug. A moved file is the price -- it finds its book owned
+by the old path, refuses one diff, and owns the snapshot again after that sync's
+pull.
 
 Storage arrives as a dependency. On the device that is
 `modules/highlight_snapshot_store`, which talks to SQLite; specs hand it an
@@ -129,15 +150,29 @@ local function buildRows(placed)
 	return rows
 end
 
+--- Check that a value is a usable hash, as an identity always is
+-- @param value any The value to test
+-- @return boolean True when the value is a non-empty string
+local function isHash(value)
+	return type(value) == "string" and value ~= ""
+end
+
 --- Record the highlights a pull placed in a book, replacing what was there
 -- The server is the master copy, so this is a wholesale rewrite of the book's
 -- rows and never a merge. An empty set still enrols the book: a pull that
 -- returned no highlights is a successful pull, and the book has to become
 -- diffable.
+--
+-- The recording file takes ownership of the snapshot, taking it over from
+-- whichever copy of the book held it before. A pull that cannot say which file
+-- it went into is still recorded, only unowned: bookkeeping must never block a
+-- pull, and the book simply stays undiffable until a pull carries a hash.
+--
 -- @param client_book_id string The client book ID
 -- @param placed table Array of {server_id, text} the importer put in the book
+-- @param book_file_hash string|nil Hash of the file the pull was applied to
 -- @return boolean Success status
-function HighlightSnapshot:recordPlaced(client_book_id, placed)
+function HighlightSnapshot:recordPlaced(client_book_id, placed, book_file_hash)
 	if not self._initialized then
 		logger.warn("Crossbill HighlightSnapshot: Cannot record - the ledger is not open")
 		return false
@@ -153,10 +188,15 @@ function HighlightSnapshot:recordPlaced(client_book_id, placed)
 		return false
 	end
 
+	if not isHash(book_file_hash) then
+		logger.warn("Crossbill HighlightSnapshot: Recording", client_book_id, "without an owning file")
+		book_file_hash = nil
+	end
+
 	local rows = buildRows(placed)
 
 	local ok, stored = pcall(function()
-		return self.store:replaceBook(client_book_id, rows)
+		return self.store:replaceBook(client_book_id, rows, book_file_hash)
 	end)
 
 	if not ok then
@@ -211,6 +251,48 @@ function HighlightSnapshot:hasBook(client_book_id)
 	return has == true
 end
 
+--- Read the hash of the file that recorded a book's snapshot
+-- @param client_book_id string The client book ID
+-- @return string|nil The file hash, nil when the book is absent or was
+--   recorded without one (a snapshot from before ownership was tracked)
+function HighlightSnapshot:getBookFileHash(client_book_id)
+	if not self._initialized or type(client_book_id) ~= "string" or client_book_id == "" then
+		return nil
+	end
+
+	local ok, hash = pcall(function()
+		return self.store:getBookFileHash(client_book_id)
+	end)
+
+	if not ok then
+		logger.err("Crossbill HighlightSnapshot: Failed to read the snapshot's owner:", hash)
+		return nil
+	end
+
+	return isHash(hash) and hash or nil
+end
+
+--- Check whether the given file is the one that recorded a book's snapshot
+-- A snapshot another copy of the book wrote says nothing about this file, and
+-- neither does one written before ownership was tracked. Both are as undiffable
+-- as a book that has never pulled, and the next pull settles the question by
+-- taking ownership.
+-- @param client_book_id string The client book ID
+-- @param book_file_hash string|nil Hash of the file being synced
+-- @return boolean True when this file owns the snapshot
+function HighlightSnapshot:_ownsSnapshot(client_book_id, book_file_hash)
+	if not isHash(book_file_hash) then
+		return false
+	end
+
+	local owner = self:getBookFileHash(client_book_id)
+	if not owner then
+		return false
+	end
+
+	return owner == book_file_hash
+end
+
 --- Diff a book's recorded highlights against the ones now on the device
 -- Matching is by text hash and set-based: a recorded highlight counts as gone
 -- only when no device highlight carries its text at all. The server's identity
@@ -240,25 +322,33 @@ local function diffRows(rows, highlights)
 	return {
 		ids = ids,
 		-- Losing every recorded highlight at once rarely means the reader
-		-- deleted them one by one. It is equally the signature of a lost
-		-- sidecar, or of a second file with the same title and author being
-		-- diffed against this ledger -- the key is "title|author", so copies of
-		-- one book share it while holding different highlights. What the device
-		-- still has of its own says nothing either way, so the caller asks.
+		-- deleted them one by one. It is equally the signature of a lost or
+		-- rebuilt sidecar under the same path, which ownership cannot catch:
+		-- the file still owns its snapshot, it has simply forgotten what it
+		-- pulled. What the device still has of its own says nothing either way,
+		-- so the caller asks.
 		mass_removal = #ids > 0 and #ids == #rows,
 	}
 end
 
 --- Work out which of a book's highlights the reader deleted on the device
 -- A book with no snapshot cannot be diffed -- it has never pulled, so nothing
--- says whether a missing highlight was deleted here or never arrived.
+-- says whether a missing highlight was deleted here or never arrived. Neither
+-- can a book whose snapshot another copy of it recorded: what that copy pulled
+-- says nothing about what this file ever held.
 -- @param client_book_id string The client book ID
 -- @param highlights table|nil The highlights currently on the device
+-- @param book_file_hash string|nil Hash of the file being synced
 -- @return table|nil {ids = array of server ids to remove, mass_removal =
---   boolean}, or nil when the book has no snapshot to diff against
-function HighlightSnapshot:findRemoved(client_book_id, highlights)
+--   boolean}, or nil when there is no snapshot of this file to diff against
+function HighlightSnapshot:findRemoved(client_book_id, highlights, book_file_hash)
 	local rows = self:getBook(client_book_id)
 	if not rows then
+		return nil
+	end
+
+	if not self:_ownsSnapshot(client_book_id, book_file_hash) then
+		logger.dbg("Crossbill HighlightSnapshot: Not diffing", client_book_id, "against another file's snapshot")
 		return nil
 	end
 
@@ -280,12 +370,24 @@ end
 -- all of it on the book's first sync from a fresh device. The book enrols on its
 -- first pull and flags normally from then on.
 --
+-- A snapshot another copy of the book recorded is no better than none: this
+-- file's highlights are stale against it, so every one the other copy does not
+-- hold would go out flagged and tell the server to revive highlights the reader
+-- deleted on the web. Pushing them unflagged is the behaviour that shipped
+-- before the flag existed, and it loses nothing but a sync's delay.
+--
 -- @param client_book_id string The client book ID
 -- @param highlights table|nil The highlights about to be pushed, flagged in place
+-- @param book_file_hash string|nil Hash of the file being synced
 -- @return number How many highlights were flagged
-function HighlightSnapshot:flagNew(client_book_id, highlights)
+function HighlightSnapshot:flagNew(client_book_id, highlights, book_file_hash)
 	local rows = self:getBook(client_book_id)
 	if not rows then
+		return 0
+	end
+
+	if not self:_ownsSnapshot(client_book_id, book_file_hash) then
+		logger.dbg("Crossbill HighlightSnapshot: Not flagging", client_book_id, "against another file's snapshot")
 		return 0
 	end
 

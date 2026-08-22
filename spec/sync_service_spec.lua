@@ -1,8 +1,17 @@
 local SyncService = require("modules/sync_service")
+local HighlightSnapshot = require("modules/highlight_snapshot")
+local FakeSnapshotStore = require("fake_snapshot_store")
 local DocSettings = require("docsettings")
 local GlobalSettingsFake = require("global_settings_fake")
 
 local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
+-- Two copies of one book: the same title and author, so the same client book
+-- id, and their own sidecars behind their own file paths. The hashes are what
+-- `ffi/sha2`'s stand-in makes of those paths.
+local BOOK_PATH = "/books/dune.epub"
+local COPY_PATH = "/books/copies/dune.epub"
+local FILE_HASH = "md5:" .. BOOK_PATH
+local COPY_FILE_HASH = "md5:" .. COPY_PATH
 
 --- Build a SyncService with only the collaborators the pull touches
 -- @param opts table|nil api_client, highlight_importer and highlight_snapshot overrides
@@ -30,25 +39,34 @@ local function ledgerRecording(opts)
 		calls = {},
 		diffed = {},
 		flagged = {},
-		recordPlaced = function(self, client_book_id, placed)
+		recordPlaced = function(self, client_book_id, placed, book_file_hash)
 			if opts.throws then
 				error("snapshot store blew up")
 			end
-			table.insert(self.calls, { client_book_id = client_book_id, placed = placed })
+			table.insert(
+				self.calls,
+				{ client_book_id = client_book_id, placed = placed, book_file_hash = book_file_hash }
+			)
 			return true
 		end,
-		findRemoved = function(self, client_book_id, highlights)
+		findRemoved = function(self, client_book_id, highlights, book_file_hash)
 			if opts.diff_throws then
 				error("snapshot store blew up")
 			end
-			table.insert(self.diffed, { client_book_id = client_book_id, highlights = highlights })
+			table.insert(
+				self.diffed,
+				{ client_book_id = client_book_id, highlights = highlights, book_file_hash = book_file_hash }
+			)
 			return opts.removed
 		end,
-		flagNew = function(self, client_book_id, highlights)
+		flagNew = function(self, client_book_id, highlights, book_file_hash)
 			if opts.flag_throws then
 				error("snapshot store blew up")
 			end
-			table.insert(self.flagged, { client_book_id = client_book_id, highlights = highlights })
+			table.insert(
+				self.flagged,
+				{ client_book_id = client_book_id, highlights = highlights, book_file_hash = book_file_hash }
+			)
 			local count = 0
 			for _, highlight in ipairs(highlights) do
 				if opts.new_texts and opts.new_texts[highlight.text] then
@@ -303,11 +321,40 @@ describe("SyncService", function()
 				highlight_snapshot = ledger,
 			})
 
-			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID)
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID, BOOK_PATH)
 
 			assert.are.equal(1, #ledger.calls)
 			assert.are.equal(CLIENT_BOOK_ID, ledger.calls[1].client_book_id)
 			assert.are.same(placed, ledger.calls[1].placed)
+		end)
+
+		it("records the file the pull was applied to, which then owns the snapshot", function()
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning({ inserted = 1, placed = placed }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID, BOOK_PATH)
+
+			assert.are.equal(FILE_HASH, ledger.calls[1].book_file_hash)
+		end)
+
+		it("records a book whose file has no path, owned by no file", function()
+			-- Nothing may be diffed against an unowned snapshot, but bookkeeping
+			-- never stops the pull from being recorded.
+			local ledger = ledgerRecording()
+			local service = syncServiceWith({
+				api_client = apiReturning(200, { "one" }),
+				highlight_importer = importerReturning({ inserted = 1, placed = placed }),
+				highlight_snapshot = ledger,
+			})
+
+			service:_applyPull({}, readerFor(), CLIENT_BOOK_ID, nil)
+
+			assert.are.equal(1, #ledger.calls)
+			assert.is_nil(ledger.calls[1].book_file_hash)
 		end)
 
 		it("records the enrolment of a book that already matched the server", function()
@@ -468,11 +515,12 @@ describe("SyncService", function()
 
 		--- Build the full reader context syncBook walks through
 		-- @param annotations table The in-memory annotation array
+		-- @param doc_path string|nil The file this copy of the book lives in
 		-- @return table A stand-in for `self.ui`
-		local function bookFor(annotations)
+		local function bookFor(annotations, doc_path)
 			return {
 				rolling = true,
-				document = { file = "/books/dune.epub" },
+				document = { file = doc_path or BOOK_PATH },
 				doc_props = { title = "Dune", authors = "Frank Herbert" },
 				annotation = { annotations = annotations },
 			}
@@ -592,6 +640,12 @@ describe("SyncService", function()
 				assert.are.equal(1, #ledger.diffed)
 				assert.are.equal(CLIENT_BOOK_ID, ledger.diffed[1].client_book_id)
 				assert.are.equal("a passage", ledger.diffed[1].highlights[1].text)
+			end)
+
+			it("names the file being synced, so only its own snapshot is diffed", function()
+				local _, ledger = syncWithDiff(apiForSyncBook(), { ids = {}, mass_removal = false })
+
+				assert.are.equal(FILE_HASH, ledger.diffed[1].book_file_hash)
 			end)
 
 			it("sends no removals for a book that has never pulled", function()
@@ -774,6 +828,12 @@ describe("SyncService", function()
 				assert.are.equal("a passage", ledger.flagged[1].highlights[1].text)
 			end)
 
+			it("names the file being synced, so only its own snapshot flags", function()
+				local _, ledger = syncWithFlagging(apiForSyncBook())
+
+				assert.are.equal(FILE_HASH, ledger.flagged[1].book_file_hash)
+			end)
+
 			it("marks nothing when every pushed highlight came from the server", function()
 				local api = apiForSyncBook()
 
@@ -803,6 +863,127 @@ describe("SyncService", function()
 
 				assert.is_true(result.success)
 				assert.is_nil(api.uploaded.highlights[1].is_new)
+			end)
+		end)
+
+		describe("a second copy of a book another file has already pulled", function()
+			-- #609: both copies share the ledger key, so before ownership the
+			-- second copy diffed the first one's snapshot and reported its
+			-- highlights as deletions made here. Alternating syncs between the
+			-- copies then withheld every highlight of the book from every
+			-- device. The real ledger and its store stand in for the stubs here,
+			-- because ownership is the thing under test.
+			local THE_OTHER_COPYS_HIGHLIGHT = "a passage the other copy holds"
+			local ITS_OWN_HIGHLIGHT = { drawer = "lighten", text = "a passage only this copy holds" }
+
+			--- Build a ledger the book's first copy has already recorded into
+			-- @return table The ledger, backed by the in-memory store
+			local function ledgerOwnedByTheFirstCopy()
+				local ledger = HighlightSnapshot:new({ store = FakeSnapshotStore:new() })
+				ledger:init("/settings")
+				ledger:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = THE_OTHER_COPYS_HIGHLIGHT } }, FILE_HASH)
+				return ledger
+			end
+
+			--- Build the service the second copy syncs through
+			-- Its pull places the server's one highlight, as the first copy's did.
+			-- @param api table The api client stand-in
+			-- @param ledger table The ledger both copies share
+			-- @return table The SyncService instance
+			local function serviceForTheCopy(api, ledger)
+				return serviceFor(api, {
+					highlight_importer = importerReturning({
+						inserted = 1,
+						placed = { { server_id = 7, text = THE_OTHER_COPYS_HIGHLIGHT } },
+					}),
+					highlight_snapshot = ledger,
+				})
+			end
+
+			it("removes nothing and asks nothing until it has pulled for itself", function()
+				local api = apiForSyncBook()
+				local asked = 0
+				local service = serviceForTheCopy(api, ledgerOwnedByTheFirstCopy())
+
+				local result = service:syncBook(bookFor({ ITS_OWN_HIGHLIGHT }, COPY_PATH), {
+					confirm_removal = function()
+						asked = asked + 1
+						return true
+					end,
+				})
+
+				assert.is_true(result.success)
+				assert.are.same({}, api.uploaded.removed_ids)
+				assert.are.equal(0, asked)
+			end)
+
+			it("flags nothing of its own against the other copy's snapshot", function()
+				-- Flagged, its stale highlights would ask the server to revive
+				-- whatever the reader deleted on the web.
+				local api = apiForSyncBook()
+				local service = serviceForTheCopy(api, ledgerOwnedByTheFirstCopy())
+
+				service:syncBook(bookFor({ ITS_OWN_HIGHLIGHT }, COPY_PATH))
+
+				assert.is_nil(api.uploaded.highlights[1].is_new)
+			end)
+
+			it("owns the ledger after its own pull and diffs normally from then on", function()
+				local api = apiForSyncBook()
+				local ledger = ledgerOwnedByTheFirstCopy()
+				local service = serviceForTheCopy(api, ledger)
+				local asked = {}
+				local opts = {
+					confirm_removal = function(count)
+						table.insert(asked, count)
+						return true
+					end,
+				}
+
+				service:syncBook(bookFor({ ITS_OWN_HIGHLIGHT }, COPY_PATH), opts)
+
+				assert.are.equal(COPY_FILE_HASH, ledger:getBookFileHash(CLIENT_BOOK_ID))
+
+				-- The reader now deletes the pulled highlight in this copy.
+				service:syncBook(bookFor({}, COPY_PATH), opts)
+
+				assert.are.same({ 7 }, api.uploaded.removed_ids)
+				assert.are.same({ 1 }, asked)
+			end)
+
+			it("leaves the server's set intact when the two copies sync in turn", function()
+				-- The convergence #609 reports: each copy diffed the snapshot the
+				-- other had just written and read the other's highlights as
+				-- deletions made here, so alternating syncs stripped the book from
+				-- every device. Whichever copy syncs next never owns the snapshot
+				-- the other one left, so it never sends a removal. Deletion made
+				-- on either copy is deferred while both stay active, which is the
+				-- safe direction.
+				local api = apiForSyncBook()
+				local service = serviceForTheCopy(api, ledgerOwnedByTheFirstCopy())
+				local asked = 0
+				local opts = {
+					-- A confirmation that says yes, so a removal the diff wrongly
+					-- found would reach the server rather than be skipped here.
+					confirm_removal = function()
+						asked = asked + 1
+						return true
+					end,
+				}
+				local copies = {
+					{ path = COPY_PATH, holds = { ITS_OWN_HIGHLIGHT } },
+					{ path = BOOK_PATH, holds = { { drawer = "lighten", text = THE_OTHER_COPYS_HIGHLIGHT } } },
+				}
+				local removed_per_sync = {}
+
+				for i = 1, 4 do
+					local copy = copies[(i - 1) % 2 + 1]
+					service:syncBook(bookFor(copy.holds, copy.path), opts)
+					table.insert(removed_per_sync, #api.uploaded.removed_ids)
+				end
+
+				assert.are.same({ 0, 0, 0, 0 }, removed_per_sync)
+				assert.are.equal(0, asked)
 			end)
 		end)
 	end)
