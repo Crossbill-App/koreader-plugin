@@ -16,6 +16,8 @@ This is a KOReader plugin (Lua) that syncs book highlights and reading sessions 
 
 `make check` runs lint, the formatting check and the tests. Keep `make check` green.
 
+**Releases and the version**: never edit `version` in `crossbill.koplugin/_meta.lua`. Releases and version bumps happen only through the Release workflow (`workflow_dispatch`, pick patch/minor/major), which bumps the line, commits it to main, tags it and publishes the plugin zip. CI fails any pull request whose diff touches that line. The version is not decoration: every request carries it as `X-Crossbill-Client: koreader-plugin/<version>`, and the server refuses versions it no longer supports.
+
 **No build step required** - Lua files are loaded directly by KOReader.
 
 ## Architecture
