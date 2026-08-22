@@ -13,8 +13,16 @@ local socketutil = require("socketutil")
 local NetworkMgr = require("ui/network/manager")
 local JSON = require("json")
 local logger = require("logger")
+local meta = require("_meta")
 
 local Network = {}
+
+-- Identifies the plugin to the server, which refuses versions it no longer
+-- supports. The version is read from `_meta.lua` -- the file the release
+-- workflow bumps -- rather than repeated here, so the header can never claim a
+-- version the plugin is not.
+Network.CLIENT_HEADER = "X-Crossbill-Client"
+Network.CLIENT_HEADER_VALUE = "koreader-plugin/" .. tostring(meta.version)
 
 --- Decode a response body, keeping the status code the request came back with
 -- An empty body is not an error: some endpoints answer with a status only.
@@ -72,6 +80,10 @@ function Network.request(options)
 	if body and not headers["Content-Length"] then
 		headers["Content-Length"] = tostring(#body)
 	end
+
+	-- Every call to the server passes through here, so identifying the plugin
+	-- here is the one way no call site can forget to.
+	headers[Network.CLIENT_HEADER] = Network.CLIENT_HEADER_VALUE
 
 	local response_body = {}
 	local request = {

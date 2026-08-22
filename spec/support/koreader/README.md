@@ -22,7 +22,9 @@ differently for one test, prefer busted's `stub`/`spy` over growing the stub.
 `modules/network` is the plugin's own module rather than KOReader's, so it cannot
 be shadowed from here: `crossbill.koplugin` comes first on the path. A spec that
 must keep it off the wire seeds `package.loaded` with a fake before requiring the
-module under test -- see `spec/api_client_spec.lua`.
+module under test -- see `spec/api_client_spec.lua`. `spec/network_spec.lua`
+needs the real module, so it seeds fakes for the layer underneath it instead
+(LuaSocket, `json` and `ui/network/manager`) and puts them all back afterwards.
 
 `G_reader_settings` is a global rather than a module, so its fake lives one
 level up in `spec/support/global_settings_fake.lua`.
