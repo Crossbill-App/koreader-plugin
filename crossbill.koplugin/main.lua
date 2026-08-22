@@ -27,6 +27,7 @@ local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
 local DocumentSupport = require("modules/document_support")
+local UpgradeRequired = require("modules/upgrade_required")
 
 local CrossbillSync = WidgetContainer:extend({
 	name = "Crossbill",
@@ -162,9 +163,14 @@ end
 --- Show a digest result: popup on success, matching info message otherwise
 -- @param item table|nil The matched digest item
 -- @param err_kind string|nil The error kind returned by the digest service
-function CrossbillSync:_showDigestResult(item, err_kind)
+-- @param err table|nil The refusal, when that is the error kind
+function CrossbillSync:_showDigestResult(item, err_kind, err)
 	if item then
 		UI.showDigestPopup(item)
+	elseif err_kind == UpgradeRequired.KIND then
+		-- The digest is beside the point: nothing is served to this plugin
+		-- until it is updated.
+		UI.showUpgradeRequired(err)
 	elseif err_kind == "book_unknown" then
 		UI.showDigestBookUnknown()
 	elseif err_kind == "no_digest_for_book" then
@@ -199,18 +205,18 @@ function CrossbillSync:showChapterDigest()
 	end
 
 	local client_book_id = book_data.client_book_id
-	local item, err_kind = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
+	local item, err_kind, err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
 
 	-- Anything other than a missing cache can be shown immediately (no network needed).
 	if err_kind ~= "no_cache" then
-		self:_showDigestResult(item, err_kind)
+		self:_showDigestResult(item, err_kind, err)
 		return
 	end
 
 	-- Nothing cached and the fetch failed: retry once online if WiFi is off.
 	local callback = function()
-		local retry_item, retry_err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
-		self:_showDigestResult(retry_item, retry_err)
+		local retry_item, retry_err_kind, retry_err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
+		self:_showDigestResult(retry_item, retry_err_kind, retry_err)
 		Network.disableWifiIfNeeded()
 	end
 
@@ -221,7 +227,7 @@ function CrossbillSync:showChapterDigest()
 	end
 
 	-- Already online but still no cache: the fetch genuinely failed
-	self:_showDigestResult(item, err_kind)
+	self:_showDigestResult(item, err_kind, err)
 	Network.disableWifiIfNeeded()
 end
 
@@ -282,7 +288,7 @@ end
 -- @param is_autosync boolean If true, run in silent mode
 function CrossbillSync:_runSync(is_autosync)
 	if not is_autosync then
-		UI.showSyncingMessage()
+		self.syncing_message = UI.showSyncingMessage()
 	end
 
 	-- End current session before sync so it gets included
@@ -293,6 +299,9 @@ function CrossbillSync:_runSync(is_autosync)
 	local success, err = pcall(function()
 		self:doSync(is_autosync)
 	end)
+
+	-- Past this point the message is the timeout's to clear, not the sync's.
+	self.syncing_message = nil
 
 	if not success then
 		logger.err("Crossbill: Error in sync:", err)
@@ -310,13 +319,33 @@ function CrossbillSync:_runSync(is_autosync)
 	Network.disableWifiIfNeeded()
 end
 
+--- Tell the reader the server has turned this plugin away
+-- A manual sync's "Syncing..." message clears on a timeout rather than when the
+-- sync ends, so it has to come down before the refusal replaces it.
+-- @param err table The server's refusal
+function CrossbillSync:_reportUpgradeRequired(err)
+	UI.dismiss(self.syncing_message)
+	self.syncing_message = nil
+	UI.showUpgradeRequired(err)
+end
+
 --- Execute the sync workflow
 -- @param is_autosync boolean If true, run in silent mode
 function CrossbillSync:doSync(is_autosync)
 	local result = self.sync_service:syncBook(self.ui, {
 		-- Only a manual sync has a reader in front of it to answer.
 		confirm_removal = (not is_autosync) and UI.confirmRemoveAll or nil,
+		-- An autosync says it too: one that has quietly stopped working is
+		-- exactly what a reader needs told about.
+		on_upgrade_required = function(err)
+			self:_reportUpgradeRequired(err)
+		end,
 	})
+
+	if result.upgrade_required then
+		-- The refusal is the one message this attempt gets.
+		return
+	end
 
 	if not result.success and not is_autosync then
 		if result.error and result.error:match("^Authentication") then

@@ -12,6 +12,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local Trapper = require("ui/trapper")
+local UpgradeRequired = require("modules/upgrade_required")
 local logger = require("logger")
 local _ = require("gettext")
 
@@ -31,16 +32,30 @@ local UI = {}
 --- Show an informational message to the user
 -- @param text string The message to display
 -- @param timeout number|nil Auto-dismiss timeout in seconds (nil = no auto-dismiss)
+-- @return table The widget now on screen, for a caller that may dismiss it early
 function UI.showMessage(text, timeout)
-	UIManager:show(InfoMessage:new({
+	local message = InfoMessage:new({
 		text = text,
 		timeout = timeout,
-	}))
+	})
+	UIManager:show(message)
+	return message
+end
+
+--- Take a message this module put on screen back down
+-- @param widget table|nil A widget an earlier show returned, nil to do nothing
+function UI.dismiss(widget)
+	if not widget then
+		return
+	end
+
+	UIManager:close(widget)
 end
 
 --- Show a syncing in progress message
+-- @return table The message widget, for a sync that ends before its timeout
 function UI.showSyncingMessage()
-	UI.showMessage(_("Syncing with Crossbill..."), 2)
+	return UI.showMessage(_("Syncing with Crossbill..."), 2)
 end
 
 --- Show the outcome of a sync: what was uploaded, and what the pull brought back
@@ -113,6 +128,15 @@ end
 -- @param code number|string The error code
 function UI.showSyncFailed(code)
 	UI.showMessage(_("Sync failed: ") .. tostring(code or "unknown error"), 3)
+end
+
+--- Tell the reader the server has turned this plugin away as too old
+-- A plain message with nothing to answer: a sync can be running while the book
+-- or the device is closing, where a dialog awaiting dismissal would hold that
+-- up. It stays on screen long enough to read an address off it.
+-- @param err table|nil The refusal, or nil when there is nothing to go on
+function UI.showUpgradeRequired(err)
+	UI.showMessage(UpgradeRequired.message(err), 10)
 end
 
 --- Show authentication error message

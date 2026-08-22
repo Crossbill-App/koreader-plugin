@@ -1,5 +1,6 @@
 local SyncService = require("modules/sync_service")
 local HighlightSnapshot = require("modules/highlight_snapshot")
+local UpgradeRequired = require("modules/upgrade_required")
 local FakeSnapshotStore = require("fake_snapshot_store")
 local DocSettings = require("docsettings")
 local GlobalSettingsFake = require("global_settings_fake")
@@ -533,7 +534,7 @@ describe("SyncService", function()
 					return opts.session_tracker ~= nil
 				end,
 			}
-			local file_uploader = {
+			local file_uploader = opts.file_uploader or {
 				uploadEpub = function()
 					return true
 				end,
@@ -543,6 +544,7 @@ describe("SyncService", function()
 				file_uploader = file_uploader,
 				session_tracker = opts.session_tracker,
 				settings = settings,
+				digest_service = opts.digest_service,
 				highlight_importer = opts.highlight_importer,
 				highlight_snapshot = opts.highlight_snapshot,
 			})
@@ -984,6 +986,280 @@ describe("SyncService", function()
 
 				assert.are.same({ 0, 0, 0, 0 }, removed_per_sync)
 				assert.are.equal(0, asked)
+			end)
+		end)
+		describe("a server that turns this plugin away as too old", function()
+			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
+			local REFUSAL = UpgradeRequired.fromResponse(426, {
+				detail = {
+					code = "client_upgrade_required",
+					client = "koreader-plugin",
+					min_supported_version = "0.13.0",
+					received_version = "0.12.0",
+					update_url = "https://github.com/Crossbill-App/koreader-plugin",
+				},
+			})
+
+			-- The refusals the sync handed on, and the options that ask to hear
+			-- about them.
+			local told
+			local telling
+
+			before_each(function()
+				told = {}
+				telling = {
+					on_upgrade_required = function(err)
+						table.insert(told, err)
+					end,
+				}
+			end)
+
+			--- Build an api client the server refuses every call of
+			-- @return table The api client, recording the calls it took
+			local function apiRefusingEverything()
+				local function refuse(api, name, ...)
+					table.insert(api.calls, name)
+					return ...
+				end
+				local api = { calls = {} }
+				api.getBookMetadata = function(self)
+					return refuse(self, "getBookMetadata", 426, nil, REFUSAL)
+				end
+				api.createBook = function(self)
+					return refuse(self, "createBook", false, nil, REFUSAL)
+				end
+				api.uploadHighlights = function(self)
+					return refuse(self, "uploadHighlights", false, nil, REFUSAL)
+				end
+				api.getHighlights = function(self)
+					return refuse(self, "getHighlights", 426, nil, REFUSAL)
+				end
+				api.uploadReadingSessions = function(self)
+					return refuse(self, "uploadReadingSessions", false, nil, REFUSAL)
+				end
+				return api
+			end
+
+			it("gives up at the first refusal instead of collecting it again", function()
+				local api = apiRefusingEverything()
+				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.are.same({ "getBookMetadata" }, api.calls)
+				assert.is_false(result.success)
+				assert.is_true(UpgradeRequired.is(result.upgrade_required))
+			end)
+
+			it("hands the refusal on once for the whole sync attempt", function()
+				local api = apiRefusingEverything()
+				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("hands on the refusal itself, so the words are the caller's to choose", function()
+				-- The message is composed from the versions the server named,
+				-- which is why the refusal travels rather than a string.
+				local service = serviceFor(apiRefusingEverything(), {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.are.equal("0.12.0", told[1].received_version)
+				assert.are.equal("0.13.0", told[1].min_supported_version)
+			end)
+
+			it("stops just the same when there is nobody to tell", function()
+				-- A caller with no screen gets the refusal in the result instead.
+				local api = apiRefusingEverything()
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.same({ "getBookMetadata" }, api.calls)
+				assert.are.equal(REFUSAL, result.upgrade_required)
+			end)
+
+			it("finishes the abort even when telling the reader blows up", function()
+				local service = serviceFor(apiRefusingEverything(), {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), {
+					on_upgrade_required = function()
+						error("no screen to show it on")
+					end,
+				})
+
+				assert.is_false(result.success)
+				assert.are.equal(REFUSAL, result.upgrade_required)
+			end)
+
+			it("reports the refusal as a message the caller can still read", function()
+				-- The plugin's callers treat a sync error as a string, and one of
+				-- them matches on it.
+				local service = serviceFor(apiRefusingEverything(), {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_string(result.error)
+				assert.is_truthy(result.error:match("^Your Crossbill plugin"))
+			end)
+
+			it("stops before the pull and the sessions when the push is refused", function()
+				-- Nothing half-done: the sync that follows an update carries the
+				-- removals and the sessions alike.
+				local api = apiForSyncBook({
+					uploadHighlights = function()
+						return false, nil, REFUSAL
+					end,
+					getHighlights = function(self)
+						self.pulled = true
+						return 200, {}
+					end,
+					uploadReadingSessions = function(self)
+						self.sessions_uploaded = true
+						return true, {}
+					end,
+				})
+				local session_tracker = {
+					getBookFileHash = function()
+						return "hash"
+					end,
+					getUnsyncedSessionsForBook = function()
+						return { { id = 7 } }
+					end,
+					markSessionsSynced = function(self, ids)
+						self.marked = ids
+					end,
+				}
+				local service = serviceFor(api, {
+					session_tracker = session_tracker,
+					highlight_importer = importerReturning({ inserted = 0 }),
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.is_nil(api.pulled)
+				assert.is_nil(api.sessions_uploaded)
+				assert.is_nil(session_tracker.marked)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("stops when the EPUB upload is the call that is refused", function()
+				-- An EPUB upload that fails is otherwise only logged, but a refusal
+				-- is about the plugin rather than about the file.
+				local api = apiForSyncBook({
+					uploadHighlights = function(self)
+						self.pushed = true
+						return true, {}
+					end,
+				})
+				local service = serviceFor(api, {
+					file_uploader = {
+						uploadEpub = function()
+							return false, REFUSAL
+						end,
+					},
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.is_nil(api.pushed)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("stops when creating the book is the first call to be refused", function()
+				-- A new book makes the metadata fetch a 404 rather than a refusal,
+				-- so the create is where a first sync meets it.
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 404
+					end,
+					createBook = function()
+						return false, nil, REFUSAL
+					end,
+					uploadHighlights = function(self)
+						self.pushed = true
+						return true, {}
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.are.equal(REFUSAL, result.upgrade_required)
+				assert.is_nil(api.pushed)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("stops when the digest refresh at the end is the call that is refused", function()
+				-- The sync is over bar the bookkeeping by then, but a refused
+				-- refresh still means the reader has to update.
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					digest_service = {
+						refreshBook = function()
+							return false, UpgradeRequired.KIND, REFUSAL
+						end,
+					},
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.are.equal(REFUSAL, result.upgrade_required)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("stops when the refusal only comes back from the pull", function()
+				local api = apiForSyncBook({
+					getHighlights = function()
+						return 426, nil, REFUSAL
+					end,
+					uploadReadingSessions = function(self)
+						self.sessions_uploaded = true
+						return true, {}
+					end,
+				})
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					session_tracker = {
+						getBookFileHash = function()
+							return "hash"
+						end,
+						getUnsyncedSessionsForBook = function()
+							return { { id = 7 } }
+						end,
+						markSessionsSynced = function() end,
+					},
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_false(result.success)
+				assert.is_nil(api.sessions_uploaded)
+				assert.are.same({ REFUSAL }, told)
+			end)
+
+			it("leaves an ordinary failure to the sync's usual reporting", function()
+				-- Only a refusal ends a sync early and is handed on to be shown.
+				local api = apiForSyncBook({
+					getHighlights = function()
+						return 500, nil, "server exploded"
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_true(result.success)
+				assert.is_nil(result.upgrade_required)
+				assert.are.same({}, told)
 			end)
 		end)
 	end)

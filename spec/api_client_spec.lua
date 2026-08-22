@@ -1,4 +1,5 @@
 local json = require("json")
+local UpgradeRequired = require("modules/upgrade_required")
 
 -- `modules/network` is the plugin's own module, not one of KOReader's, so it
 -- cannot be shadowed by a file in spec/support: `crossbill.koplugin` comes first
@@ -9,8 +10,10 @@ local json = require("json")
 local NetworkFake = {
 	get_result = { nil, nil, nil },
 	post_result = { nil, nil, nil },
+	multipart_result = { nil, nil, nil },
 	requested = {},
 	posted = {},
+	uploaded = {},
 }
 
 --- Answer `getJson` with whatever the current test has queued
@@ -48,12 +51,33 @@ function NetworkFake.setPostResult(code, body, err)
 	NetworkFake.post_result = { code, body, err }
 end
 
+--- Answer `postMultipart` with whatever the current test has queued
+-- Answers with the body undecoded, as the real module does.
+-- @param url string The URL being posted to
+-- @param files table The files the client built
+-- @param token string|nil The bearer token
+-- @return number|nil, string|nil, string|nil The queued status, body and error
+function NetworkFake.postMultipart(url, files, token)
+	table.insert(NetworkFake.uploaded, { url = url, files = files, token = token })
+	return NetworkFake.multipart_result[1], NetworkFake.multipart_result[2], NetworkFake.multipart_result[3]
+end
+
+--- Queue the tuple the next `postMultipart` should return
+-- @param code number|nil The HTTP status
+-- @param body string|nil The undecoded response body
+-- @param err string|nil The error message
+function NetworkFake.setMultipartResult(code, body, err)
+	NetworkFake.multipart_result = { code, body, err }
+end
+
 --- Forget the requests made and the queued answers
 function NetworkFake.reset()
 	NetworkFake.get_result = { nil, nil, nil }
 	NetworkFake.post_result = { nil, nil, nil }
+	NetworkFake.multipart_result = { nil, nil, nil }
 	NetworkFake.requested = {}
 	NetworkFake.posted = {}
+	NetworkFake.uploaded = {}
 end
 
 local real_network = package.loaded["modules/network"]
@@ -288,6 +312,106 @@ describe("ApiClient", function()
 			local _, _, err = clientWithToken(nil, nil):getHighlights(CLIENT_BOOK_ID)
 
 			assert.are.equal("Authentication failed", err)
+		end)
+	end)
+
+	describe("the server that turns this plugin away as too old", function()
+		local REFUSAL = {
+			detail = {
+				code = "client_upgrade_required",
+				client = "koreader-plugin",
+				min_supported_version = "0.13.0",
+				received_version = "0.12.0",
+				update_url = "https://github.com/Crossbill-App/koreader-plugin",
+			},
+		}
+
+		--- Assert that an error is the refusal, carrying what the server said
+		-- @param err any The error the client reported
+		local function assertRefusal(err)
+			assert.is_true(UpgradeRequired.is(err))
+			assert.are.equal("0.13.0", err.min_supported_version)
+			assert.are.equal("0.12.0", err.received_version)
+			assert.are.equal("https://github.com/Crossbill-App/koreader-plugin", err.update_url)
+		end
+
+		it("reports a refused fetch as the refusal rather than as a status", function()
+			NetworkFake.setGetResult(426, REFUSAL)
+
+			local code, items, err = clientWithToken(TOKEN):getHighlights(CLIENT_BOOK_ID)
+
+			assert.are.equal(426, code)
+			assert.is_nil(items)
+			assertRefusal(err)
+		end)
+
+		it("reports a refused highlight upload the same way", function()
+			NetworkFake.setPostResult(426, REFUSAL)
+
+			local ok, _, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+
+			assert.is_false(ok)
+			assertRefusal(err)
+		end)
+
+		it("reports a refused session upload the same way", function()
+			NetworkFake.setPostResult(426, REFUSAL)
+
+			local ok, _, err = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {})
+
+			assert.is_false(ok)
+			assertRefusal(err)
+		end)
+
+		it("reports a refused book creation the same way", function()
+			NetworkFake.setPostResult(426, REFUSAL)
+
+			local ok, _, err = clientWithToken(TOKEN):createBook({ client_book_id = CLIENT_BOOK_ID })
+
+			assert.is_false(ok)
+			assertRefusal(err)
+		end)
+
+		it("reports a refused EPUB upload the same way", function()
+			-- The multipart helper hands back an undecoded body, so this path
+			-- reads the refusal's detail for itself.
+			NetworkFake.setMultipartResult(426, '{"detail": {}}')
+			stub(json, "decode", REFUSAL)
+
+			local ok, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+
+			json.decode:revert()
+			assert.is_false(ok)
+			assertRefusal(err)
+		end)
+
+		it("still reports a refusal whose body could not be read", function()
+			NetworkFake.setGetResult(426, nil, "Invalid JSON response")
+
+			local _, _, err = clientWithToken(TOKEN):getHighlights(CLIENT_BOOK_ID)
+
+			assert.is_true(UpgradeRequired.is(err))
+			assert.is_nil(err.min_supported_version)
+			assert.is_nil(err.received_version)
+			assert.is_nil(err.update_url)
+		end)
+
+		it("still reports an EPUB refusal whose body could not be read", function()
+			NetworkFake.setMultipartResult(426, "<html>Upgrade required</html>")
+
+			local ok, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+
+			assert.is_false(ok)
+			assert.is_true(UpgradeRequired.is(err))
+			assert.is_nil(err.min_supported_version)
+		end)
+
+		it("leaves every other failure as the message it was", function()
+			NetworkFake.setPostResult(500, nil)
+
+			local _, _, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+
+			assert.are.equal("Upload failed: 500", err)
 		end)
 	end)
 end)

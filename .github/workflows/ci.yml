@@ -55,3 +55,28 @@ jobs:
 
       - name: Run tests
         run: make test
+
+  version:
+    name: Version line
+    # Pull requests only: the Release workflow pushes its own bump to main.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # Enough history for the merge base to be found.
+          fetch-depth: 0
+
+      # The 5.1 the plugin runs under on a device evaluates _meta.lua here too.
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.1
+
+      - name: Check the version was not bumped by hand
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check_version_unchanged.sh "$BASE_SHA" "$HEAD_SHA"

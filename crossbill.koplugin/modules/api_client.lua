@@ -6,12 +6,70 @@ Handles highlight uploads, and other API operations.
 ]]
 
 local Network = require("modules/network")
+local UpgradeRequired = require("modules/upgrade_required")
 local logger = require("logger")
 
 -- Handle empty array JSON serialization
 local JSON = require("json")
 -- The most reliable way to get the marker for an empty array is to decode one
 local empty_array = JSON.decode("[]") or {}
+
+--- Fetch JSON, recognising a server that refuses this plugin version
+-- These three wrappers are this module's only route to the network, so the
+-- refusal is recognised in one place and a call added later inherits it.
+-- @param url string The URL to fetch
+-- @param token string|nil Bearer token for authorization
+-- @return number|nil HTTP status code
+-- @return table|nil Parsed JSON response
+-- @return any Error message, or the upgrade error when the plugin was refused
+local function getJson(url, token)
+	local code, response_data, err = Network.getJson(url, token)
+	return code, response_data, UpgradeRequired.fromResponse(code, response_data) or err
+end
+
+--- Post JSON, recognising a server that refuses this plugin version
+-- @param url string The URL to post to
+-- @param payload table The data to send
+-- @param token string|nil Bearer token for authorization
+-- @return number|nil HTTP status code
+-- @return table|nil Parsed JSON response
+-- @return any Error message, or the upgrade error when the plugin was refused
+local function postJson(url, payload, token)
+	local code, response_data, err = Network.postJson(url, payload, token)
+	return code, response_data, UpgradeRequired.fromResponse(code, response_data) or err
+end
+
+--- Post a multipart body, recognising a server that refuses this plugin version
+-- @param url string The URL to post to
+-- @param files table Array of file objects
+-- @param token string|nil Bearer token for authorization
+-- @return number|nil HTTP status code
+-- @return string Response body
+-- @return any Error message, or the upgrade error when the plugin was refused
+local function postMultipart(url, files, token)
+	local code, response_text, err = Network.postMultipart(url, files, token)
+	if code ~= UpgradeRequired.STATUS then
+		return code, response_text, err
+	end
+
+	-- A multipart upload hands back an undecoded body, so the detail is decoded
+	-- here; one that will not decode is still a refusal, only a vaguer one.
+	local decoded, body = pcall(JSON.decode, response_text)
+	return code, response_text, UpgradeRequired.new(decoded and body or nil)
+end
+
+--- Keep the server's refusal, or describe the failure by its status
+-- A refusal has to survive as itself: it is the one failure the plugin acts on
+-- rather than merely reports.
+-- @param err any The error the request came back with
+-- @param message string What to say about any other failure
+-- @return any The error to report
+local function failureError(err, message)
+	if UpgradeRequired.is(err) then
+		return err
+	end
+	return message
+end
 
 local ApiClient = {}
 ApiClient.__index = ApiClient
@@ -51,7 +109,7 @@ function ApiClient:_authorizedGet(path, what)
 	local api_url = self:getApiUrl() .. path
 	logger.dbg("Crossbill API: Fetching", what, "from", api_url)
 
-	local code, response_data, err = Network.getJson(api_url, token)
+	local code, response_data, err = getJson(api_url, token)
 
 	if not code then
 		logger.err("Crossbill API: Network error fetching", what, err)
@@ -69,7 +127,7 @@ function ApiClient:_authorizedGet(path, what)
 	end
 
 	logger.warn("Crossbill API: Fetching", what, "failed with code:", code)
-	return code, nil, "Fetch failed: " .. tostring(code)
+	return code, nil, failureError(err, "Fetch failed: " .. tostring(code))
 end
 
 --- Upload highlights to the server
@@ -106,7 +164,7 @@ function ApiClient:uploadHighlights(client_book_id, highlights, device_id, remov
 	local api_url = self:getApiUrl() .. "/highlights/upload"
 	logger.dbg("Crossbill API: Sending highlights to", api_url)
 
-	local code, response_data, err = Network.postJson(api_url, payload, token)
+	local code, response_data, err = postJson(api_url, payload, token)
 
 	if not code then
 		logger.err("Crossbill API: Network error:", err)
@@ -118,7 +176,7 @@ function ApiClient:uploadHighlights(client_book_id, highlights, device_id, remov
 		return true, response_data, nil
 	else
 		logger.err("Crossbill API: Upload failed with code:", code)
-		return false, nil, "Upload failed: " .. tostring(code)
+		return false, nil, failureError(err, "Upload failed: " .. tostring(code))
 	end
 end
 
@@ -181,7 +239,7 @@ function ApiClient:createBook(book_data)
 	local api_url = self:getApiUrl() .. "/ereader/books"
 	logger.dbg("Crossbill API: Creating book on server", api_url)
 
-	local code, response_data, err = Network.postJson(api_url, book_data, token)
+	local code, response_data, err = postJson(api_url, book_data, token)
 
 	if not code then
 		logger.err("Crossbill API: Network error creating book:", err)
@@ -193,7 +251,7 @@ function ApiClient:createBook(book_data)
 		return true, response_data, nil
 	else
 		logger.err("Crossbill API: Create book failed with code:", code)
-		return false, nil, "Create book failed: " .. tostring(code)
+		return false, nil, failureError(err, "Create book failed: " .. tostring(code))
 	end
 end
 
@@ -222,7 +280,7 @@ function ApiClient:uploadEpub(client_book_id, epub_data, filename)
 		},
 	}
 
-	local code, _, err = Network.postMultipart(api_url, files, token)
+	local code, _, err = postMultipart(api_url, files, token)
 
 	if not code then
 		logger.err("Crossbill API: Network error uploading EPUB:", err)
@@ -234,7 +292,7 @@ function ApiClient:uploadEpub(client_book_id, epub_data, filename)
 		return true, nil, nil
 	else
 		logger.warn("Crossbill API: EPUB upload failed with code:", code)
-		return false, nil, "Upload failed: " .. tostring(code)
+		return false, nil, failureError(err, "Upload failed: " .. tostring(code))
 	end
 end
 
@@ -295,7 +353,7 @@ function ApiClient:uploadReadingSessions(client_book_id, sessions)
 	local api_url = self:getApiUrl() .. "/reading_sessions/upload"
 	logger.dbg("Crossbill API: Sending", #api_sessions, "reading sessions to", api_url)
 
-	local code, response_data, err = Network.postJson(api_url, payload, token)
+	local code, response_data, err = postJson(api_url, payload, token)
 
 	if not code then
 		logger.err("Crossbill API: Network error:", err)
@@ -307,7 +365,7 @@ function ApiClient:uploadReadingSessions(client_book_id, sessions)
 		return true, response_data, nil
 	else
 		logger.warn("Crossbill API: Reading sessions upload failed with code:", code)
-		return false, nil, "Upload failed: " .. tostring(code)
+		return false, nil, failureError(err, "Upload failed: " .. tostring(code))
 	end
 end
 
