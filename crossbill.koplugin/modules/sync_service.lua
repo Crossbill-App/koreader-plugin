@@ -13,6 +13,7 @@ module handles the sync business logic.
 ]]
 
 local logger = require("logger")
+local md5 = require("ffi/sha2").md5
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
 local HighlightExtractor = require("modules/highlight_extractor")
@@ -21,6 +22,24 @@ local NoteEdits = require("modules/note_edits")
 
 local SyncService = {}
 SyncService.__index = SyncService
+
+--- Identify the file being synced, the way SessionTracker identifies it
+-- The snapshot ledger tells its own copy of a book from another one by this
+-- hash, so it has to be the same formula SessionTracker's getBookFileHash uses.
+-- It is computed here rather than asked of the session tracker, which is an
+-- optional collaborator a sync may well run without.
+-- @param doc_path string|nil The document's file path
+-- @return string|nil The hash, nil when there is no path to hash
+local function bookFileHash(doc_path)
+	if type(doc_path) ~= "string" or doc_path == "" then
+		-- Without an identity nothing may be diffed or flagged against the
+		-- ledger, and the pull records the book as owned by no file.
+		logger.warn("Crossbill SyncService: No document path to identify the book's file by")
+		return nil
+	end
+
+	return md5(doc_path)
+end
 
 --- Create a new SyncService instance
 -- Collaborators come in a table rather than positionally: a caller that wants
@@ -113,7 +132,7 @@ function SyncService:syncBook(ui, opts)
 	-- Bring the server's copy back (best-effort; never fails the sync). The push
 	-- above already carried the removals, so this replace confirms them instead
 	-- of handing the deleted highlights back to the device.
-	self:_applyPull(result, ui, book_data.client_book_id)
+	self:_applyPull(result, ui, book_data.client_book_id, doc_path)
 
 	-- Upload reading sessions
 	local session_result = self:_syncReadingSessions(ui, book_data.client_book_id, doc_path)
@@ -167,7 +186,9 @@ end
 -- @param result table The sync result to fill in
 -- @param ui table The KOReader UI context
 -- @param client_book_id string The client book ID
-function SyncService:_applyPull(result, ui, client_book_id)
+-- @param doc_path string|nil Document file path, which the snapshot is recorded
+--   against so the next sync knows whose diff it may trust
+function SyncService:_applyPull(result, ui, client_book_id, doc_path)
 	if not HighlightImporter.isSupportedBook(ui) then
 		-- A book the importer cannot place highlights into is not a failure, so
 		-- it is not worth reporting to the user.
@@ -183,7 +204,7 @@ function SyncService:_applyPull(result, ui, client_book_id)
 		result.pull_error = tostring(pull_result)
 	elseif pull_result then
 		result.pull = pull_result
-		self:_recordSnapshot(client_book_id, pull_result.placed)
+		self:_recordSnapshot(client_book_id, pull_result.placed, bookFileHash(doc_path))
 	else
 		result.pull_error = pull_err or "Highlight pull failed"
 	end
@@ -200,13 +221,15 @@ end
 -- succeeded.
 -- @param client_book_id string The client book ID
 -- @param placed table|nil Array of {server_id, text} the importer reported
-function SyncService:_recordSnapshot(client_book_id, placed)
+-- @param book_file_hash string|nil Hash of the file the pull went into, which
+--   takes ownership of the snapshot from whichever copy held it before
+function SyncService:_recordSnapshot(client_book_id, placed, book_file_hash)
 	if not self.highlight_snapshot or not placed then
 		return
 	end
 
 	local ok, err = pcall(function()
-		self.highlight_snapshot:recordPlaced(client_book_id, placed)
+		self.highlight_snapshot:recordPlaced(client_book_id, placed, book_file_hash)
 	end)
 
 	if not ok then
@@ -257,8 +280,12 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 		highlight_extractor:addChapterNumbers(highlights)
 	end
 
+	-- The ledger is shared by every copy of the book, but only this file's own
+	-- snapshot says anything about what this file has lost or gained.
+	local book_file_hash = bookFileHash(doc_path)
+
 	-- Whatever the ledger remembers but the book no longer holds was deleted here
-	local removed_ids = self:_removedHighlightIds(client_book_id, highlights, opts)
+	local removed_ids = self:_removedHighlightIds(client_book_id, highlights, book_file_hash, opts)
 
 	if #highlights == 0 and #removed_ids == 0 then
 		logger.dbg("Crossbill SyncService: Nothing to push")
@@ -266,7 +293,7 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 	end
 
 	-- Whatever the book holds that the ledger never pulled was made here
-	self:_flagNewHighlights(client_book_id, highlights)
+	self:_flagNewHighlights(client_book_id, highlights, book_file_hash)
 
 	-- Upload highlights to server
 	local upload_success, response, err =
@@ -293,16 +320,18 @@ end
 -- A flagged highlight tells the server the reader highlighted the passage
 -- deliberately, so a copy it had removed or deleted is revived rather than
 -- swallowed as a stale echo. Like the diff, this leans on the ledger: a book
--- that has never pulled flags nothing and pushes exactly as it did before.
+-- that has never pulled, or whose snapshot another copy of it recorded, flags
+-- nothing and pushes exactly as it did before.
 -- @param client_book_id string The client book ID
 -- @param highlights table The highlights about to be pushed, flagged in place
-function SyncService:_flagNewHighlights(client_book_id, highlights)
+-- @param book_file_hash string|nil Hash of the file being synced
+function SyncService:_flagNewHighlights(client_book_id, highlights, book_file_hash)
 	if not self.highlight_snapshot then
 		return
 	end
 
 	local ok, flagged = pcall(function()
-		return self.highlight_snapshot:flagNew(client_book_id, highlights)
+		return self.highlight_snapshot:flagNew(client_book_id, highlights, book_file_hash)
 	end)
 
 	if not ok then
@@ -318,20 +347,22 @@ function SyncService:_flagNewHighlights(client_book_id, highlights)
 end
 
 --- Work out which of the book's server highlights were deleted on this device
--- The answer comes from the ledger, so a book that has never pulled -- a first
--- sync, or a fixed-layout book, neither of which has a snapshot -- reports
--- nothing and behaves exactly as it did before removals existed.
+-- The answer comes from this file's own snapshot, so a book with none of its
+-- own -- a first sync, a fixed-layout book, or a second copy of a book another
+-- file has pulled -- reports nothing and behaves exactly as it did before
+-- removals existed. The pull at the end of this sync gives it one.
 -- @param client_book_id string The client book ID
 -- @param highlights table The highlights currently in the book
+-- @param book_file_hash string|nil Hash of the file being synced
 -- @param opts table|nil Sync options; see syncBook
 -- @return table Array of server ids to remove, empty when there are none
-function SyncService:_removedHighlightIds(client_book_id, highlights, opts)
+function SyncService:_removedHighlightIds(client_book_id, highlights, book_file_hash, opts)
 	if not self.highlight_snapshot then
 		return {}
 	end
 
 	local ok, removed = pcall(function()
-		return self.highlight_snapshot:findRemoved(client_book_id, highlights)
+		return self.highlight_snapshot:findRemoved(client_book_id, highlights, book_file_hash)
 	end)
 
 	if not ok then
@@ -354,9 +385,10 @@ end
 
 --- Ask the reader before every highlight of a book leaves their devices
 -- A book that lost its whole recorded set at once looks the same whether the
--- reader cleared it out, the sidecar was lost, or a second file of the same
--- title and author is being diffed against this one's ledger. Nobody to ask --
--- an autosync during shutdown -- means the server's copy is kept.
+-- reader cleared it out or the file's sidecar was lost or rebuilt underneath it
+-- -- which is the case ownership cannot catch, the file being its snapshot's
+-- rightful owner either way. Nobody to ask -- an autosync during shutdown --
+-- means the server's copy is kept.
 -- @param count number How many highlights the removal would cover
 -- @param opts table|nil Sync options; see syncBook
 -- @return boolean True when the removal may go ahead

@@ -2,6 +2,10 @@ local HighlightSnapshot = require("modules/highlight_snapshot")
 local FakeSnapshotStore = require("fake_snapshot_store")
 
 local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
+-- Two copies of one book: the same title and author, so the same ledger key,
+-- and their own sidecars behind their own file hashes.
+local FILE_HASH = "md5:/books/dune.epub"
+local OTHER_FILE_HASH = "md5:/books/copies/dune.epub"
 
 -- Nullable JSON fields decode to a sentinel rather than to nil, so the ledger
 -- has to treat anything that is not a string as absent.
@@ -177,6 +181,46 @@ describe("HighlightSnapshot", function()
 
 			assert.is_false(store:hasBook(CLIENT_BOOK_ID))
 		end)
+
+		it("stamps the file the pull was applied to", function()
+			local snapshot, store = ledgerWith()
+
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
+
+			assert.are.equal(FILE_HASH, store:getBookFileHash(CLIENT_BOOK_ID))
+			assert.are.equal(FILE_HASH, snapshot:getBookFileHash(CLIENT_BOOK_ID))
+		end)
+
+		it("hands the snapshot to whichever copy of the book pulled last", function()
+			-- The pull is the same for every copy -- the server is the master --
+			-- so the copy that just applied it is the one whose highlights the
+			-- snapshot now describes.
+			local snapshot, store = ledgerWith()
+
+			snapshot:recordPlaced(CLIENT_BOOK_ID, {}, FILE_HASH)
+			snapshot:recordPlaced(CLIENT_BOOK_ID, {}, OTHER_FILE_HASH)
+
+			assert.are.equal(OTHER_FILE_HASH, store:getBookFileHash(CLIENT_BOOK_ID))
+		end)
+
+		it("records a pull that cannot say which file it went into, unowned", function()
+			-- Bookkeeping must never block a pull. The book is enrolled but
+			-- belongs to no file, so nothing may be diffed against it yet.
+			local snapshot, store = ledgerWith()
+
+			assert.is_true(snapshot:recordPlaced(CLIENT_BOOK_ID, {}, nil))
+
+			assert.is_true(store:hasBook(CLIENT_BOOK_ID))
+			assert.is_nil(store:getBookFileHash(CLIENT_BOOK_ID))
+		end)
+
+		it("refuses a file hash that is not a non-empty string", function()
+			local snapshot, store = ledgerWith()
+
+			snapshot:recordPlaced(CLIENT_BOOK_ID, {}, "")
+
+			assert.is_nil(store:getBookFileHash(CLIENT_BOOK_ID))
+		end)
 	end)
 
 	describe("reading a book back", function()
@@ -219,13 +263,15 @@ describe("HighlightSnapshot", function()
 
 	describe("findRemoved", function()
 		--- Enrol a book with the given highlights, then diff it against others
+		-- The same file records and diffs, which is the only case a diff is
+		-- valid in; the ownership cases below vary the two hashes.
 		-- @param recorded table Array of {server_id, text} the pull placed
 		-- @param on_device table Array of {text} the book holds now
 		-- @return table|nil The diff
 		local function diffAfterRecording(recorded, on_device)
 			local snapshot = ledgerWith()
-			snapshot:recordPlaced(CLIENT_BOOK_ID, recorded)
-			return snapshot:findRemoved(CLIENT_BOOK_ID, on_device)
+			snapshot:recordPlaced(CLIENT_BOOK_ID, recorded, FILE_HASH)
+			return snapshot:findRemoved(CLIENT_BOOK_ID, on_device, FILE_HASH)
 		end
 
 		it("names the server ids the device no longer holds", function()
@@ -276,7 +322,7 @@ describe("HighlightSnapshot", function()
 			-- simply never arrived, so a first sync removes nothing.
 			local snapshot = ledgerWith()
 
-			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, { { text = "Fear is the mind-killer" } }))
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, { { text = "Fear is the mind-killer" } }, FILE_HASH))
 		end)
 
 		it("removes everything a book enrolled with highlights has lost", function()
@@ -344,15 +390,60 @@ describe("HighlightSnapshot", function()
 
 		it("refuses a highlight set that is not a list", function()
 			local snapshot = ledgerWith()
-			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
 
-			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, nil))
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, nil, FILE_HASH))
 		end)
 
 		it("answers before the ledger was opened rather than throwing", function()
 			local snapshot = ledgerWith({ init = false })
 
-			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, {}))
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, {}, FILE_HASH))
+		end)
+
+		it("refuses to diff a snapshot another copy of the book recorded", function()
+			-- #609: the ledger is keyed by "title|author", so a second file of
+			-- the same book reads the first one's snapshot. Diffed, the first
+			-- copy's highlights would be reported as deletions made here.
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
+
+			local removed = snapshot:findRemoved(CLIENT_BOOK_ID, {
+				{ text = "a passage highlighted in the other copy" },
+			}, OTHER_FILE_HASH)
+
+			assert.is_nil(removed)
+		end)
+
+		it("refuses to diff a snapshot recorded before ownership was tracked", function()
+			-- A row from an older plugin version carries no owner, so no file
+			-- may claim it. The next pull stamps it, at the cost of one sync.
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, {}, FILE_HASH))
+		end)
+
+		it("refuses to diff when the file being synced cannot be identified", function()
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
+
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, {}, nil))
+		end)
+
+		it("diffs again for a moved file once its own pull has been recorded", function()
+			-- The owner is the hash of the path, so a moved file finds its book
+			-- owned by the old path and skips one diff. That sync's pull records
+			-- the snapshot under the new path, and the next sync diffs normally.
+			local snapshot = ledgerWith()
+			local recorded = { { server_id = 7, text = "Fear is the mind-killer" } }
+			snapshot:recordPlaced(CLIENT_BOOK_ID, recorded, FILE_HASH)
+
+			assert.is_nil(snapshot:findRemoved(CLIENT_BOOK_ID, {}, OTHER_FILE_HASH))
+
+			snapshot:recordPlaced(CLIENT_BOOK_ID, recorded, OTHER_FILE_HASH)
+
+			assert.are.same({ 7 }, snapshot:findRemoved(CLIENT_BOOK_ID, {}, OTHER_FILE_HASH).ids)
 		end)
 	end)
 
@@ -366,9 +457,9 @@ describe("HighlightSnapshot", function()
 		local function flagAfterRecording(recorded, pushed)
 			local snapshot = ledgerWith()
 			if recorded then
-				snapshot:recordPlaced(CLIENT_BOOK_ID, recorded)
+				snapshot:recordPlaced(CLIENT_BOOK_ID, recorded, FILE_HASH)
 			end
-			return snapshot:flagNew(CLIENT_BOOK_ID, pushed), pushed
+			return snapshot:flagNew(CLIENT_BOOK_ID, pushed, FILE_HASH), pushed
 		end
 
 		it("flags a highlight whose text the snapshot has never held", function()
@@ -420,12 +511,12 @@ describe("HighlightSnapshot", function()
 			-- next pull dropped it from the snapshot. Highlighting it again is the
 			-- deliberate act the flag exists for.
 			local snapshot = ledgerWith()
-			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
-			snapshot:recordPlaced(CLIENT_BOOK_ID, {})
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
+			snapshot:recordPlaced(CLIENT_BOOK_ID, {}, FILE_HASH)
 
 			local pushed = { { text = "Fear is the mind-killer" } }
 
-			assert.are.equal(1, snapshot:flagNew(CLIENT_BOOK_ID, pushed))
+			assert.are.equal(1, snapshot:flagNew(CLIENT_BOOK_ID, pushed, FILE_HASH))
 			assert.is_true(pushed[1].is_new)
 		end)
 
@@ -444,15 +535,46 @@ describe("HighlightSnapshot", function()
 
 		it("refuses a highlight set that is not a list", function()
 			local snapshot = ledgerWith()
-			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
 
-			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, nil))
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, nil, FILE_HASH))
 		end)
 
 		it("answers before the ledger was opened rather than throwing", function()
 			local snapshot = ledgerWith({ init = false })
 
-			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, { { text = "Fear is the mind-killer" } }))
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, { { text = "Fear is the mind-killer" } }, FILE_HASH))
+		end)
+
+		it("flags nothing against a snapshot another copy of the book recorded", function()
+			-- This copy's highlights are stale against what the other one
+			-- pulled, so flagging them would tell the server to revive whatever
+			-- the reader has since deleted on the web. Unflagged is the safe
+			-- behaviour the plugin had before the flag existed.
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
+			local pushed = { { text = "deleted on the web months ago" } }
+
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, pushed, OTHER_FILE_HASH))
+			assert.is_nil(pushed[1].is_new)
+		end)
+
+		it("flags nothing against a snapshot recorded before ownership was tracked", function()
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } })
+			local pushed = { { text = "made on this device just now" } }
+
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, pushed, FILE_HASH))
+			assert.is_nil(pushed[1].is_new)
+		end)
+
+		it("flags nothing when the file being synced cannot be identified", function()
+			local snapshot = ledgerWith()
+			snapshot:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = "Fear is the mind-killer" } }, FILE_HASH)
+			local pushed = { { text = "made on this device just now" } }
+
+			assert.are.equal(0, snapshot:flagNew(CLIENT_BOOK_ID, pushed, nil))
+			assert.is_nil(pushed[1].is_new)
 		end)
 	end)
 

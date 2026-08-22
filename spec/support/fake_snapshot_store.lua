@@ -5,7 +5,8 @@ In-memory stand-in for the snapshot ledger's SQLite store.
 exist outside KOReader, so the ledger takes its store as a dependency and specs
 hand it this one. It implements the same contract, including the distinction the
 ledger relies on: `getBook` answers nil for a book that was never recorded and an
-empty list for a book enrolled with no highlights.
+empty list for a book enrolled with no highlights, and `getBookFileHash` answers
+nil for a book no file has claimed.
 ]]
 
 local FakeSnapshotStore = {}
@@ -45,15 +46,16 @@ function FakeSnapshotStore:open(data_dir)
 	return true
 end
 
---- Replace a book's rows wholesale
+--- Replace a book's rows wholesale, stamping the file that recorded them
 -- @param client_book_id string The client book ID
 -- @param rows table Array of {server_id, text_hash}
+-- @param book_file_hash string|nil Hash of the file the rows were placed in
 -- @return boolean Success status
-function FakeSnapshotStore:replaceBook(client_book_id, rows)
+function FakeSnapshotStore:replaceBook(client_book_id, rows, book_file_hash)
 	if self.fails_at == "replaceBook" then
 		error("snapshot store exploded")
 	end
-	self.books[client_book_id] = copyRows(rows)
+	self.books[client_book_id] = { rows = copyRows(rows), book_file_hash = book_file_hash }
 	return true
 end
 
@@ -61,11 +63,19 @@ end
 -- @param client_book_id string The client book ID
 -- @return table|nil Array of {server_id, text_hash}, nil when never recorded
 function FakeSnapshotStore:getBook(client_book_id)
-	local rows = self.books[client_book_id]
-	if not rows then
+	local book = self.books[client_book_id]
+	if not book then
 		return nil
 	end
-	return copyRows(rows)
+	return copyRows(book.rows)
+end
+
+--- Read the hash of the file that recorded a book's rows
+-- @param client_book_id string The client book ID
+-- @return string|nil The file hash, nil when the book is absent or unstamped
+function FakeSnapshotStore:getBookFileHash(client_book_id)
+	local book = self.books[client_book_id]
+	return book and book.book_file_hash or nil
 end
 
 --- Check whether a book has been recorded at all

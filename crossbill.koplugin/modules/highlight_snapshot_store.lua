@@ -7,7 +7,9 @@ and DigestCache, in their own database file.
 
 `highlight_snapshot_book` exists so that a book enrolled with an empty server
 copy reads differently from a book that never pulled -- the same job
-`digest_fetch_meta` does for DigestCache. Rows alone cannot say it.
+`digest_fetch_meta` does for DigestCache. Rows alone cannot say it. It also
+carries the hash of the file that wrote the rows, so the ledger can tell its own
+snapshot from one another copy of the same book left behind.
 
 The ledger takes this store as a dependency rather than requiring it, so specs
 can stand in an in-memory store instead of the reader's SQLite binding.
@@ -26,6 +28,8 @@ local DB_FILENAME = "crossbill_highlights.sqlite3"
 -- The primary key is (client_book_id, server_id) rather than the hash: two
 -- server highlights can carry the same text, and each still needs its own row
 -- so its id can be sent to the removal endpoint.
+-- `book_file_hash` is nullable: a snapshot recorded without one belongs to no
+-- file, and the ledger treats it as undiffable until a pull stamps it.
 local SCHEMA = [[
 CREATE TABLE IF NOT EXISTS highlight_snapshot (
     client_book_id TEXT NOT NULL,
@@ -40,7 +44,8 @@ CREATE INDEX IF NOT EXISTS idx_highlight_snapshot_hash
 CREATE TABLE IF NOT EXISTS highlight_snapshot_book (
     client_book_id TEXT PRIMARY KEY,
     updated_at     INTEGER NOT NULL,
-    item_count     INTEGER NOT NULL
+    item_count     INTEGER NOT NULL,
+    book_file_hash TEXT
 );
 ]]
 
@@ -71,6 +76,13 @@ function HighlightSnapshotStore:open(data_dir)
 		self.db:exec("PRAGMA journal_mode=WAL;")
 		-- Create schema
 		self.db:exec(SCHEMA)
+		-- Migrate existing databases: add book_file_hash if missing. The schema
+		-- above only creates tables that are not there yet, so a database from
+		-- before per-file ownership never gets the column from it. On a fresh
+		-- database the column already exists and the ALTER fails harmlessly.
+		pcall(function()
+			self.db:exec("ALTER TABLE highlight_snapshot_book ADD COLUMN book_file_hash TEXT")
+		end)
 	end)
 
 	if not success then
@@ -102,11 +114,13 @@ end
 
 --- Replace a book's rows with the given set, in one transaction
 -- Also stamps the book as enrolled, which is what tells an empty snapshot from
--- an absent one.
+-- an absent one, and records which file wrote the rows.
 -- @param client_book_id string The client book ID
 -- @param rows table Array of {server_id, text_hash}
+-- @param book_file_hash string|nil Hash of the file the rows were placed in,
+--   stored as NULL when absent
 -- @return boolean Success status
-function HighlightSnapshotStore:replaceBook(client_book_id, rows)
+function HighlightSnapshotStore:replaceBook(client_book_id, rows, book_file_hash)
 	if not self._initialized or not self.db then
 		logger.warn("Crossbill HighlightSnapshotStore: Cannot replace book - database not available")
 		return false
@@ -138,12 +152,16 @@ function HighlightSnapshotStore:replaceBook(client_book_id, rows)
 
 		ins_stmt:close()
 
+		-- A nil book_file_hash binds as SQL NULL, which is the "no file owns
+		-- this snapshot" the ledger reads back. The binding counts its
+		-- arguments with select("#", ...), so a nil in any position still fills
+		-- its placeholder.
 		local meta_stmt = self.db:prepare([[
             INSERT OR REPLACE INTO highlight_snapshot_book (
-                client_book_id, updated_at, item_count
-            ) VALUES (?, ?, ?)
+                client_book_id, book_file_hash, updated_at, item_count
+            ) VALUES (?, ?, ?, ?)
         ]])
-		meta_stmt:bind(client_book_id, os.time(), #rows)
+		meta_stmt:bind(client_book_id, book_file_hash, os.time(), #rows)
 		meta_stmt:step()
 		meta_stmt:close()
 
@@ -197,6 +215,43 @@ function HighlightSnapshotStore:getBook(client_book_id)
 	end
 
 	return rows
+end
+
+--- Read the hash of the file that recorded a book's snapshot
+-- A row written before per-file ownership existed carries NULL, which reads the
+-- same as an absent book: nobody owns the snapshot, so nothing may be diffed
+-- against it until a pull stamps it.
+-- @param client_book_id string The client book ID
+-- @return string|nil The file hash, nil when the book is absent or unstamped
+function HighlightSnapshotStore:getBookFileHash(client_book_id)
+	if not self._initialized or not self.db then
+		return nil
+	end
+
+	if not client_book_id then
+		return nil
+	end
+
+	local hash = nil
+	local success, err = pcall(function()
+		local stmt = self.db:prepare("SELECT book_file_hash FROM highlight_snapshot_book WHERE client_book_id = ?")
+		stmt:bind(client_book_id)
+		for row in stmt:rows() do
+			-- A NULL column can arrive as nil or as the binding's own NULL
+			-- sentinel, so only an actual string counts as an owner.
+			if type(row[1]) == "string" and row[1] ~= "" then
+				hash = row[1]
+			end
+		end
+		stmt:close()
+	end)
+
+	if not success then
+		logger.err("Crossbill HighlightSnapshotStore: Error reading a book's file hash:", err)
+		return nil
+	end
+
+	return hash
 end
 
 --- Check whether a book has been recorded at all
