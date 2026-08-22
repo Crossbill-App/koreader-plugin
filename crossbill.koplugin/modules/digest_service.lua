@@ -287,6 +287,9 @@ end
 -- wait for a request that cannot succeed.
 -- @param client_book_id string The client book ID
 -- @return table Cached items after the attempt (empty if it was skipped or failed)
+-- @return string|nil err_kind Why the re-fetch failed, nil when it did not run
+--   or succeeded
+-- @return table|nil err The refusal, for "client_upgrade_required" only
 function DigestService:_refetchStaleEmptyBook(client_book_id)
 	local fetched_at = self.cache:getFetchedAt(client_book_id)
 	if not fetched_at then
@@ -304,9 +307,12 @@ function DigestService:_refetchStaleEmptyBook(client_book_id)
 	end
 
 	logger.dbg("Crossbill DigestService: Re-fetching empty digest cache, last fetched", age, "seconds ago")
-	local ok = self:refreshBook(client_book_id)
+	local ok, err_kind, err = self:refreshBook(client_book_id)
 	if not ok then
-		return {}
+		-- Why it failed is the caller's to weigh: an ordinary failure leaves the
+		-- book looking as empty as it did before, but a refusal is not about
+		-- this book at all and must not be reported as a missing digest.
+		return {}, err_kind, err
 	end
 
 	return self.cache:getBook(client_book_id) or {}
@@ -345,7 +351,14 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 	if not items or #items == 0 then
 		-- The book was fetched but had no digests then; the server may have
 		-- generated them since.
-		items = self:_refetchStaleEmptyBook(client_book_id)
+		local refetch_kind, refetch_err
+		items, refetch_kind, refetch_err = self:_refetchStaleEmptyBook(client_book_id)
+		if refetch_kind == UpgradeRequired.KIND then
+			-- The same answer every other digest path gives it. Swallowed here,
+			-- the refusal would surface as "no digest for this book yet" and send
+			-- the reader off to generate one that may well already exist.
+			return nil, refetch_kind, refetch_err
+		end
 	end
 
 	if not items or #items == 0 then

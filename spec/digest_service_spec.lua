@@ -5,11 +5,12 @@ local UpgradeRequired = require("modules/upgrade_required")
 -- KOReader's, so it cannot be shadowed from spec/support: seeding the package
 -- cache before requiring the service keeps the socket layer out of the run,
 -- the same trick spec/api_client_spec.lua uses and for the same reason.
-local NetworkFake = {
-	isConnected = function()
-		return false
-	end,
-}
+-- Offline unless a spec says otherwise: the paths that re-check the server are
+-- the exception, and they say so out loud.
+local NetworkFake = { connected = false }
+NetworkFake.isConnected = function()
+	return NetworkFake.connected
+end
 
 local real_network = package.loaded["modules/network"]
 package.loaded["modules/network"] = NetworkFake
@@ -71,6 +72,62 @@ describe("DigestService", function()
 			assert.is_nil(item)
 			assert.are.equal("no_cache", err_kind)
 			assert.is_nil(err)
+		end)
+
+		describe("a book cached back when it had no digests", function()
+			-- Opening the popup re-checks the server for a book whose empty cache
+			-- is older than the re-fetch window, and that re-check meets the same
+			-- refusal every other call does.
+			local BEYOND_THE_REFETCH_WINDOW = 1000
+
+			before_each(function()
+				NetworkFake.connected = true
+			end)
+
+			after_each(function()
+				NetworkFake.connected = false
+			end)
+
+			--- Build a service holding a stale, empty cache for the book
+			-- @param code number|nil The HTTP status the re-fetch is answered with
+			-- @param err any The error the api client reports
+			-- @return table The DigestService instance
+			local function serviceRefetching(code, err)
+				return DigestService:new({
+					getBookDigest = function()
+						return code, nil, err
+					end,
+				}, {
+					hasBook = function()
+						return true
+					end,
+					getBook = function()
+						return {}
+					end,
+					getFetchedAt = function()
+						return os.time() - BEYOND_THE_REFETCH_WINDOW
+					end,
+				})
+			end
+
+			it("passes on the refusal the re-fetch met", function()
+				-- Reported as an empty book instead, the reader would be sent to
+				-- the web app to generate a digest that may well already exist.
+				local item, err_kind, err = serviceRefetching(426, REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
+
+				assert.is_nil(item)
+				assert.are.equal(UpgradeRequired.KIND, err_kind)
+				assert.are.equal(REFUSAL, err)
+			end)
+
+			it("still reports an ordinary failed re-fetch as a book without a digest", function()
+				local item, err_kind, err =
+					serviceRefetching(500, "server exploded"):getForCurrentChapter({}, CLIENT_BOOK_ID)
+
+				assert.is_nil(item)
+				assert.are.equal("no_digest_for_book", err_kind)
+				assert.is_nil(err)
+			end)
 		end)
 	end)
 end)
