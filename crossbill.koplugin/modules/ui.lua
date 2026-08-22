@@ -12,6 +12,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local Trapper = require("ui/trapper")
+local UpgradeRequired = require("modules/upgrade_required")
 local logger = require("logger")
 local _ = require("gettext")
 
@@ -113,6 +114,16 @@ end
 -- @param code number|string The error code
 function UI.showSyncFailed(code)
 	UI.showMessage(_("Sync failed: ") .. tostring(code or "unknown error"), 3)
+end
+
+--- Tell the reader the server has turned this plugin away as too old
+-- A plain message with nothing to answer: this is shown by a sync, and a sync
+-- can be running while the book or the whole device is closing, where a dialog
+-- waiting to be dismissed would hold the shutdown up. It stays on screen long
+-- enough to read an address off it.
+-- @param err table|nil The refusal, or nil when there is nothing to go on
+function UI.showUpgradeRequired(err)
+	UI.showMessage(UpgradeRequired.message(err), 10)
 end
 
 --- Show authentication error message

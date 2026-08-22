@@ -1,8 +1,10 @@
 local SyncService = require("modules/sync_service")
 local HighlightSnapshot = require("modules/highlight_snapshot")
+local UpgradeRequired = require("modules/upgrade_required")
 local FakeSnapshotStore = require("fake_snapshot_store")
 local DocSettings = require("docsettings")
 local GlobalSettingsFake = require("global_settings_fake")
+local UIManager = require("ui/uimanager")
 
 local CLIENT_BOOK_ID = "md5:Dune|Frank Herbert"
 -- Two copies of one book: the same title and author, so the same client book
@@ -533,7 +535,7 @@ describe("SyncService", function()
 					return opts.session_tracker ~= nil
 				end,
 			}
-			local file_uploader = {
+			local file_uploader = opts.file_uploader or {
 				uploadEpub = function()
 					return true
 				end,
@@ -984,6 +986,226 @@ describe("SyncService", function()
 
 				assert.are.same({ 0, 0, 0, 0 }, removed_per_sync)
 				assert.are.equal(0, asked)
+			end)
+		end)
+		describe("a server that turns this plugin away as too old", function()
+			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
+			local REFUSAL = UpgradeRequired.fromResponse(426, {
+				detail = {
+					code = "client_upgrade_required",
+					client = "koreader-plugin",
+					min_supported_version = "0.13.0",
+					received_version = "0.12.0",
+					update_url = "https://github.com/Crossbill-App/koreader-plugin",
+				},
+			})
+
+			before_each(function()
+				stub(UIManager, "show")
+			end)
+
+			after_each(function()
+				UIManager.show:revert()
+			end)
+
+			--- Build an api client the server refuses every call of
+			-- @return table The api client, recording the calls it took
+			local function apiRefusingEverything()
+				local function refuse(api, name, ...)
+					table.insert(api.calls, name)
+					return ...
+				end
+				local api = { calls = {} }
+				api.getBookMetadata = function(self)
+					return refuse(self, "getBookMetadata", 426, nil, REFUSAL)
+				end
+				api.createBook = function(self)
+					return refuse(self, "createBook", false, nil, REFUSAL)
+				end
+				api.uploadHighlights = function(self)
+					return refuse(self, "uploadHighlights", false, nil, REFUSAL)
+				end
+				api.getHighlights = function(self)
+					return refuse(self, "getHighlights", 426, nil, REFUSAL)
+				end
+				api.uploadReadingSessions = function(self)
+					return refuse(self, "uploadReadingSessions", false, nil, REFUSAL)
+				end
+				return api
+			end
+
+			--- The text of the message the sync put on screen
+			-- @return string|nil The message text
+			local function shownText()
+				local shown = UIManager.show.calls[1]
+				return shown and shown.vals[2].text
+			end
+
+			it("gives up at the first refusal instead of collecting it again", function()
+				local api = apiRefusingEverything()
+				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.same({ "getBookMetadata" }, api.calls)
+				assert.is_false(result.success)
+				assert.is_true(UpgradeRequired.is(result.upgrade_required))
+			end)
+
+			it("tells the reader once for the whole sync attempt", function()
+				local api = apiRefusingEverything()
+				local service = serviceFor(api, { highlight_importer = importerReturning({ inserted = 0 }) })
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.equal(1, #UIManager.show.calls)
+			end)
+
+			it("names the version the reader has and the one the server wants", function()
+				local service = serviceFor(apiRefusingEverything(), {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.equal(
+					"Your Crossbill plugin (0.12.0) is too old for this server. "
+						.. "Please update to 0.13.0 or newer.\n"
+						.. "https://github.com/Crossbill-App/koreader-plugin",
+					shownText()
+				)
+			end)
+
+			it("asks the reader nothing, so a sync at shutdown is never held up", function()
+				-- An autosync fires while the book or the device is closing, with
+				-- nobody there to dismiss a dialog.
+				local service = serviceFor(apiRefusingEverything(), {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				local shown = UIManager.show.calls[1].vals[2]
+				assert.is_nil(shown.buttons)
+				assert.is_number(shown.timeout)
+			end)
+
+			it("reports the refusal as a message the caller can still read", function()
+				-- The plugin's callers treat a sync error as a string, and one of
+				-- them matches on it.
+				local service = serviceFor(apiRefusingEverything(), {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_string(result.error)
+				assert.is_truthy(result.error:match("^Your Crossbill plugin"))
+			end)
+
+			it("stops before the pull and the sessions when the push is refused", function()
+				-- Nothing half-done: the removals stay unsent and the sessions stay
+				-- unsynced, so the sync that follows an update carries them all.
+				local api = apiForSyncBook({
+					uploadHighlights = function()
+						return false, nil, REFUSAL
+					end,
+					getHighlights = function(self)
+						self.pulled = true
+						return 200, {}
+					end,
+					uploadReadingSessions = function(self)
+						self.sessions_uploaded = true
+						return true, {}
+					end,
+				})
+				local session_tracker = {
+					getBookFileHash = function()
+						return "hash"
+					end,
+					getUnsyncedSessionsForBook = function()
+						return { { id = 7 } }
+					end,
+					markSessionsSynced = function(self, ids)
+						self.marked = ids
+					end,
+				}
+				local service = serviceFor(api, {
+					session_tracker = session_tracker,
+					highlight_importer = importerReturning({ inserted = 0 }),
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_false(result.success)
+				assert.is_nil(api.pulled)
+				assert.is_nil(api.sessions_uploaded)
+				assert.is_nil(session_tracker.marked)
+				assert.are.equal(1, #UIManager.show.calls)
+			end)
+
+			it("stops when the EPUB upload is the call that is refused", function()
+				-- An EPUB upload that fails is otherwise only logged, but a refusal
+				-- is about the plugin rather than about the file.
+				local api = apiForSyncBook({
+					uploadHighlights = function(self)
+						self.pushed = true
+						return true, {}
+					end,
+				})
+				local service = serviceFor(api, {
+					file_uploader = {
+						uploadEpub = function()
+							return false, REFUSAL
+						end,
+					},
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_false(result.success)
+				assert.is_nil(api.pushed)
+				assert.are.equal(1, #UIManager.show.calls)
+			end)
+
+			it("stops when the refusal only comes back from the pull", function()
+				local api = apiForSyncBook({
+					getHighlights = function()
+						return 426, nil, REFUSAL
+					end,
+					uploadReadingSessions = function(self)
+						self.sessions_uploaded = true
+						return true, {}
+					end,
+				})
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({ inserted = 0 }),
+					session_tracker = {
+						getBookFileHash = function()
+							return "hash"
+						end,
+						getUnsyncedSessionsForBook = function()
+							return { { id = 7 } }
+						end,
+						markSessionsSynced = function() end,
+					},
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_false(result.success)
+				assert.is_nil(api.sessions_uploaded)
+				assert.are.equal(1, #UIManager.show.calls)
+			end)
+
+			it("leaves an ordinary failure to be reported as it always was", function()
+				-- Only a refusal ends a sync early and puts a message on screen.
+				local api = apiForSyncBook({
+					getHighlights = function()
+						return 500, nil, "server exploded"
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_true(result.success)
+				assert.is_nil(result.upgrade_required)
+				assert.are.same({}, UIManager.show.calls)
 			end)
 		end)
 	end)
