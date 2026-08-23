@@ -15,10 +15,12 @@ local meta = require("_meta")
 
 local UpdateCheck = {}
 
--- The archive the Release workflow attaches to a release. A fact about that
--- workflow rather than about the plugin's identity, so it stays here rather
+-- What the Release workflow attaches to a release: the archive, and the
+-- detached signature the installer refuses to proceed without. Facts about that
+-- workflow rather than about the plugin's identity, so they stay here rather
 -- than joining the fields in `_meta.lua`.
-local ASSET_NAME = "crossbill.koplugin.zip"
+local ARCHIVE_NAME = "crossbill.koplugin.zip"
+local SIGNATURE_NAME = ARCHIVE_NAME .. ".sig"
 
 -- Names the plugin to the release service. GitHub refuses a request carrying no
 -- User-Agent at all, and answering as the socket library would leave the plugin
@@ -70,18 +72,20 @@ function UpdateCheck.compareVersions(left, right)
 	return 0
 end
 
---- Where the release's plugin archive can be downloaded, if it has one
--- A release whose asset was renamed is still a release: the version is the
--- fact worth reporting, and the archive only saves the reader a step.
+--- Where one of the release's attachments can be downloaded, if it has it
+-- A release missing an attachment is still a release: the version is the fact
+-- worth reporting, and a reader can always install by hand. Reporting the
+-- version is what tells them there is anything to install.
 -- @param release table The decoded release
--- @return string|nil The address, nil when no asset matches
-local function downloadUrl(release)
+-- @param name string The attachment's filename
+-- @return string|nil The address, nil when no attachment matches
+local function assetUrl(release, name)
 	if type(release.assets) ~= "table" then
 		return nil
 	end
 
 	for _index, asset in ipairs(release.assets) do
-		if type(asset) == "table" and asset.name == ASSET_NAME then
+		if type(asset) == "table" and asset.name == name then
 			return type(asset.browser_download_url) == "string" and asset.browser_download_url or nil
 		end
 	end
@@ -95,7 +99,8 @@ end
 -- is chosen by the UI, not here.
 -- @return boolean True when the check completed
 -- @return table|nil What was learned: current, latest, update_available,
---   ahead, release_url and download_url (which may be nil)
+--   ahead, release_url, and download_url and signature_url (either may be nil,
+--   and the update can only be installed when both are there)
 -- @return string|nil What went wrong
 function UpdateCheck.check()
 	local url = meta.update_check_url
@@ -133,7 +138,8 @@ function UpdateCheck.check()
 			update_available = order < 0,
 			ahead = order > 0,
 			release_url = type(body.html_url) == "string" and body.html_url or meta.homepage,
-			download_url = downloadUrl(body),
+			download_url = assetUrl(body, ARCHIVE_NAME),
+			signature_url = assetUrl(body, SIGNATURE_NAME),
 		},
 		nil
 end

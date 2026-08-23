@@ -224,4 +224,44 @@ describe("UI", function()
 			assert.are.same({}, Trapper.asked)
 		end)
 	end)
+	describe("showUpdateInstalled", function()
+		local handlers
+
+		before_each(function()
+			stub(UIManager, "askForRestart")
+			handlers = UIManager.event_handlers
+		end)
+
+		after_each(function()
+			UIManager.askForRestart:revert()
+			UIManager.event_handlers = handlers
+		end)
+
+		it("leaves the restart to KOReader, which knows what the device can do", function()
+			UI.showUpdateInstalled("0.14.0")
+
+			assert.stub(UIManager.askForRestart).was_called_with(UIManager, "Crossbill Sync 0.14.0 is installed.")
+			assert.are.equal(0, #UIManager.show.calls)
+		end)
+
+		it("says so itself where KOReader would say nothing", function()
+			-- `askForRestart` returns without showing anything when the
+			-- device's event handlers are not there, and an install nobody is
+			-- told about is one the reader cannot know worked.
+			UIManager.event_handlers = nil
+
+			UI.showUpdateInstalled("0.14.0")
+
+			assert.stub(UIManager.askForRestart).was_not_called()
+			assert.are.equal("Crossbill Sync 0.14.0 is installed.", shownText())
+		end)
+
+		it("stays up long enough to read", function()
+			UIManager.event_handlers = nil
+
+			UI.showUpdateInstalled("0.14.0")
+
+			assert.are.equal(10, shownWidget().timeout)
+		end)
+	end)
 end)

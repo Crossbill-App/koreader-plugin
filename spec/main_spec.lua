@@ -21,7 +21,8 @@ package.loaded["modules/network"] = NetworkFake
 local CrossbillSync = require("main")
 -- Loaded while the fake was seeded, so this is the same module main holds, and
 -- stubbing its check here is what the plugin will call.
-local UpdateCheck = require("modules/update_check")
+local UpdateCheck = require("modules/update/check")
+local UpdateInstaller = require("modules/update/installer")
 package.loaded["modules/network"] = real_network
 
 local REFUSAL = UpgradeRequired.fromResponse(426, {
@@ -305,6 +306,157 @@ describe("CrossbillSync", function()
 				"Crossbill Sync 0.12.0 is the latest version.",
 			}, shownTexts())
 			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+		end)
+	end)
+	describe("installUpdate", function()
+		local UIManagerModule = require("ui/uimanager")
+		local AVAILABLE = {
+			current = "0.13.0",
+			latest = "0.14.0",
+			update_available = true,
+			ahead = false,
+			release_url = "https://example.test/releases/tag/v0.14.0",
+			download_url = "https://example.test/crossbill.koplugin.zip",
+			signature_url = "https://example.test/crossbill.koplugin.zip.sig",
+		}
+
+		before_each(function()
+			stub(NetworkFake, "disableWifiIfNeeded")
+			stub(UIManagerModule, "askForRestart")
+		end)
+
+		after_each(function()
+			NetworkFake.disableWifiIfNeeded:revert()
+			UIManagerModule.askForRestart:revert()
+			if type(UpdateInstaller.install) == "table" then
+				UpdateInstaller.install:revert()
+			end
+			if type(NetworkFake.ensureWifiEnabled) == "table" then
+				NetworkFake.ensureWifiEnabled:revert()
+			end
+		end)
+
+		--- Answer every install with the same outcome
+		-- @param ok boolean Whether it installed
+		-- @param kind string|nil Which kind of failure
+		local function installReturning(ok, kind)
+			stub(UpdateInstaller, "install").returns(ok, kind, "detail for the log")
+		end
+
+		it("offers the reader the restart that brings the update into use", function()
+			installReturning(true, nil)
+
+			pluginWith({ path = "/plugins/crossbill.koplugin" }):installUpdate(AVAILABLE)
+
+			assert
+				.stub(UIManagerModule.askForRestart)
+				.was_called_with(UIManagerModule, "Crossbill Sync 0.14.0 is installed.")
+			assert.are.same({ "Installing update..." }, closedTexts())
+			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+		end)
+
+		it("hands the installer the directory KOReader loaded the plugin from", function()
+			-- A reader may have renamed it, and guessing would replace the
+			-- wrong thing.
+			installReturning(true, nil)
+
+			pluginWith({ path = "/plugins/renamed.koplugin" }):installUpdate(AVAILABLE)
+
+			assert.are.equal("/plugins/renamed.koplugin", UpdateInstaller.install.calls[1].vals[1])
+		end)
+
+		it("says an unverified update apart from any other failure", function()
+			installReturning(false, UpdateInstaller.UNVERIFIED)
+
+			pluginWith({ path = "/plugins/crossbill.koplugin" }):installUpdate(AVAILABLE)
+
+			assert.are.same({
+				"Installing update...",
+				"The update could not be verified and was not installed.\n\nIt was not signed by a key this plugin trusts.",
+			}, shownTexts())
+			assert.stub(UIManagerModule.askForRestart).was_not_called()
+		end)
+
+		it("points a failed install at the address to do it by hand", function()
+			installReturning(false, UpdateInstaller.FAILED)
+
+			pluginWith({ path = "/plugins/crossbill.koplugin" }):installUpdate(AVAILABLE)
+
+			assert.are.same({
+				"Installing update...",
+				"Could not install the update.\n\nYou can download it yourself from:\n" .. AVAILABLE.release_url,
+			}, shownTexts())
+		end)
+
+		it("clears the message and the WiFi when the install fails", function()
+			installReturning(false, UpdateInstaller.FAILED)
+
+			pluginWith({ path = "/plugins/crossbill.koplugin" }):installUpdate(AVAILABLE)
+
+			assert.are.same({ "Installing update..." }, closedTexts())
+			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+		end)
+
+		it("waits for WiFi rather than installing while offline", function()
+			local waiting
+			stub(NetworkFake, "ensureWifiEnabled").invokes(function(callback)
+				waiting = callback
+				return false
+			end)
+			installReturning(true, nil)
+
+			pluginWith({ path = "/plugins/crossbill.koplugin" }):installUpdate(AVAILABLE)
+
+			assert.stub(UpdateInstaller.install).was_not_called()
+
+			waiting()
+
+			assert.stub(UpdateInstaller.install).was_called()
+		end)
+	end)
+
+	describe("the update dialog", function()
+		local AVAILABLE = {
+			current = "0.13.0",
+			latest = "0.14.0",
+			update_available = true,
+			ahead = false,
+			release_url = "https://example.test/releases/tag/v0.14.0",
+			download_url = "https://example.test/crossbill.koplugin.zip",
+			signature_url = "https://example.test/crossbill.koplugin.zip.sig",
+		}
+
+		after_each(function()
+			if type(UpdateCheck.check) == "table" then
+				UpdateCheck.check:revert()
+			end
+		end)
+
+		it("offers to install when the release carries an archive and a signature", function()
+			stub(UpdateCheck, "check").returns(true, AVAILABLE, nil)
+
+			pluginWith({}):checkForUpdates()
+
+			local dialog = UIManager.show.calls[#UIManager.show.calls].vals[2]
+			assert.are.equal("Install", dialog.ok_text)
+			assert.are.equal("Not now", dialog.cancel_text)
+			assert.are.equal("function", type(dialog.ok_callback))
+		end)
+
+		it("only shows the address when the release has nothing to install from", function()
+			-- A button that cannot succeed is worse than no button.
+			local unsigned = {}
+			for key, value in pairs(AVAILABLE) do
+				unsigned[key] = value
+			end
+			unsigned.signature_url = nil
+			stub(UpdateCheck, "check").returns(true, unsigned, nil)
+
+			pluginWith({}):checkForUpdates()
+
+			local shown = UIManager.show.calls[#UIManager.show.calls].vals[2]
+			assert.is_nil(shown.ok_text)
+			assert.is_truthy(shown.text:find(AVAILABLE.release_url, 1, true))
 		end)
 	end)
 end)

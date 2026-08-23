@@ -18,5 +18,13 @@ UIManager.show = noop
 UIManager.close = noop
 UIManager.scheduleIn = noop
 UIManager.unschedule = noop
+-- KOReader's own restart prompt: it decides per platform whether restarting is
+-- possible at all, so the plugin asks rather than restarting by itself.
+UIManager.askForRestart = noop
+
+-- The device installs these at startup, and `askForRestart` does nothing
+-- without them. Present here, since a running reader is what the specs stand
+-- for; a spec that wants the other case clears it and puts it back.
+UIManager.event_handlers = { PowerOff = noop }
 
 return UIManager

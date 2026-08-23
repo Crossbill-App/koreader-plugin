@@ -27,7 +27,7 @@ end
 
 local real_network = package.loaded["modules/network"]
 package.loaded["modules/network"] = NetworkFake
-local UpdateCheck = require("modules/update_check")
+local UpdateCheck = require("modules/update/check")
 package.loaded["modules/network"] = real_network
 
 local meta = require("_meta")
@@ -45,6 +45,10 @@ local function release(overrides)
 		html_url = "https://github.com/Crossbill-App/koreader-plugin/releases/tag/v9.9.9",
 		assets = {
 			{ name = "crossbill.koplugin.zip", browser_download_url = "https://example.test/crossbill.koplugin.zip" },
+			{
+				name = "crossbill.koplugin.zip.sig",
+				browser_download_url = "https://example.test/crossbill.koplugin.zip.sig",
+			},
 		},
 	}
 
@@ -139,13 +143,32 @@ describe("UpdateCheck.check", function()
 		assert.are.equal("0.0.1", result.latest)
 	end)
 
-	it("finds the archive the release workflow publishes", function()
+	it("finds the archive and the signature the release workflow publishes", function()
 		answerWith(200, release())
 
 		local completed, result = UpdateCheck.check()
 
 		assert.is_true(completed)
 		assert.are.equal("https://example.test/crossbill.koplugin.zip", result.download_url)
+		assert.are.equal("https://example.test/crossbill.koplugin.zip.sig", result.signature_url)
+	end)
+
+	it("reports a release that carries an archive but no signature", function()
+		-- Nothing can be installed from it, but the reader still deserves to
+		-- know a newer version exists.
+		answerWith(
+			200,
+			release({
+				assets = { { name = "crossbill.koplugin.zip", browser_download_url = "https://example.test/a.zip" } },
+			})
+		)
+
+		local completed, result = UpdateCheck.check()
+
+		assert.is_true(completed)
+		assert.is_true(result.update_available)
+		assert.are.equal("https://example.test/a.zip", result.download_url)
+		assert.is_nil(result.signature_url)
 	end)
 
 	it("still reports the release when no archive matches", function()
@@ -159,6 +182,7 @@ describe("UpdateCheck.check", function()
 		assert.is_true(completed)
 		assert.is_true(result.update_available)
 		assert.is_nil(result.download_url)
+		assert.is_nil(result.signature_url)
 	end)
 
 	it("still reports the release when it carries no assets at all", function()
@@ -168,6 +192,7 @@ describe("UpdateCheck.check", function()
 
 		assert.is_true(completed)
 		assert.is_nil(result.download_url)
+		assert.is_nil(result.signature_url)
 	end)
 
 	it("falls back to the homepage when the release names no page of its own", function()
