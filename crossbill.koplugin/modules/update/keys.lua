@@ -19,8 +19,6 @@ paste here.
 ]]
 
 return {
-	-- REPLACE THIS PLACEHOLDER. Run scripts/setup_signing_key.sh and paste the
-	-- 64-character hex it prints. Until then no update can be installed, which
-	-- is the intended behaviour rather than a failure to notice.
-	"0000000000000000000000000000000000000000000000000000000000000000",
+	-- From version 0.14.0
+	"a3825e05b1c7a0a61d49880584d433f6f441af4bb3730e86165dce9691a13a60",
 }
