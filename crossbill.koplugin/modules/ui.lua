@@ -511,6 +511,26 @@ function UI.showInstallingUpdate()
 	return message
 end
 
+--- Tell the reader the update is in place, and offer the restart it needs
+-- `askForRestart` is KOReader's own: it asks where restarting is possible and
+-- says the update waits for the next start where it is not, which is a
+-- per-platform judgement the plugin has no business making. It does nothing at
+-- all when the device's event handlers were never installed, though -- its own
+-- source only says they "should always exist" -- and a reader who is told
+-- nothing after an install has no way of knowing it worked. So the message is
+-- shown here in the one case KOReader would swallow it.
+-- @param version string The version now installed
+function UI.showUpdateInstalled(version)
+	local text = string.format(_("%s %s is installed."), meta.fullname, version)
+
+	if UIManager.event_handlers and UIManager.event_handlers.PowerOff then
+		UIManager:askForRestart(text)
+		return
+	end
+
+	UI.showMessage(text, 10)
+end
+
 --- Tell the reader the update could not be installed
 -- One message for every way of failing except one, and it carries the address
 -- so the reader can do by hand what the plugin would not do for them.

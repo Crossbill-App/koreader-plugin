@@ -22,4 +22,9 @@ UIManager.unschedule = noop
 -- possible at all, so the plugin asks rather than restarting by itself.
 UIManager.askForRestart = noop
 
+-- The device installs these at startup, and `askForRestart` does nothing
+-- without them. Present here, since a running reader is what the specs stand
+-- for; a spec that wants the other case clears it and puts it back.
+UIManager.event_handlers = { PowerOff = noop }
+
 return UIManager

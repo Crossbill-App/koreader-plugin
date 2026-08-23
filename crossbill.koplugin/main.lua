@@ -10,9 +10,7 @@ local Dispatcher = require("dispatcher")
 local logger = require("logger")
 local DataStorage = require("datastorage")
 local Trapper = require("ui/trapper")
-local UIManager = require("ui/uimanager")
 local _ = require("gettext")
-local meta = require("_meta")
 
 local Settings = require("modules/settings")
 local Network = require("modules/network")
@@ -241,9 +239,7 @@ function CrossbillSync:performInstall(result)
 	Network.disableWifiIfNeeded()
 
 	if ok then
-		-- KOReader's own prompt: it offers to restart where restarting is
-		-- possible and says the update waits for the next start where it is not.
-		UIManager:askForRestart(string.format(_("%s %s is installed."), meta.fullname, result.latest))
+		UI.showUpdateInstalled(result.latest)
 		return
 	end
 
