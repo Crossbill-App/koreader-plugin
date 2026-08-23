@@ -13,6 +13,7 @@ local UIManager = {}
 local function noop() end
 
 UIManager.setDirty = noop
+UIManager.forceRePaint = noop
 UIManager.show = noop
 UIManager.close = noop
 UIManager.scheduleIn = noop

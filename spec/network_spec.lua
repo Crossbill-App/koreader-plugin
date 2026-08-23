@@ -177,4 +177,39 @@ describe("Network", function()
 			assert.is_not_nil(clientHeader())
 		end)
 	end)
+	describe("the headers a JSON GET can be given", function()
+		--- The headers the request recorded last carried
+		-- @return table The header table
+		local function headers()
+			return HttpFake.requests[#HttpFake.requests].headers
+		end
+
+		it("adds what the caller asked for", function()
+			-- GitHub refuses a request carrying no User-Agent, which is why
+			-- getJson takes headers at all.
+			Network.getJson(URL, nil, { ["User-Agent"] = "koreader-plugin/9.9.9" })
+
+			assert.are.equal("koreader-plugin/9.9.9", headers()["User-Agent"])
+		end)
+
+		it("keeps the defaults a caller did not name", function()
+			Network.getJson(URL, "token-abc", { ["User-Agent"] = "koreader-plugin/9.9.9" })
+
+			assert.are.equal("application/json", headers()["Accept"])
+			assert.are.equal("Bearer token-abc", headers()["Authorization"])
+			assert.is_not_nil(clientHeader())
+		end)
+
+		it("lets a caller replace a default", function()
+			Network.getJson(URL, nil, { ["Accept"] = "application/vnd.github+json" })
+
+			assert.are.equal("application/vnd.github+json", headers()["Accept"])
+		end)
+
+		it("changes nothing when given none", function()
+			Network.getJson(URL, "token-abc")
+
+			assert.are.equal("application/json", headers()["Accept"])
+		end)
+	end)
 end)

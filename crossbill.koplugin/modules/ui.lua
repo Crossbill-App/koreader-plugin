@@ -459,6 +459,59 @@ function UI.showAbout()
 	UI.showMessage(table.concat(lines, "\n"))
 end
 
+--- Tell the reader the update check is under way
+-- No timeout: a request can outlast any guess at one, and unlike a sync there
+-- is nothing else on screen to say work is happening. The caller takes the
+-- message back down on every path out.
+-- @return table The message widget, for the caller to dismiss
+function UI.showUpdateChecking()
+	local message = UI.showMessage(_("Checking for updates..."))
+	-- The check blocks the same tick that showed this, so without a repaint
+	-- here the reader would see nothing at all until the result arrives.
+	UIManager:forceRePaint()
+	return message
+end
+
+--- Tell the reader a newer version has been published
+-- The address is shown as text: a reader on an e-ink device copies it by hand.
+-- @param result table The check result
+function UI.showUpdateAvailable(result)
+	local lines = {
+		string.format(_("%s %s is available."), meta.fullname, result.latest),
+		string.format(_("You have %s."), result.current),
+		"",
+		_("Download:"),
+		result.release_url,
+	}
+
+	UI.showMessage(table.concat(lines, "\n"), 10)
+end
+
+--- Tell the reader there is nothing to update to
+-- A plugin ahead of the newest release is not up to date, so it is told what it
+-- is running and what was published rather than being reassured.
+-- @param result table The check result
+function UI.showNoUpdate(result)
+	if result.ahead then
+		local lines = {
+			string.format(_("You are running %s."), result.current),
+			string.format(_("The latest release is %s."), result.latest),
+		}
+		UI.showMessage(table.concat(lines, "\n"), 5)
+		return
+	end
+
+	UI.showMessage(string.format(_("%s %s is the latest version."), meta.fullname, result.current), 3)
+end
+
+--- Tell the reader the check did not complete
+-- One message for every failure: nothing a reader could do differs between
+-- being offline, being rate limited and a release that will not parse, and what
+-- tells those apart is in the log.
+function UI.showUpdateCheckFailed()
+	UI.showMessage(_("Could not check for updates. Please try again later."), 5)
+end
+
 --- Build the main menu structure for the plugin
 -- Primary actions (sync, chapter digest) are top-level; everything else
 -- lives under a Settings submenu.
@@ -471,6 +524,7 @@ end
 --   - is_session_tracking_enabled: function() Returns session tracking state
 --   - on_toggle_session_tracking: function() Called when session tracking is toggled
 --   - on_configure_min_session_duration: function() Called when min session duration is configured
+--   - on_check_for_updates: function() Called when an update check is requested
 -- @return table Menu item table for KOReader
 function UI.buildMenuItems(handlers)
 	return {
@@ -507,6 +561,13 @@ function UI.buildMenuItems(handlers)
 						callback = handlers.on_configure_min_session_duration,
 					},
 				},
+			},
+			{
+				-- Beside About, which is where the running version is shown.
+				-- The menu closes behind it: the check may put a WiFi prompt
+				-- and then a result on screen seconds apart.
+				text = _("Check for Updates"),
+				callback = handlers.on_check_for_updates,
 			},
 			{
 				text = _("About"),
