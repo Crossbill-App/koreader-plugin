@@ -130,6 +130,32 @@ describe("UpdateInstaller.install", function()
 		})
 	end
 
+	--- Run something with `ffi/archiver` out of reach
+	-- What an older KOReader, or one whose libarchive will not load, looks
+	-- like. The module is unloaded and a loader that raises is put in front of
+	-- the real one, so `require` fails the way it would there.
+	-- @param body function What to run while it cannot be loaded
+	local function withoutArchiver(body)
+		local loaded = package.loaded["ffi/archiver"]
+		package.loaded["ffi/archiver"] = nil
+		table.insert(package.loaders, 1, function(name)
+			if name == "ffi/archiver" then
+				return function()
+					error("no libarchive here")
+				end
+			end
+		end)
+
+		local ok, err = pcall(body)
+
+		table.remove(package.loaders, 1)
+		package.loaded["ffi/archiver"] = loaded
+
+		if not ok then
+			error(err, 0)
+		end
+	end
+
 	before_each(function()
 		root = os.tmpname()
 		os.remove(root)
@@ -221,6 +247,20 @@ describe("UpdateInstaller.install", function()
 			assert.is_false(ok)
 			assert.are.equal(UpdateInstaller.FAILED, kind)
 			assert.are.equal(0, #NetworkFake.requests)
+		end)
+
+		it("refuses when it cannot unpack anything, before downloading anything", function()
+			-- The plugin still loads on a KOReader with no archive reader; it
+			-- is the update that is refused, not everything else the plugin
+			-- does, which is why this module asks for the reader here rather
+			-- than at the top of the file.
+			withoutArchiver(function()
+				local ok, kind = UpdateInstaller.install(plugin_dir, RESULT)
+
+				assert.is_false(ok)
+				assert.are.equal(UpdateInstaller.FAILED, kind)
+				assert.are.equal(0, #NetworkFake.requests)
+			end)
 		end)
 
 		it("refuses a release with no signature attached", function()

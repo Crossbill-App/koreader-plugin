@@ -23,9 +23,14 @@ about which one it is.
 Staging is a sibling of the plugin directory rather than a temporary directory
 elsewhere: `os.rename` only moves rather than copies within one filesystem, and
 a sibling is the only location guaranteed to be on the same one.
+
+The archive reader is asked for when an install starts rather than required at
+the top of this file. Every reader loads this module, because the plugin does,
+and KOReader drops a plugin whose load raises -- so a `require` up here that
+fails on some device costs that reader their highlights and sessions to spare
+them an update they were not going to get anyway.
 ]]
 
-local Archiver = require("ffi/archiver")
 local Network = require("modules/network")
 local Signature = require("modules/update/signature")
 local TrustedKeys = require("modules/update/keys")
@@ -85,6 +90,22 @@ local function fetch(url, max_bytes)
 	end
 
 	return body, nil
+end
+
+--- The archive reader, if this KOReader has one to give
+-- KOReader's own modules stay on `package.path` after the plugin is loaded,
+-- unlike the plugin's own, so asking for this one late works where asking for
+-- a sibling module late would not.
+-- @return table|nil The archiver, nil where there is none
+local function loadArchiver()
+	local ok, lib = pcall(require, "ffi/archiver")
+
+	if not ok then
+		logger.warn("Crossbill: no archive reader here:", tostring(lib))
+		return nil
+	end
+
+	return lib
 end
 
 --- Whether a path is a directory
@@ -235,10 +256,15 @@ function UpdateInstaller.install(plugin_dir, result)
 		return false, UpdateInstaller.FAILED, "the release carries no archive and signature to install"
 	end
 
-	-- Refused before anything is downloaded: a device that can never verify
-	-- should not spend a reader's data finding that out.
+	-- Refused before anything is downloaded: a device that can never verify or
+	-- never unpack should not spend a reader's data finding that out.
 	if not Signature.isAvailable() then
 		return false, UpdateInstaller.FAILED, "this KOReader cannot verify signatures"
+	end
+
+	local archiver = loadArchiver()
+	if not archiver then
+		return false, UpdateInstaller.FAILED, "this KOReader cannot read archives"
 	end
 
 	local archive, err = fetch(result.download_url, UpdateInstaller.MAX_ARCHIVE_BYTES)
@@ -269,7 +295,7 @@ function UpdateInstaller.install(plugin_dir, result)
 	local archive_path = ffiUtil.joinPath(parent, "crossbill-update.zip")
 	local staging = plugin_dir .. ".new"
 
-	local ok, detail = UpdateInstaller._apply(plugin_dir, parent, archive, archive_path, staging)
+	local ok, detail = UpdateInstaller._apply(plugin_dir, archiver, archive, archive_path, staging)
 
 	os.remove(archive_path)
 	if not ok then
@@ -284,13 +310,13 @@ end
 -- Split from `install` so every path out of it can be followed by the same
 -- cleanup, rather than each failure having to remember its own.
 -- @param plugin_dir string The plugin's directory
--- @param parent string The directory the plugin sits in
+-- @param archiver table The archive reader, already known to be loadable
 -- @param archive string The archive's bytes
 -- @param archive_path string Where to write them
 -- @param staging string Where to unpack to
 -- @return boolean True when the plugin was replaced
 -- @return string|nil What went wrong
-function UpdateInstaller._apply(plugin_dir, parent, archive, archive_path, staging)
+function UpdateInstaller._apply(plugin_dir, archiver, archive, archive_path, staging)
 	discard(staging)
 
 	local handle, err = io.open(archive_path, "wb")
@@ -300,7 +326,7 @@ function UpdateInstaller._apply(plugin_dir, parent, archive, archive_path, stagi
 	handle:write(archive)
 	handle:close()
 
-	local reader = Archiver.Reader:new()
+	local reader = archiver.Reader:new()
 	if not reader:open(archive_path) then
 		return false, "could not read the archive: " .. tostring(reader.err)
 	end
