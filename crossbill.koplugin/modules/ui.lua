@@ -13,6 +13,7 @@ local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local Trapper = require("ui/trapper")
 local UpgradeRequired = require("modules/upgrade_required")
+local meta = require("_meta")
 local logger = require("logger")
 local _ = require("gettext")
 
@@ -442,6 +443,22 @@ function UI.showMinSessionDurationDialog(settings)
 	dialog:onShowKeyboard()
 end
 
+--- Show what this plugin is and where it comes from
+-- Name and version are read from `_meta.lua` rather than written out here, so
+-- the side-by-side test build names itself and the version can never go stale.
+-- The address is shown as text: a reader on an e-ink device copies it by hand.
+function UI.showAbout()
+	local lines = {
+		meta.fullname,
+		string.format(_("Version %s"), tostring(meta.version)),
+		"",
+		_("Source code and issues:"),
+		meta.homepage,
+	}
+
+	UI.showMessage(table.concat(lines, "\n"))
+end
+
 --- Build the main menu structure for the plugin
 -- Primary actions (sync, chapter digest) are top-level; everything else
 -- lives under a Settings submenu.
@@ -490,6 +507,11 @@ function UI.buildMenuItems(handlers)
 						callback = handlers.on_configure_min_session_duration,
 					},
 				},
+			},
+			{
+				text = _("About"),
+				keep_menu_open = true,
+				callback = UI.showAbout,
 			},
 		},
 	}
