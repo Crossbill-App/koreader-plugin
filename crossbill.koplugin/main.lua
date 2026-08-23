@@ -10,7 +10,9 @@ local Dispatcher = require("dispatcher")
 local logger = require("logger")
 local DataStorage = require("datastorage")
 local Trapper = require("ui/trapper")
+local UIManager = require("ui/uimanager")
 local _ = require("gettext")
+local meta = require("_meta")
 
 local Settings = require("modules/settings")
 local Network = require("modules/network")
@@ -28,7 +30,8 @@ local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
 local DocumentSupport = require("modules/document_support")
 local UpgradeRequired = require("modules/upgrade_required")
-local UpdateCheck = require("modules/update_check")
+local UpdateCheck = require("modules/update/check")
+local UpdateInstaller = require("modules/update/installer")
 
 local CrossbillSync = WidgetContainer:extend({
 	name = "Crossbill",
@@ -196,10 +199,60 @@ function CrossbillSync:performUpdateCheck()
 		return
 	end
 
-	if result.update_available then
-		UI.showUpdateAvailable(result)
-	else
+	if not result.update_available then
 		UI.showNoUpdate(result)
+		return
+	end
+
+	UI.showUpdateAvailable(result, function()
+		self:installUpdate(result)
+	end)
+end
+
+--- Fetch the release the check found and put it in the plugin's place
+-- WiFi again rather than still: the check turned it back off before the reader
+-- was asked anything, and a reader who thinks it over for a minute should not
+-- find the answer has expired.
+-- @param result table The check result, carrying the archive and its signature
+function CrossbillSync:installUpdate(result)
+	local callback = function()
+		self:performInstall(result)
+	end
+
+	if not Network.ensureWifiEnabled(callback) then
+		logger.info("Crossbill: Waiting for WiFi to install the update...")
+		return
+	end
+
+	self:performInstall(result)
+end
+
+--- Install the update and ask for the restart that brings it into use
+-- `self.path` is where KOReader loaded this plugin from, which is the only
+-- honest answer to what should be replaced: a reader may have renamed it, and
+-- the installer refuses rather than guessing when the archive does not match.
+-- @param result table The check result
+function CrossbillSync:performInstall(result)
+	local installing = UI.showInstallingUpdate()
+
+	local ok, kind, detail = UpdateInstaller.install(self.path, result)
+
+	UI.dismiss(installing)
+	Network.disableWifiIfNeeded()
+
+	if ok then
+		-- KOReader's own prompt: it offers to restart where restarting is
+		-- possible and says the update waits for the next start where it is not.
+		UIManager:askForRestart(string.format(_("%s %s is installed."), meta.fullname, result.latest))
+		return
+	end
+
+	logger.err("Crossbill: Update install failed:", tostring(detail))
+
+	if kind == UpdateInstaller.UNVERIFIED then
+		UI.showInstallUnverified()
+	else
+		UI.showInstallFailed(result)
 	end
 end
 

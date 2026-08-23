@@ -83,6 +83,46 @@ jobs:
         run: |
           zip -r crossbill.koplugin.zip crossbill.koplugin
 
+      # The plugin installs nothing it cannot trace to a key it already carries,
+      # so an unsigned release is one no reader can install from the device.
+      - name: Sign the plugin archive
+        env:
+          SIGNING_KEY: ${{ secrets.CROSSBILL_SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::CROSSBILL_SIGNING_KEY is not set. Run scripts/setup_signing_key.sh."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$SIGNING_KEY" > signing.pem
+          openssl pkeyutl -sign -inkey signing.pem -rawin \
+            -in crossbill.koplugin.zip -out crossbill.koplugin.zip.sig
+          rm -f signing.pem
+          echo "Signature: $(stat -c%s crossbill.koplugin.zip.sig) bytes"
+
+      # Fail here rather than ship something every device rejects: if the secret
+      # and the key in modules/update/keys.lua ever drift apart, this is the
+      # only place that notices before a reader does.
+      - name: Verify the signature against a published key
+        run: |
+          KEYS_FILE="crossbill.koplugin/modules/update/keys.lua"
+          VERIFIED=0
+          for HEX in $(grep -oE '"[0-9a-fA-F]{64}"' "$KEYS_FILE" | tr -d '"'); do
+            printf '302a300506032b6570032100%s' "$HEX" | xxd -r -p > pubkey.der
+            openssl pkey -pubin -inform DER -in pubkey.der -out pubkey.pem 2>/dev/null || continue
+            if openssl pkeyutl -verify -pubin -inkey pubkey.pem -rawin \
+                 -in crossbill.koplugin.zip -sigfile crossbill.koplugin.zip.sig >/dev/null 2>&1; then
+              echo "Signature verifies against the key ending $(echo "$HEX" | tail -c 9)"
+              VERIFIED=1
+              break
+            fi
+          done
+          rm -f pubkey.der pubkey.pem
+          if [ "$VERIFIED" -ne 1 ]; then
+            echo "::error::The signature matches no key in $KEYS_FILE, so no reader could install this release."
+            exit 1
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -91,9 +131,17 @@ jobs:
           generate_release_notes: true
           files: |
             crossbill.koplugin.zip
+            crossbill.koplugin.zip.sig
           body: |
             ## KOReader Plugin
 
             Download `crossbill.koplugin.zip` and extract it to your KOReader plugins directory.
+
+            Readers already running the plugin can install this from the device:
+            **Crossbill → Check for Updates → Install**.
+
+            `crossbill.koplugin.zip.sig` is the Ed25519 signature the plugin
+            checks before installing anything. It is of no use when installing
+            by hand.
           draft: false
           prerelease: false

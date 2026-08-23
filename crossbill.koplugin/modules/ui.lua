@@ -11,6 +11,7 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
+local ConfirmBox = require("ui/widget/confirmbox")
 local Trapper = require("ui/trapper")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
@@ -473,15 +474,67 @@ function UI.showUpdateChecking()
 end
 
 --- Tell the reader a newer version has been published
--- The address is shown as text: a reader on an e-ink device copies it by hand.
+-- Offered as a question only when the release carries both the archive and the
+-- signature: a button that cannot succeed is worse than no button. Otherwise
+-- the address is shown as text, for a reader to copy by hand as About's is.
 -- @param result table The check result
-function UI.showUpdateAvailable(result)
+-- @param on_install function|nil Called when the reader asks to install
+function UI.showUpdateAvailable(result, on_install)
 	local lines = {
 		string.format(_("%s %s is available."), meta.fullname, result.latest),
 		string.format(_("You have %s."), result.current),
+	}
+
+	if on_install and result.download_url and result.signature_url then
+		UIManager:show(ConfirmBox:new({
+			text = table.concat(lines, "\n"),
+			ok_text = _("Install"),
+			ok_callback = on_install,
+			cancel_text = _("Not now"),
+		}))
+		return
+	end
+
+	table.insert(lines, "")
+	table.insert(lines, _("Download:"))
+	table.insert(lines, result.release_url)
+	UI.showMessage(table.concat(lines, "\n"), 10)
+end
+
+--- Tell the reader the update is being fetched and put in place
+-- No timeout, and taken down by the caller on every path out, as the check's
+-- message is: several blocking steps run behind it.
+-- @return table The message widget, for the caller to dismiss
+function UI.showInstallingUpdate()
+	local message = UI.showMessage(_("Installing update..."))
+	UIManager:forceRePaint()
+	return message
+end
+
+--- Tell the reader the update could not be installed
+-- One message for every way of failing except one, and it carries the address
+-- so the reader can do by hand what the plugin would not do for them.
+-- @param result table The check result, for the address
+function UI.showInstallFailed(result)
+	local lines = {
+		_("Could not install the update."),
 		"",
-		_("Download:"),
-		result.release_url,
+		_("You can download it yourself from:"),
+		result and result.release_url or meta.homepage,
+	}
+
+	UI.showMessage(table.concat(lines, "\n"), 10)
+end
+
+--- Tell the reader the update was not signed by a key the plugin trusts
+-- Said apart from every other failure on purpose. The others mean something
+-- went wrong; this one means the archive is not what it claims to be, and a
+-- reader deciding whether to install it by hand should know which they have.
+function UI.showInstallUnverified()
+	local lines = {
+		_("The update could not be verified and was not installed."),
+		"",
+		_("It was not signed by a key this plugin trusts."),
 	}
 
 	UI.showMessage(table.concat(lines, "\n"), 10)

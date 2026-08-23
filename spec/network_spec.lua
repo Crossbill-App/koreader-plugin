@@ -17,6 +17,11 @@ local HttpFake = { requests = {}, status = 200, body = "" }
 -- @return number, number, table, string LuaSocket's 1, status, headers, line
 function HttpFake.request(request)
 	table.insert(HttpFake.requests, request)
+	if HttpFake.fails_with then
+		-- How LuaSocket reports a request that never completed: no result, and
+		-- the message where a status would otherwise be.
+		return nil, HttpFake.fails_with
+	end
 	if HttpFake.body ~= "" then
 		request.sink(HttpFake.body)
 	end
@@ -58,10 +63,47 @@ local Ltn12Fake = {
 	},
 }
 
-local SocketUtilFake = {}
+-- Records the timeouts each request asked for, and hands out a sink that
+-- collects chunks the way the real one does. The presets carry the real
+-- module's values so a spec can assert on them by name rather than by number.
+local SocketUtilFake = {
+	FILE_BLOCK_TIMEOUT = 15,
+	FILE_TOTAL_TIMEOUT = 60,
+	LARGE_BLOCK_TIMEOUT = 10,
+	LARGE_TOTAL_TIMEOUT = 30,
+	timeouts = {},
+	resets = 0,
+}
 
---- Reset the socket timeout, which is a no-op without sockets
-function SocketUtilFake:reset_timeout() end
+--- Remember the timeouts a request set
+-- @param block_timeout number How long the request may stall
+-- @param total_timeout number How long it may take start to finish
+function SocketUtilFake:set_timeout(block_timeout, total_timeout)
+	table.insert(self.timeouts, { block = block_timeout, total = total_timeout })
+end
+
+--- Count the resets, which is how the spec knows one always follows a request
+function SocketUtilFake:reset_timeout()
+	self.resets = self.resets + 1
+end
+
+--- Collect chunks into a table, as the real sink does
+-- @param collected table The table to append to
+-- @return function The sink
+function SocketUtilFake.table_sink(collected)
+	return function(chunk)
+		if chunk then
+			table.insert(collected, chunk)
+		end
+		return 1
+	end
+end
+
+--- The timeouts the most recent request asked for
+-- @return table|nil The block and total
+function SocketUtilFake.lastTimeout()
+	return SocketUtilFake.timeouts[#SocketUtilFake.timeouts]
+end
 
 -- Only WiFi handling touches the manager, and no test here does.
 local NetworkMgrFake = {}
@@ -114,8 +156,11 @@ describe("Network", function()
 		HttpFake.requests = {}
 		HttpFake.status = 200
 		HttpFake.body = ""
+		HttpFake.fails_with = nil
 		JsonFake.encoded = {}
 		JsonFake.decoded = nil
+		SocketUtilFake.timeouts = {}
+		SocketUtilFake.resets = 0
 	end)
 
 	--- The client header the request recorded last carried
@@ -210,6 +255,99 @@ describe("Network", function()
 			Network.getJson(URL, "token-abc")
 
 			assert.are.equal("application/json", headers()["Accept"])
+		end)
+	end)
+	describe("the time it will wait", function()
+		it("bounds every request, which LuaSocket by itself does not", function()
+			-- KOReader's default total is -1, so without this a server that
+			-- accepts a connection and then goes quiet holds the screen.
+			Network.getJson(URL, "token-abc")
+
+			assert.are.same(
+				{ block = SocketUtilFake.FILE_BLOCK_TIMEOUT, total = SocketUtilFake.FILE_TOTAL_TIMEOUT },
+				SocketUtilFake.lastTimeout()
+			)
+		end)
+
+		it("puts the timeout back afterwards", function()
+			Network.getJson(URL, "token-abc")
+
+			assert.are.equal(1, SocketUtilFake.resets)
+		end)
+
+		it("puts it back even when the request failed", function()
+			HttpFake.fails_with = "timeout"
+
+			Network.getJson(URL, "token-abc")
+
+			assert.are.equal(1, SocketUtilFake.resets)
+		end)
+
+		it("leaves an upload no total, since its size is the book's to decide", function()
+			Network.postMultipart(URL, { { name = "epub", filename = "a.epub", content_type = "x", data = "d" } })
+
+			local timeout = SocketUtilFake.lastTimeout()
+			assert.are.equal(SocketUtilFake.FILE_BLOCK_TIMEOUT, timeout.block)
+			assert.are.equal(-1, timeout.total)
+		end)
+
+		it("lets a caller ask for its own", function()
+			Network.request({ url = URL, block_timeout = 3, total_timeout = 7 })
+
+			assert.are.same({ block = 3, total = 7 }, SocketUtilFake.lastTimeout())
+		end)
+	end)
+
+	describe("a request that never completed", function()
+		it("reports the message as an error rather than as a status", function()
+			-- LuaSocket returns `nil, message`, and the message sits where a
+			-- status would. Read carelessly, a timeout looks like an HTTP code.
+			HttpFake.fails_with = "timeout"
+
+			local code, body, err = Network.request({ url = URL })
+
+			assert.is_nil(code)
+			assert.are.equal("", body)
+			assert.are.equal("timeout", err)
+		end)
+
+		it("reaches the JSON callers as an error too", function()
+			HttpFake.fails_with = "connection refused"
+
+			local code, data, err = Network.getJson(URL)
+
+			assert.is_nil(code)
+			assert.is_nil(data)
+			assert.are.equal("connection refused", err)
+		end)
+	end)
+
+	describe("the size it will accept", function()
+		it("accepts a response within the cap", function()
+			HttpFake.body = string.rep("x", 100)
+
+			local code, body = Network.request({ url = URL, max_bytes = 100 })
+
+			assert.are.equal(200, code)
+			assert.are.equal(100, #body)
+		end)
+
+		it("takes nothing from a response that outgrows the cap", function()
+			HttpFake.body = string.rep("x", 101)
+
+			local code, body = Network.request({ url = URL, max_bytes = 100 })
+
+			assert.are.equal(200, code)
+			assert.are.equal(0, #body)
+		end)
+
+		it("accepts anything when no cap was asked for", function()
+			HttpFake.body = string.rep("x", 5000)
+
+			local code, body = Network.request({ url = URL })
+
+			assert.are.equal(200, code)
+			assert.are.equal(5000, #body)
 		end)
 	end)
 end)

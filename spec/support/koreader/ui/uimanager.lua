@@ -18,5 +18,8 @@ UIManager.show = noop
 UIManager.close = noop
 UIManager.scheduleIn = noop
 UIManager.unschedule = noop
+-- KOReader's own restart prompt: it decides per platform whether restarting is
+-- possible at all, so the plugin asks rather than restarting by itself.
+UIManager.askForRestart = noop
 
 return UIManager
