@@ -66,18 +66,10 @@ jobs:
           echo "New version: $NEW_VERSION"
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-          # Update _meta.lua version
+          # Update _meta.lua version. Left in the working tree for now: the
+          # archive is built from it, and nothing is pushed until that archive
+          # is signed and verified.
           sed -i 's/version = "'"$CURRENT_VERSION"'"/version = "'"$NEW_VERSION"'"/' "$META_FILE"
-
-          # Commit version bump
-          git add "$META_FILE"
-          git commit -m "chore: bump version to $NEW_VERSION"
-          git push origin main
-
-      - name: Create and push tag
-        run: |
-          git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Package KOReader plugin
         run: |
@@ -122,6 +114,23 @@ jobs:
             echo "::error::The signature matches no key in $KEYS_FILE, so no reader could install this release."
             exit 1
           fi
+
+      # Only now, with an archive that exists and verifies, does anything the
+      # repository can see change. Signing that fails after the bump is pushed
+      # leaves main claiming a version that was never released and a tag
+      # pointing at nothing published, and the next run bumps past it rather
+      # than retrying it -- all of which has to be undone by hand on a branch
+      # that is probably protected.
+      - name: Commit the version bump
+        run: |
+          git add crossbill.koplugin/_meta.lua
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push origin main
+
+      - name: Create and push tag
+        run: |
+          git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
