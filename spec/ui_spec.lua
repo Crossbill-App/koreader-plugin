@@ -2,6 +2,7 @@ local UI = require("modules/ui")
 local UIManager = require("ui/uimanager")
 local Trapper = require("ui/trapper")
 local UpgradeRequired = require("modules/upgrade_required")
+local meta = require("_meta")
 
 describe("UI", function()
 	before_each(function()
@@ -134,6 +135,24 @@ describe("UI", function()
 			UI.showUpgradeRequired(nil)
 
 			assert.is_string(shownText())
+		end)
+	end)
+
+	describe("showAbout", function()
+		it("names the version and the address the plugin comes from", function()
+			-- Read from _meta rather than written out, so the release workflow's
+			-- version bump cannot leave the dialog naming an older one.
+			UI.showAbout()
+
+			assert.is_truthy(shownText():find(meta.version, 1, true))
+			assert.is_truthy(shownText():find(meta.homepage, 1, true))
+		end)
+
+		it("stays on screen until the reader dismisses it", function()
+			-- A URL that vanishes mid-transcription is worse than one to tap away.
+			UI.showAbout()
+
+			assert.is_nil(shownWidget().timeout)
 		end)
 	end)
 

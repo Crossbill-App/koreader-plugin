@@ -11,6 +11,7 @@ with a string, so it carries `__tostring` and `__concat`: a path that logs or
 appends whatever it was handed prints the message instead of blowing up.
 ]]
 
+local meta = require("_meta")
 local _ = require("gettext")
 
 local UpgradeRequired = {}
@@ -21,8 +22,10 @@ UpgradeRequired.STATUS = 426
 -- What this failure is called wherever it travels as an error kind
 UpgradeRequired.KIND = "client_upgrade_required"
 
--- Where a reader gets a newer plugin, for an answer that named no address
-local FALLBACK_UPDATE_URL = "https://github.com/Crossbill-App/koreader-plugin"
+-- Where a reader gets a newer plugin, for an answer that named no address.
+-- Read from `_meta.lua` rather than repeated here, so it cannot drift from the
+-- address About shows.
+local FALLBACK_UPDATE_URL = meta.homepage
 
 local mt = {}
 
