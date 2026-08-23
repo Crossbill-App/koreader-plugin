@@ -68,6 +68,9 @@ local ARCHIVE_URL = "https://example.test/crossbill.koplugin.zip"
 local SIGNATURE_URL = ARCHIVE_URL .. ".sig"
 local RESULT = { download_url = ARCHIVE_URL, signature_url = SIGNATURE_URL }
 
+-- What the archive weighs, which is all the room check has to go on
+local ARCHIVE_BODY = "PK-archive-bytes"
+
 describe("UpdateInstaller.install", function()
 	local root, plugin_dir
 
@@ -135,7 +138,7 @@ describe("UpdateInstaller.install", function()
 
 		NetworkFake.requests = {}
 		NetworkFake.bodies = {
-			[ARCHIVE_URL] = { code = 200, body = "PK-archive-bytes" },
+			[ARCHIVE_URL] = { code = 200, body = ARCHIVE_BODY },
 			[SIGNATURE_URL] = { code = 200, body = string.rep("s", 64) },
 		}
 		SignatureFake.available = true
@@ -187,7 +190,7 @@ describe("UpdateInstaller.install", function()
 			UpdateInstaller.install(plugin_dir, RESULT)
 
 			assert.are.equal(1, #SignatureFake.calls)
-			assert.are.equal("PK-archive-bytes", SignatureFake.calls[1].data)
+			assert.are.equal(ARCHIVE_BODY, SignatureFake.calls[1].data)
 			assert.are.equal(string.rep("s", 64), SignatureFake.calls[1].signature)
 		end)
 
@@ -309,13 +312,24 @@ describe("UpdateInstaller.install", function()
 		end)
 
 		it("refuses when the device has no room", function()
-			ffiUtil.setFreeSpace(#"PK-archive-bytes")
+			ffiUtil.setFreeSpace(#ARCHIVE_BODY * UpdateInstaller.SPACE_FACTOR - 1)
 
 			local ok, kind = UpdateInstaller.install(plugin_dir, RESULT)
 
 			assert.is_false(ok)
 			assert.are.equal(UpdateInstaller.FAILED, kind)
 			assert.are.equal("-- old main", read(ffiUtil.joinPath(plugin_dir, "main.lua")))
+		end)
+
+		it("installs when there is just enough room", function()
+			-- The other side of the same boundary: a check that reads the wrong
+			-- value from `df` passes the refusal above by refusing nothing.
+			ffiUtil.setFreeSpace(#ARCHIVE_BODY * UpdateInstaller.SPACE_FACTOR)
+
+			local ok, kind, detail = UpdateInstaller.install(plugin_dir, RESULT)
+
+			assert.is_true(ok, tostring(kind) .. " " .. tostring(detail))
+			assert.are.equal("-- new main", read(ffiUtil.joinPath(plugin_dir, "main.lua")))
 		end)
 
 		it("refuses when there is no plugin directory to replace", function()

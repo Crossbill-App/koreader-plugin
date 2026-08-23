@@ -46,8 +46,12 @@ UpdateInstaller.MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
 UpdateInstaller.MAX_SIGNATURE_BYTES = 1024
 
 -- Room demanded before extracting: the archive on disk, plus what it unpacks
--- to, plus the copy being replaced, which all exist at once during the swap.
-UpdateInstaller.SPACE_FACTOR = 4
+-- to, both of which exist at once. The copy being replaced is already on disk
+-- and is renamed rather than copied, so it asks for nothing more. Measured
+-- against the plugin as it stands, Lua sources compress about three and a half
+-- times, so this is that with room to spare rather than a number with nothing
+-- behind it.
+UpdateInstaller.SPACE_FACTOR = 6
 
 -- What a plugin directory must contain to be one at all. Checked on the staged
 -- copy before it replaces anything, so an archive that unpacked to something
@@ -253,12 +257,13 @@ function UpdateInstaller.install(plugin_dir, result)
 	end
 
 	local parent = ffiUtil.dirname(plugin_dir)
-	-- df reports total, free and available; only the last says what this
-	-- process may actually use.
-	local available = select(3, ffiUtil.df(parent))
+	-- Two values, not three: KOReader's `df` reports the filesystem's size and
+	-- what is free on it, and stops there. Asking it for a third leaves nil,
+	-- which reads as "no answer" and skips the check on every device.
+	local _, free = ffiUtil.df(parent)
 	local needed = #archive * UpdateInstaller.SPACE_FACTOR
-	if available and available < needed then
-		return false, UpdateInstaller.FAILED, string.format("needs %d bytes, %d available", needed, available)
+	if free and free < needed then
+		return false, UpdateInstaller.FAILED, string.format("needs %d bytes, %d free", needed, free)
 	end
 
 	local archive_path = ffiUtil.joinPath(parent, "crossbill-update.zip")

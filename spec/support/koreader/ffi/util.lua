@@ -20,17 +20,19 @@ local util = {}
 -- What `df` reports until a spec says otherwise: room enough for anything
 util.free_space = 1024 * 1024 * 1024
 
---- Set what the next `df` reports as available
+--- Set what the next `df` reports as free
 -- @param bytes number The free space to report
 function util.setFreeSpace(bytes)
 	util.free_space = bytes
 end
 
---- Report the filesystem's size, free space and available space
--- The real one reads statvfs; this reports what the spec asked for.
--- @return number, number, number Total, free and available bytes
+--- Report the filesystem's size and how much of it is free
+-- Two values, as the real one returns: nothing in KOReader itself calls `df`,
+-- so a stub that answered a third would be the only thing saying there is one,
+-- and code reading it would pass here and check nothing on a device.
+-- @return number, number Total and free bytes
 function util.df()
-	return util.free_space, util.free_space, util.free_space
+	return util.free_space, util.free_space
 end
 
 --- The last component of a path, with any trailing slashes ignored
