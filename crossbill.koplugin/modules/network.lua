@@ -153,16 +153,22 @@ end
 --- Make a JSON GET request
 -- @param url string The URL to request
 -- @param token string|nil Bearer token for authorization
+-- @param extra_headers table|nil Headers a particular host insists on, added
+--   last so a caller can also replace one of the defaults
 -- @return number|nil HTTP status code
 -- @return table|nil Parsed JSON response
 -- @return string|nil Error message
-function Network.getJson(url, token)
+function Network.getJson(url, token, extra_headers)
 	local headers = {
 		["Accept"] = "application/json",
 	}
 
 	if token then
 		headers["Authorization"] = "Bearer " .. token
+	end
+
+	for name, value in pairs(extra_headers or {}) do
+		headers[name] = value
 	end
 
 	local code, response_text, err = Network.request({

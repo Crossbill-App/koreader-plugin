@@ -28,6 +28,7 @@ local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
 local DocumentSupport = require("modules/document_support")
 local UpgradeRequired = require("modules/upgrade_required")
+local UpdateCheck = require("modules/update_check")
 
 local CrossbillSync = WidgetContainer:extend({
 	name = "Crossbill",
@@ -152,7 +153,54 @@ function CrossbillSync:addToMainMenu(menu_items)
 		on_configure_min_session_duration = function()
 			UI.showMinSessionDurationDialog(self.settings)
 		end,
+		on_check_for_updates = function()
+			self:checkForUpdates()
+		end,
 	})
+end
+
+--- Find out whether a newer plugin version has been published
+-- Follows the digest path: WiFi is turned on if it is off, the check runs once
+-- the device is online, and WiFi goes back off afterwards if the plugin was the
+-- one that turned it on.
+function CrossbillSync:checkForUpdates()
+	local callback = function()
+		self:performUpdateCheck()
+	end
+
+	if not Network.ensureWifiEnabled(callback) then
+		-- WiFi is being enabled; the callback runs when online
+		logger.info("Crossbill: Waiting for WiFi to check for updates...")
+		return
+	end
+
+	self:performUpdateCheck()
+end
+
+--- Ask what the newest release is and report what came back
+-- The "checking" message has no timeout, so it and the WiFi are both cleared
+-- here, before anything else can return.
+function CrossbillSync:performUpdateCheck()
+	local checking = UI.showUpdateChecking()
+
+	local completed, result, err = UpdateCheck.check()
+
+	UI.dismiss(checking)
+	Network.disableWifiIfNeeded()
+
+	if not completed then
+		-- The reader is told one thing whatever went wrong; this is where the
+		-- difference is kept.
+		logger.err("Crossbill: Update check failed:", tostring(err))
+		UI.showUpdateCheckFailed()
+		return
+	end
+
+	if result.update_available then
+		UI.showUpdateAvailable(result)
+	else
+		UI.showNoUpdate(result)
+	end
 end
 
 --- Show server configuration dialog

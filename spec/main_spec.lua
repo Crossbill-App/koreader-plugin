@@ -19,6 +19,9 @@ local NetworkFake = {
 local real_network = package.loaded["modules/network"]
 package.loaded["modules/network"] = NetworkFake
 local CrossbillSync = require("main")
+-- Loaded while the fake was seeded, so this is the same module main holds, and
+-- stubbing its check here is what the plugin will call.
+local UpdateCheck = require("modules/update_check")
 package.loaded["modules/network"] = real_network
 
 local REFUSAL = UpgradeRequired.fromResponse(426, {
@@ -193,6 +196,115 @@ describe("CrossbillSync", function()
 			assert.are.same({
 				"No digest generated for this book yet. Generate it in the Crossbill web app.",
 			}, shownTexts())
+		end)
+	end)
+	describe("checkForUpdates", function()
+		local waiting_callback
+
+		before_each(function()
+			waiting_callback = nil
+			stub(NetworkFake, "disableWifiIfNeeded")
+		end)
+
+		--- Put a field back if this test replaced it
+		-- A stub is a callable table where the original is a plain function,
+		-- which is how the two are told apart.
+		-- @param holder table The table the field lives on
+		-- @param name string The field
+		local function revertIfStubbed(holder, name)
+			if type(holder[name]) == "table" then
+				holder[name]:revert()
+			end
+		end
+
+		after_each(function()
+			NetworkFake.disableWifiIfNeeded:revert()
+			revertIfStubbed(UpdateCheck, "check")
+			revertIfStubbed(NetworkFake, "ensureWifiEnabled")
+		end)
+
+		--- Answer every check with the same outcome
+		-- @param completed boolean Whether the check got an answer
+		-- @param result table|nil What it learned
+		-- @param err string|nil What went wrong
+		local function checkReturning(completed, result, err)
+			stub(UpdateCheck, "check").returns(completed, result, err)
+		end
+
+		--- Leave the device offline, keeping the callback WiFi would run
+		local function wifiOff()
+			stub(NetworkFake, "ensureWifiEnabled").invokes(function(callback)
+				waiting_callback = callback
+				return false
+			end)
+		end
+
+		it("reports a newer release and puts WiFi back as it found it", function()
+			checkReturning(true, {
+				current = "0.12.0",
+				latest = "0.13.0",
+				update_available = true,
+				ahead = false,
+				release_url = "https://example.test/releases/tag/v0.13.0",
+			})
+
+			pluginWith({}):checkForUpdates()
+
+			assert.are.same({ "Checking for updates..." }, closedTexts())
+			assert.are.same({
+				"Checking for updates...",
+				"Crossbill Sync 0.13.0 is available.\nYou have 0.12.0.\n\nDownload:\nhttps://example.test/releases/tag/v0.13.0",
+			}, shownTexts())
+			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+		end)
+
+		it("says the plugin is ahead rather than up to date", function()
+			checkReturning(true, {
+				current = "0.14.0",
+				latest = "0.13.0",
+				update_available = false,
+				ahead = true,
+			})
+
+			pluginWith({}):checkForUpdates()
+
+			assert.are.same({
+				"Checking for updates...",
+				"You are running 0.14.0.\nThe latest release is 0.13.0.",
+			}, shownTexts())
+		end)
+
+		it("clears the message and the WiFi when the check fails", function()
+			-- The failure path is the one that would otherwise leave a message
+			-- with no timeout on screen and the radio on.
+			checkReturning(false, nil, "HTTP 500")
+
+			pluginWith({}):checkForUpdates()
+
+			assert.are.same({ "Checking for updates..." }, closedTexts())
+			assert.are.same({
+				"Checking for updates...",
+				"Could not check for updates. Please try again later.",
+			}, shownTexts())
+			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+		end)
+
+		it("waits for WiFi rather than checking while offline", function()
+			wifiOff()
+			checkReturning(true, { current = "0.12.0", latest = "0.12.0", update_available = false, ahead = false })
+
+			pluginWith({}):checkForUpdates()
+
+			assert.are.same({}, shownTexts())
+			assert.stub(UpdateCheck.check).was_not_called()
+
+			waiting_callback()
+
+			assert.are.same({
+				"Checking for updates...",
+				"Crossbill Sync 0.12.0 is the latest version.",
+			}, shownTexts())
+			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
 		end)
 	end)
 end)
