@@ -217,6 +217,30 @@ say "The default location is outside the repo, in your home directory."
 ask CROSSBILL_SIGNING_KEY_PATH "Where should the private key live? [$HOME/.crossbill/signing.pem]"
 [[ -z "$CROSSBILL_SIGNING_KEY_PATH" ]] && CROSSBILL_SIGNING_KEY_PATH="$HOME/.crossbill/signing.pem"
 
+# A tilde typed at a prompt is a character, not a home directory: the shell only
+# expands one it reads as source. Left alone, "~/keys/x.pem" makes a directory
+# literally called "~" under whatever the working directory happens to be.
+CROSSBILL_SIGNING_KEY_PATH="${CROSSBILL_SIGNING_KEY_PATH/#\~\//$HOME/}"
+
+# And an answer relative to the working directory is relative to the repository,
+# since that is where this is run from.
+case "$CROSSBILL_SIGNING_KEY_PATH" in
+  /*) ;;
+  *) CROSSBILL_SIGNING_KEY_PATH="$PWD/$CROSSBILL_SIGNING_KEY_PATH" ;;
+esac
+
+# The one place the key must never go is the repository it signs releases for,
+# where a stray `git add -A` would publish it.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$REPO_ROOT" && "$CROSSBILL_SIGNING_KEY_PATH" == "$REPO_ROOT"/* ]]; then
+  warn "That is inside the repository: $CROSSBILL_SIGNING_KEY_PATH"
+  say "A private key there is one 'git add -A' from being published."
+  say "Choose somewhere outside it, such as $HOME/.crossbill/signing.pem"
+  exit 1
+fi
+
+say "Using $CROSSBILL_SIGNING_KEY_PATH"
+
 if [[ -f "$CROSSBILL_SIGNING_KEY_PATH" ]]; then
   say "A key already exists at that path, so it is kept."
   warn "Generating a new one would strand every reader running a published version."
