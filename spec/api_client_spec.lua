@@ -126,7 +126,7 @@ describe("ApiClient", function()
 		it("sends the highlights, the book and the device", function()
 			local payload = payloadFor({ A_HIGHLIGHT })
 
-			assert.are.equal(BASE_URL .. "/api/v1/highlights/upload", NetworkFake.posted[1].url)
+			assert.are.equal(BASE_URL .. "/api/v1/highlights/sync", NetworkFake.posted[1].url)
 			assert.are.equal(TOKEN, NetworkFake.posted[1].token)
 			assert.are.equal(CLIENT_BOOK_ID, payload.client_book_id)
 			assert.are.equal("device-1", payload.device_id)
@@ -195,6 +195,41 @@ describe("ApiClient", function()
 			assert.is_false(ok)
 			assert.are.equal("Invalid credentials", err)
 			assert.are.same({}, NetworkFake.posted)
+		end)
+	end)
+
+	describe("uploadReadingSessions", function()
+		it("sends the sessions to the sync endpoint in the API's own shape", function()
+			NetworkFake.setPostResult(200, { created_count = 1, skipped_duplicate_count = 0 })
+
+			local ok = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {
+				{
+					start_time = 1700000000,
+					end_time = 1700003600,
+					device_id = "device-1",
+					start_page = 10,
+					end_page = 15,
+					position_type = "xpointer",
+					start_position = "/body/div[1]/p[1]",
+					end_position = "/body/div[1]/p[50]",
+				},
+			})
+
+			assert.is_true(ok)
+			assert.are.equal(BASE_URL .. "/api/v1/reading_sessions/sync", NetworkFake.posted[1].url)
+			local payload = NetworkFake.posted[1].data
+			assert.are.equal(CLIENT_BOOK_ID, payload.client_book_id)
+			assert.are.same({
+				{
+					start_time = "2023-11-14T22:13:20Z",
+					end_time = "2023-11-14T23:13:20Z",
+					device_id = "device-1",
+					start_page = 10,
+					end_page = 15,
+					start_xpoint = "/body/div[1]/p[1]",
+					end_xpoint = "/body/div[1]/p[50]",
+				},
+			}, payload.sessions)
 		end)
 	end)
 

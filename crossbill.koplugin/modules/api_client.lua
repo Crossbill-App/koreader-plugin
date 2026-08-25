@@ -161,7 +161,7 @@ function ApiClient:uploadHighlights(client_book_id, highlights, device_id, remov
 		removed_ids = (removed_ids and #removed_ids > 0) and removed_ids or nil,
 	}
 
-	local api_url = self:getApiUrl() .. "/highlights/upload"
+	local api_url = self:getApiUrl() .. "/highlights/sync"
 	logger.dbg("Crossbill API: Sending highlights to", api_url)
 
 	local code, response_data, err = postJson(api_url, payload, token)
@@ -350,7 +350,7 @@ function ApiClient:uploadReadingSessions(client_book_id, sessions)
 		sessions = (#api_sessions > 0) and api_sessions or empty_array,
 	}
 
-	local api_url = self:getApiUrl() .. "/reading_sessions/upload"
+	local api_url = self:getApiUrl() .. "/reading_sessions/sync"
 	logger.dbg("Crossbill API: Sending", #api_sessions, "reading sessions to", api_url)
 
 	local code, response_data, err = postJson(api_url, payload, token)
