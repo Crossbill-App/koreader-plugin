@@ -81,6 +81,13 @@ install_test() {
     # (Lua caches "modules/ui" globally, so both plugins would share the same module)
     mv "$test_dir/modules" "$test_dir/test_modules"
 
+    # Same for _meta, which four modules require and which KOReader also reads
+    # by path for the plugin's own name and version. The file has to keep its
+    # name for KOReader, so the copy the plugin requires gets a new one: whoever
+    # loaded first was otherwise answering for both plugins, and the production
+    # plugin would report the test build's name and version as its own.
+    cp "$test_dir/_meta.lua" "$test_dir/test_meta.lua"
+
     # Modify main.lua for test version
     # Change the class name
     sed -i 's/name = "Crossbill"/name = "Crossbill Test"/' "$test_dir/main.lua"
@@ -95,8 +102,11 @@ install_test() {
         -e 's/Sync current book with Crossbill/Sync current book with Crossbill Test/' \
         -e 's/Crossbill chapter digest/Crossbill Test chapter digest/' \
         "$test_dir/main.lua"
-    # Update require paths to use renamed modules directory (in main.lua and all module files)
-    find "$test_dir" -name "*.lua" -exec sed -i 's|require("modules/|require("test_modules/|g' {} \;
+    # Update require paths to use the renamed modules and meta (in main.lua and
+    # all module files)
+    find "$test_dir" -name "*.lua" -exec sed -i \
+        -e 's|require("modules/|require("test_modules/|g' \
+        -e 's|require("_meta")|require("test_meta")|g' {} \;
 
     # Modify test_modules/settings.lua for test version
     # Change settings key to separate from production version
@@ -117,6 +127,26 @@ install_test() {
     # Modify test_modules/highlight_snapshot_store.lua for test version
     # Change database filename to avoid conflicts with production
     sed -i 's/crossbill_highlights\.sqlite3/test_crossbill_highlights.sqlite3/g' "$test_dir/test_modules/highlight_snapshot_store.lua"
+
+    # Nothing in the test build may require a name the production plugin also
+    # uses. Lua caches a module by name, so a shared name means whichever
+    # plugin KOReader loads first answers for both -- which is not an error
+    # anywhere, just the wrong plugin's answer. Checked rather than trusted,
+    # because the renames above have to be remembered every time a module or a
+    # top-level file is added, and forgetting one looks like a plugin bug.
+    local shared=""
+    while read -r module; do
+        if [ -f "$REPO_ROOT/crossbill.koplugin/$module.lua" ]; then
+            shared="$shared  $module"$'\n'
+        fi
+    done < <(grep -rhoE 'require\("[^"]+"\)' "$test_dir" | sed -E 's/require\("(.*)"\)/\1/' | sort -u)
+
+    if [ -n "$shared" ]; then
+        echo "Error: the test plugin requires names the production plugin also uses:"
+        printf '%s' "$shared"
+        echo "Both would share one copy of each. Rename them in $0."
+        exit 1
+    fi
 
     # Copy test plugin to destination
     rm -rf "$KOREADER_PLUGINS_PATH/crossbill-test.koplugin"
