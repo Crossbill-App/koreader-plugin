@@ -161,27 +161,18 @@ function CrossbillSync:addToMainMenu(menu_items)
 end
 
 --- Find out whether a newer plugin version has been published
--- Follows the digest path: WiFi is turned on if it is off, the check runs once
--- the device is online, and WiFi goes back off afterwards if the plugin was the
--- one that turned it on.
+-- WiFi is turned on if it is off, the check runs once the device is online, and
+-- WiFi goes back off afterwards if the plugin was the one that turned it on.
 function CrossbillSync:checkForUpdates()
-	local callback = function()
-		self:performUpdateCheck()
-	end
-
-	if not Network.ensureWifiEnabled(callback) then
-		-- WiFi is being enabled; the callback runs when online
-		logger.info("Crossbill: Waiting for WiFi to check for updates...")
-		return
-	end
-
-	self:performUpdateCheck()
+	Network.whenOnline(function()
+		self:_updateCheck()
+	end)
 end
 
 --- Ask what the newest release is and report what came back
 -- The "checking" message has no timeout, so it and the WiFi are both cleared
 -- here, before anything else can return.
-function CrossbillSync:performUpdateCheck()
+function CrossbillSync:_updateCheck()
 	local checking = UI.showUpdateChecking()
 
 	local completed, result, err = UpdateCheck.check()
@@ -213,16 +204,9 @@ end
 -- find the answer has expired.
 -- @param result table The check result, carrying the archive and its signature
 function CrossbillSync:installUpdate(result)
-	local callback = function()
-		self:performInstall(result)
-	end
-
-	if not Network.ensureWifiEnabled(callback) then
-		logger.info("Crossbill: Waiting for WiFi to install the update...")
-		return
-	end
-
-	self:performInstall(result)
+	Network.whenOnline(function()
+		self:_install(result)
+	end)
 end
 
 --- Install the update and ask for the restart that brings it into use
@@ -230,7 +214,7 @@ end
 -- honest answer to what should be replaced: a reader may have renamed it, and
 -- the installer refuses rather than guessing when the archive does not match.
 -- @param result table The check result
-function CrossbillSync:performInstall(result)
+function CrossbillSync:_install(result)
 	local installing = UI.showInstallingUpdate()
 
 	local ok, kind, detail = UpdateInstaller.install(self.path, result)
@@ -304,28 +288,21 @@ function CrossbillSync:showChapterDigest()
 	local client_book_id = book_data.client_book_id
 	local item, err_kind, err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
 
-	-- Anything other than a missing cache can be shown immediately (no network needed).
-	if err_kind ~= "no_cache" then
+	-- Anything other than a missing cache can be shown immediately (no network
+	-- needed), and so can a missing cache on a device that is already online:
+	-- the fetch that just failed would only fail the same way again.
+	if err_kind ~= "no_cache" or Network.isConnected() then
 		self:_showDigestResult(item, err_kind, err)
 		return
 	end
 
-	-- Nothing cached and the fetch failed: retry once online if WiFi is off.
-	local callback = function()
+	-- Nothing cached and no connection to fetch one over: ask for WiFi and try
+	-- the once more that is worth trying.
+	Network.whenOnline(function()
 		local retry_item, retry_err_kind, retry_err = self.digest_service:getForCurrentChapter(self.ui, client_book_id)
 		self:_showDigestResult(retry_item, retry_err_kind, retry_err)
 		Network.disableWifiIfNeeded()
-	end
-
-	if not Network.ensureWifiEnabled(callback) then
-		-- WiFi is being enabled; callback will run when online
-		logger.info("Crossbill: Waiting for WiFi to show digest...")
-		return
-	end
-
-	-- Already online but still no cache: the fetch genuinely failed
-	self:_showDigestResult(item, err_kind, err)
-	Network.disableWifiIfNeeded()
+	end)
 end
 
 --- Check if session tracking is currently active
@@ -342,32 +319,57 @@ function CrossbillSync:syncCurrentBook(is_autosync)
 		return
 	end
 
-	local callback = function()
-		self:performSync(is_autosync)
-	end
-
-	if not Network.ensureWifiEnabled(callback) then
-		-- WiFi is being enabled, callback will be called when ready
-		logger.info("Crossbill: Waiting for WiFi to be enabled...")
-	else
-		-- WiFi already on, sync immediately
-		self:performSync(is_autosync)
-	end
+	Network.whenOnline(function()
+		self:_runSync(is_autosync)
+	end)
 end
 
---- Perform the actual sync operation
+--- Run one sync from start to finish, including what has to follow it
 -- @param is_autosync boolean If true, run in silent mode
-function CrossbillSync:performSync(is_autosync)
+function CrossbillSync:_runSync(is_autosync)
 	-- Safety check: ensure document is available
 	if not self.ui.document then
 		logger.warn("Crossbill: Cannot sync - no document available")
 		return
 	end
 
+	local sync = function()
+		if not is_autosync then
+			self.syncing_message = UI.showSyncingMessage()
+		end
+
+		-- End current session before sync so it gets included
+		if self:isSessionTrackingActive() and self.session_tracker:hasActiveSession() then
+			self.session_tracker:endSession(self.ui.document, self.ui, "manual_sync")
+		end
+
+		local success, err = pcall(function()
+			self:doSync(is_autosync)
+		end)
+
+		-- Past this point the message is the timeout's to clear, not the sync's.
+		self.syncing_message = nil
+
+		if not success then
+			logger.err("Crossbill: Error in sync:", err)
+			if not is_autosync then
+				UI.showSyncError(err)
+			end
+		end
+
+		-- Restart session after sync so reading continues to be tracked
+		if self:isSessionTrackingActive() and self.ui.document then
+			self.session_tracker:startSession(self.ui.document, self.ui)
+		end
+
+		-- Always clean up WiFi after sync
+		Network.disableWifiIfNeeded()
+	end
+
 	if is_autosync then
 		-- An autosync runs while the book is being torn down and has nobody to
 		-- put a question to, so it stays a plain call that never blocks.
-		self:_runSync(true)
+		sync()
 		return
 	end
 
@@ -376,44 +378,7 @@ function CrossbillSync:performSync(is_autosync)
 	-- coroutine. Everything after the question -- the summary, the restarted
 	-- session, the WiFi cleanup -- has to resume in that same coroutine, so the
 	-- whole sync goes inside the wrapper rather than just the dialog.
-	Trapper:wrap(function()
-		self:_runSync(false)
-	end)
-end
-
---- Run one sync from start to finish, including what has to follow it
--- @param is_autosync boolean If true, run in silent mode
-function CrossbillSync:_runSync(is_autosync)
-	if not is_autosync then
-		self.syncing_message = UI.showSyncingMessage()
-	end
-
-	-- End current session before sync so it gets included
-	if self:isSessionTrackingActive() and self.session_tracker:hasActiveSession() then
-		self.session_tracker:endSession(self.ui.document, self.ui, "manual_sync")
-	end
-
-	local success, err = pcall(function()
-		self:doSync(is_autosync)
-	end)
-
-	-- Past this point the message is the timeout's to clear, not the sync's.
-	self.syncing_message = nil
-
-	if not success then
-		logger.err("Crossbill: Error in sync:", err)
-		if not is_autosync then
-			UI.showSyncError(err)
-		end
-	end
-
-	-- Restart session after sync so reading continues to be tracked
-	if self:isSessionTrackingActive() and self.ui.document then
-		self.session_tracker:startSession(self.ui.document, self.ui)
-	end
-
-	-- Always clean up WiFi after sync
-	Network.disableWifiIfNeeded()
+	Trapper:wrap(sync)
 end
 
 --- Tell the reader the server has turned this plugin away

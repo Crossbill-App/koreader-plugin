@@ -105,8 +105,27 @@ function SocketUtilFake.lastTimeout()
 	return SocketUtilFake.timeouts[#SocketUtilFake.timeouts]
 end
 
--- Only WiFi handling touches the manager, and no test here does.
-local NetworkMgrFake = {}
+-- WiFi handling is the one thing here that goes through the manager: it answers
+-- whether the device is online, keeps the work it was asked to defer, and
+-- counts the times it was told to turn the radio back off.
+local NetworkMgrFake = { online = true, deferred = nil, turned_off = 0 }
+
+--- Take the work now if the device is offline, as KOReader's manager does
+-- @param callback function What to run once the device is online
+-- @return boolean True when the work was deferred
+function NetworkMgrFake:willRerunWhenOnline(callback)
+	if self.online then
+		return false
+	end
+
+	self.deferred = callback
+	return true
+end
+
+--- Count a request to turn WiFi off
+function NetworkMgrFake:turnOffWifi()
+	self.turned_off = self.turned_off + 1
+end
 
 -- The support stub decodes only the one literal `modules/api_client` needs, and
 -- `postJson` has a payload to encode, so this spec brings its own.
@@ -161,6 +180,9 @@ describe("Network", function()
 		JsonFake.decoded = nil
 		SocketUtilFake.timeouts = {}
 		SocketUtilFake.resets = 0
+		NetworkMgrFake.online = true
+		NetworkMgrFake.deferred = nil
+		NetworkMgrFake.turned_off = 0
 	end)
 
 	--- The client header the request recorded last carried
@@ -348,6 +370,53 @@ describe("Network", function()
 
 			assert.are.equal(200, code)
 			assert.are.equal(5000, #body)
+		end)
+	end)
+
+	describe("waiting for the device to be online", function()
+		it("runs the work straight away when it already is", function()
+			local ran = false
+
+			Network.whenOnline(function()
+				ran = true
+			end)
+
+			assert.is_true(ran)
+		end)
+
+		it("holds the work until the reader has connected", function()
+			-- The caller is told nothing either way; the work runs once, when
+			-- there is a connection to run it over.
+			NetworkMgrFake.online = false
+			local ran = false
+
+			Network.whenOnline(function()
+				ran = true
+			end)
+
+			assert.is_false(ran)
+
+			NetworkMgrFake.deferred()
+
+			assert.is_true(ran)
+		end)
+
+		it("puts WiFi back off when it was the one that asked for it", function()
+			NetworkMgrFake.online = false
+
+			Network.whenOnline(function() end)
+			Network.disableWifiIfNeeded()
+
+			assert.are.equal(1, NetworkMgrFake.turned_off)
+		end)
+
+		it("leaves WiFi the reader already had on alone", function()
+			-- Turning off a radio the plugin did not turn on would cut off
+			-- whatever else the reader was doing with it.
+			Network.whenOnline(function() end)
+			Network.disableWifiIfNeeded()
+
+			assert.are.equal(0, NetworkMgrFake.turned_off)
 		end)
 	end)
 end)
