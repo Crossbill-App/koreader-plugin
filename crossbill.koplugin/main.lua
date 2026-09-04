@@ -17,6 +17,7 @@ local Network = require("modules/network")
 local Auth = require("modules/auth")
 local ApiClient = require("modules/api_client")
 local SessionTracker = require("modules/sessiontracker")
+local SessionStore = require("modules/session_store")
 local DigestCache = require("modules/digest_cache")
 local DigestService = require("modules/digest_service")
 local FileUploader = require("modules/file_uploader")
@@ -86,8 +87,8 @@ function CrossbillSync:init()
 	-- Initialize file uploader with API client
 	self.file_uploader = FileUploader:new(self.api_client)
 
-	-- Initialize session tracker with settings
-	self.session_tracker = SessionTracker:new(self.settings)
+	-- Initialize the session tracker over its own SQLite store
+	self.session_tracker = SessionTracker:new({ settings = self.settings, store = SessionStore:new() })
 	self.session_tracker:init(DataStorage:getSettingsDir())
 
 	-- Initialize digest cache (SQLite) and service

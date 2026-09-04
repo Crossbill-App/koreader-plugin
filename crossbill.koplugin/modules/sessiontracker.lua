@@ -1,22 +1,24 @@
 --[[
 Session Tracker Module for Crossbill Sync
 
-Tracks reading sessions locally in a SQLite3 database.
-Stores device-independent position data (XPointers for reflowable docs,
-page numbers for fixed-layout docs) for later sync and analytics.
+Decides what a reading session is: when one starts, where the reader had got to
+when it stopped, and when a gap means it stopped long before anyone noticed.
+Device-independent position data (XPointers for reflowable docs, page numbers
+for fixed-layout docs) is what it records, for later sync and analytics.
+
+Where the sessions are kept is `modules/session_store`'s business, and it
+arrives as a dependency: specs stand an in-memory store in its place, so none of
+the reasoning below needs the reader's SQLite binding to be exercised. The clock
+arrives the same way, because a gap and a throttle are both read off it.
 ]]
 
 local logger = require("logger")
-local SQ3 = require("lua-ljsqlite3/init")
 local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
 
 local SessionTracker = {}
 SessionTracker.__index = SessionTracker
-
--- Constants
-local DB_FILENAME = "crossbill_sessions.sqlite3"
 
 -- A gap this long between page turns means reading stopped: the reader put the
 -- book down, or the device suspended without telling us (onSuspend is not
@@ -29,95 +31,73 @@ local SESSION_ACTIVITY_GAP_SECONDS = 1800
 -- would never move during a session.
 local POSITION_CAPTURE_INTERVAL_SECONDS = 60
 
--- Database schema
-local SCHEMA = [[
-CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    book_file TEXT NOT NULL,
-    book_hash TEXT NOT NULL,
-    book_title TEXT,
-    book_author TEXT,
-    start_time INTEGER NOT NULL,
-    end_time INTEGER NOT NULL,
-    duration_seconds INTEGER,
-    position_type TEXT NOT NULL,
-    start_position TEXT NOT NULL,
-    end_position TEXT NOT NULL,
-    start_page INTEGER,
-    end_page INTEGER,
-    total_pages INTEGER,
-    synced INTEGER DEFAULT 0,
-    sync_attempts INTEGER DEFAULT 0,
-    created_at INTEGER DEFAULT (strftime('%s', 'now')),
-    device_id TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_book_hash ON sessions(book_hash);
-CREATE INDEX IF NOT EXISTS idx_sessions_synced ON sessions(synced);
-CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
-]]
+--- Ask the store for something without letting it raise
+-- Every path below is reached from a KOReader event handler, and a page turn
+-- that ends in an error is a page turn the reader loses, so a store that blows
+-- up is logged and answered as nothing.
+-- @param what string What was being asked, for the log line
+-- @param fn function Makes the call and returns its answer
+-- @return any The store's answer, nil when the call raised
+local function guarded(what, fn)
+	local ok, answer = pcall(fn)
+	if not ok then
+		logger.err("Crossbill SessionTracker: The store failed to", what .. ":", answer)
+		return nil
+	end
+	return answer
+end
 
 --- Create a new SessionTracker instance
--- @param settings Settings instance for accessing configuration
+-- @param deps table Collaborators:
+--   settings Settings instance for accessing configuration
+--   store The session store to keep finished sessions in
+--   now function|nil Reads the clock, defaulting to os.time
 -- @return SessionTracker instance
-function SessionTracker:new(settings)
+function SessionTracker:new(deps)
 	local instance = setmetatable({}, SessionTracker)
-	instance.db = nil
+	instance.settings = deps and deps.settings
+	instance.store = deps and deps.store
+	instance.now = (deps and deps.now) or os.time
 	instance.current_session = nil
-	instance.db_path = nil
 	instance._initialized = false
-	instance.settings = settings
 	return instance
 end
 
---- Initialize the session tracker with database
--- @param settings_dir string Path to KOReader settings directory
+--- Open the tracker's storage
+-- @param data_dir string Path to KOReader's settings directory
 -- @return boolean Success status
-function SessionTracker:init(settings_dir)
+function SessionTracker:init(data_dir)
 	if self._initialized then
 		return true
 	end
 
-	self.db_path = settings_dir .. "/" .. DB_FILENAME
-	logger.dbg("Crossbill SessionTracker: Initializing database at", self.db_path)
+	if not self.store then
+		logger.warn("Crossbill SessionTracker: No store to open")
+		return false
+	end
 
-	local success, err = pcall(function()
-		self.db = SQ3.open(self.db_path)
-		-- Enable WAL mode for better performance
-		self.db:exec("PRAGMA journal_mode=WAL;")
-		-- Create schema
-		self.db:exec(SCHEMA)
-		-- Migrate existing databases: add book_author column if missing
-		pcall(function()
-			self.db:exec("ALTER TABLE sessions ADD COLUMN book_author TEXT")
-		end)
+	local opened = guarded("open", function()
+		return self.store:open(data_dir)
 	end)
 
-	if not success then
-		logger.err("Crossbill SessionTracker: Failed to initialize database:", err)
-		self.db = nil
+	if not opened then
+		logger.err("Crossbill SessionTracker: The store would not open")
 		return false
 	end
 
 	self._initialized = true
-	logger.dbg("Crossbill SessionTracker: Database initialized successfully")
+	logger.dbg("Crossbill SessionTracker: Tracking sessions")
 	return true
 end
 
---- Close the database connection
+--- Close the tracker's storage
 function SessionTracker:close()
-	if self.db then
-		logger.dbg("Crossbill SessionTracker: Closing database")
-		local success, err = pcall(function()
-			-- Checkpoint WAL to ensure all data is written to main file
-			self.db:exec("PRAGMA wal_checkpoint(TRUNCATE);")
-			self.db:close()
+	if self._initialized then
+		guarded("close", function()
+			self.store:close()
 		end)
-		if not success then
-			logger.warn("Crossbill SessionTracker: Error closing database:", err)
-		end
-		self.db = nil
 	end
+
 	self._initialized = false
 	self.current_session = nil
 end
@@ -196,7 +176,7 @@ end
 -- @param document The document object
 -- @param ui The UI object
 function SessionTracker:startSession(document, ui)
-	if not self._initialized or not self.db then
+	if not self._initialized then
 		logger.warn("Crossbill SessionTracker: Cannot start session - not initialized")
 		return
 	end
@@ -265,7 +245,7 @@ function SessionTracker:startSession(document, ui)
 		end
 	end
 
-	local now = os.time()
+	local now = self.now()
 
 	self.current_session = {
 		book_file = file_path,
@@ -298,7 +278,7 @@ function SessionTracker:updatePosition(document, ui, pageno)
 		return
 	end
 
-	local now = os.time()
+	local now = self.now()
 	local idle_seconds = now - (session.last_activity_time or session.start_time)
 
 	-- A long gap means this page turn belongs to a new sitting, not the old
@@ -334,7 +314,7 @@ function SessionTracker:updatePosition(document, ui, pageno)
 	session.last_activity_time = now
 end
 
---- Save a finished session to the database
+--- Save a finished session to the store
 -- Shared by both end paths (fresh capture and retroactive end); the caller
 -- decides when the session ended and where it ended.
 -- @param session table The session being ended
@@ -343,8 +323,8 @@ end
 -- @param end_page number Page where reading stopped
 -- @param reason string Reason for ending
 function SessionTracker:_saveSession(session, end_time, end_position, end_page, reason)
-	if not self._initialized or not self.db then
-		logger.warn("Crossbill SessionTracker: Cannot save session - database not available")
+	if not self._initialized then
+		logger.warn("Crossbill SessionTracker: Cannot save session - store not available")
 		return
 	end
 
@@ -357,47 +337,29 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 		return
 	end
 
-	-- Save to database
-	local success, err = pcall(function()
-		local stmt = self.db:prepare([[
-            INSERT INTO sessions (
-                book_file, book_hash, book_title, book_author,
-                start_time, end_time, duration_seconds,
-                position_type, start_position, end_position,
-                start_page, end_page, total_pages,
-                device_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ]])
-
-		stmt:bind(
-			session.book_file,
-			session.book_hash,
-			session.book_title,
-			session.book_author,
-			session.start_time,
-			end_time,
-			duration,
-			session.position_type,
-			session.start_position,
-			end_position,
-			session.start_page,
-			end_page,
-			session.total_pages,
-			self:_getDeviceId()
-		)
-
-		stmt:step()
-		stmt:close()
+	local saved = guarded("save a session", function()
+		return self.store:saveSession({
+			book_file = session.book_file,
+			book_hash = session.book_hash,
+			book_title = session.book_title,
+			book_author = session.book_author,
+			start_time = session.start_time,
+			end_time = end_time,
+			duration_seconds = duration,
+			position_type = session.position_type,
+			start_position = session.start_position,
+			end_position = end_position,
+			start_page = session.start_page,
+			end_page = end_page,
+			total_pages = session.total_pages,
+			device_id = self:_getDeviceId(),
+		})
 	end)
 
-	if success then
+	if saved then
 		logger.dbg("Crossbill SessionTracker: Saved session (", duration, "seconds) - reason:", reason)
-		-- Checkpoint WAL to ensure data is written to main file
-		pcall(function()
-			self.db:exec("PRAGMA wal_checkpoint(PASSIVE);")
-		end)
 	else
-		logger.err("Crossbill SessionTracker: Failed to save session:", err)
+		logger.err("Crossbill SessionTracker: Failed to save session - reason:", reason)
 	end
 end
 
@@ -418,7 +380,7 @@ function SessionTracker:_endSessionAtLastActivity(reason)
 	self.current_session = nil
 end
 
---- End current session and save to database
+--- End current session and save it
 -- @param document The document object
 -- @param ui The UI object
 -- @param reason string Reason for ending ("document_close", "suspend", "app_exit", "new_session")
@@ -429,13 +391,13 @@ function SessionTracker:endSession(document, ui, reason)
 		return
 	end
 
-	if not self._initialized or not self.db then
-		logger.warn("Crossbill SessionTracker: Cannot end session - database not available")
+	if not self._initialized then
+		logger.warn("Crossbill SessionTracker: Cannot end session - store not available")
 		self.current_session = nil
 		return
 	end
 
-	local end_time = os.time()
+	local end_time = self.now()
 	local idle_seconds = end_time - (session.last_activity_time or session.start_time)
 
 	-- Reading stopped long ago; end the session there rather than now.
@@ -470,91 +432,26 @@ end
 -- @param session_ids table Array of session IDs to mark as synced
 -- @return boolean Success status
 function SessionTracker:markSessionsSynced(session_ids)
-	if not self._initialized or not self.db then
+	if not self._initialized then
 		return false
 	end
 
-	if not session_ids or #session_ids == 0 then
-		return true
-	end
-
-	local success, err = pcall(function()
-		-- Build placeholder string for IN clause
-		local placeholders = {}
-		for i = 1, #session_ids do
-			placeholders[i] = "?"
-		end
-
-		local sql = "UPDATE sessions SET synced = 1 WHERE id IN (" .. table.concat(placeholders, ",") .. ")"
-		local stmt = self.db:prepare(sql)
-		stmt:bind(unpack(session_ids))
-		stmt:step()
-		stmt:close()
-	end)
-
-	if not success then
-		logger.err("Crossbill SessionTracker: Error marking sessions as synced:", err)
-		return false
-	end
-
-	return true
+	return guarded("mark sessions as synced", function()
+		return self.store:markSessionsSynced(session_ids)
+	end) or false
 end
 
 --- Get unsynced sessions for a specific book
 -- @param book_file_hash string MD5 hash of the book file path
 -- @return table Array of session records for API upload
 function SessionTracker:getUnsyncedSessionsForBook(book_file_hash)
-	if not self._initialized or not self.db then
+	if not self._initialized then
 		return {}
 	end
 
-	if not book_file_hash then
-		return {}
-	end
-
-	local sessions = {}
-	local success, err = pcall(function()
-		local stmt = self.db:prepare([[
-            SELECT s.id, s.book_file, s.book_hash, s.book_title, s.book_author,
-                   s.start_time, s.end_time, s.duration_seconds,
-                   s.position_type, s.start_position, s.end_position,
-                   s.start_page, s.end_page, s.total_pages,
-                   s.device_id, s.created_at
-            FROM sessions s
-            WHERE s.book_hash = ? AND s.synced = 0
-            ORDER BY s.start_time ASC
-        ]])
-
-		stmt:bind(book_file_hash)
-
-		for row in stmt:rows() do
-			table.insert(sessions, {
-				id = row[1],
-				book_file = row[2],
-				book_hash = row[3],
-				book_title = row[4],
-				book_author = row[5],
-				start_time = row[6],
-				end_time = row[7],
-				duration_seconds = row[8],
-				position_type = row[9],
-				start_position = row[10],
-				end_position = row[11],
-				start_page = row[12],
-				end_page = row[13],
-				total_pages = row[14],
-				device_id = row[15],
-				created_at = row[16],
-			})
-		end
-		stmt:close()
-	end)
-
-	if not success then
-		logger.err("Crossbill SessionTracker: Error fetching unsynced sessions for book:", err)
-	end
-
-	return sessions
+	return guarded("read a book's unsynced sessions", function()
+		return self.store:getUnsyncedSessionsForBook(book_file_hash)
+	end) or {}
 end
 
 --- Check if there's an active session

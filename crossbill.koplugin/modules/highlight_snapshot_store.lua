@@ -2,8 +2,8 @@
 Highlight Snapshot Store for Crossbill Sync
 
 The SQLite half of `modules/highlight_snapshot`: it keeps the rows and knows
-nothing about what they mean. Connection, WAL and lifecycle follow SessionTracker
-and DigestCache, in their own database file.
+nothing about what they mean. The connection, its WAL and its lifecycle belong
+to `modules/sqlite_store`; what is left here is the schema and the queries.
 
 `highlight_snapshot_book` exists so that a book enrolled with an empty server
 copy reads differently from a book that never pulled -- the same job
@@ -15,8 +15,7 @@ The ledger takes this store as a dependency rather than requiring it, so specs
 can stand in an in-memory store instead of the reader's SQLite binding.
 ]]
 
-local logger = require("logger")
-local SQ3 = require("lua-ljsqlite3/init")
+local SqliteStore = require("modules/sqlite_store")
 
 local HighlightSnapshotStore = {}
 HighlightSnapshotStore.__index = HighlightSnapshotStore
@@ -49,13 +48,45 @@ CREATE TABLE IF NOT EXISTS highlight_snapshot_book (
 );
 ]]
 
+-- A database from before per-file ownership never gets the column from the
+-- schema above, which only creates the table when it is missing.
+local MIGRATIONS = {
+	"ALTER TABLE highlight_snapshot_book ADD COLUMN book_file_hash TEXT",
+}
+
+local DELETE_BOOK = "DELETE FROM highlight_snapshot WHERE client_book_id = ?"
+
+-- INSERT OR REPLACE: a server that sent the same id twice would otherwise
+-- break the primary key and abort the whole snapshot.
+local INSERT_ROW = [[
+INSERT OR REPLACE INTO highlight_snapshot (
+    client_book_id, server_id, text_hash
+) VALUES (?, ?, ?)
+]]
+
+local INSERT_BOOK = [[
+INSERT OR REPLACE INTO highlight_snapshot_book (
+    client_book_id, book_file_hash, updated_at, item_count
+) VALUES (?, ?, ?, ?)
+]]
+
+-- Ordered by server id so a read is reproducible; the order carries no meaning.
+local SELECT_BOOK = [[
+SELECT server_id, text_hash
+FROM highlight_snapshot
+WHERE client_book_id = ?
+ORDER BY server_id ASC
+]]
+
+local SELECT_BOOK_FILE_HASH = "SELECT book_file_hash FROM highlight_snapshot_book WHERE client_book_id = ?"
+
+local SELECT_HAS_BOOK = "SELECT 1 FROM highlight_snapshot_book WHERE client_book_id = ? LIMIT 1"
+
 --- Create a new HighlightSnapshotStore instance
 -- @return HighlightSnapshotStore instance
 function HighlightSnapshotStore:new()
 	local instance = setmetatable({}, HighlightSnapshotStore)
-	instance.db = nil
-	instance.db_path = nil
-	instance._initialized = false
+	instance.store = SqliteStore:new("HighlightSnapshotStore")
 	return instance
 end
 
@@ -63,124 +94,46 @@ end
 -- @param data_dir string Path to KOReader's settings directory
 -- @return boolean Success status
 function HighlightSnapshotStore:open(data_dir)
-	if self._initialized then
-		return true
-	end
-
-	self.db_path = data_dir .. "/" .. DB_FILENAME
-	logger.dbg("Crossbill HighlightSnapshotStore: Initializing database at", self.db_path)
-
-	local success, err = pcall(function()
-		self.db = SQ3.open(self.db_path)
-		-- Enable WAL mode for better performance
-		self.db:exec("PRAGMA journal_mode=WAL;")
-		-- Create schema
-		self.db:exec(SCHEMA)
-		-- Migrate existing databases: add book_file_hash if missing. The schema
-		-- above only creates tables that are not there yet, so a database from
-		-- before per-file ownership never gets the column from it. On a fresh
-		-- database the column already exists and the ALTER fails harmlessly.
-		pcall(function()
-			self.db:exec("ALTER TABLE highlight_snapshot_book ADD COLUMN book_file_hash TEXT")
-		end)
-	end)
-
-	if not success then
-		logger.err("Crossbill HighlightSnapshotStore: Failed to initialize database:", err)
-		self.db = nil
-		return false
-	end
-
-	self._initialized = true
-	return true
+	return self.store:open(data_dir .. "/" .. DB_FILENAME, SCHEMA, MIGRATIONS)
 end
 
 --- Close the database connection
 function HighlightSnapshotStore:close()
-	if self.db then
-		logger.dbg("Crossbill HighlightSnapshotStore: Closing database")
-		local success, err = pcall(function()
-			-- Checkpoint WAL to ensure all data is written to main file
-			self.db:exec("PRAGMA wal_checkpoint(TRUNCATE);")
-			self.db:close()
-		end)
-		if not success then
-			logger.warn("Crossbill HighlightSnapshotStore: Error closing database:", err)
-		end
-		self.db = nil
-	end
-	self._initialized = false
+	self.store:close()
 end
 
 --- Replace a book's rows with the given set, in one transaction
 -- Also stamps the book as enrolled, which is what tells an empty snapshot from
--- an absent one, and records which file wrote the rows.
+-- an absent one, and records which file wrote the rows. Every statement counts:
+-- a snapshot missing a row would read as a highlight deleted on the device, so
+-- one that fails takes the whole replacement down with it.
 -- @param client_book_id string The client book ID
 -- @param rows table Array of {server_id, text_hash}
 -- @param book_file_hash string|nil Hash of the file the rows were placed in,
 --   stored as NULL when absent
 -- @return boolean Success status
 function HighlightSnapshotStore:replaceBook(client_book_id, rows, book_file_hash)
-	if not self._initialized or not self.db then
-		logger.warn("Crossbill HighlightSnapshotStore: Cannot replace book - database not available")
-		return false
-	end
-
 	rows = rows or {}
 
-	local success, err = pcall(function()
-		self.db:exec("BEGIN TRANSACTION;")
-
-		local del_stmt = self.db:prepare("DELETE FROM highlight_snapshot WHERE client_book_id = ?")
-		del_stmt:bind(client_book_id)
-		del_stmt:step()
-		del_stmt:close()
-
-		-- INSERT OR REPLACE: a server that sent the same id twice would
-		-- otherwise break the primary key and abort the whole snapshot.
-		local ins_stmt = self.db:prepare([[
-            INSERT OR REPLACE INTO highlight_snapshot (
-                client_book_id, server_id, text_hash
-            ) VALUES (?, ?, ?)
-        ]])
-
-		for _, row in ipairs(rows) do
-			ins_stmt:reset()
-			ins_stmt:bind(client_book_id, row.server_id, row.text_hash)
-			ins_stmt:step()
+	return self.store:transaction(function(db)
+		if not db:exec(DELETE_BOOK, SqliteStore.binds(client_book_id)) then
+			return false
 		end
 
-		ins_stmt:close()
+		for _, row in ipairs(rows) do
+			if not db:exec(INSERT_ROW, SqliteStore.binds(client_book_id, row.server_id, row.text_hash)) then
+				return false
+			end
+		end
 
 		-- A nil book_file_hash binds as SQL NULL, which is the "no file owns
-		-- this snapshot" the ledger reads back. The binding counts its
-		-- arguments with select("#", ...), so a nil in any position still fills
-		-- its placeholder.
-		local meta_stmt = self.db:prepare([[
-            INSERT OR REPLACE INTO highlight_snapshot_book (
-                client_book_id, book_file_hash, updated_at, item_count
-            ) VALUES (?, ?, ?, ?)
-        ]])
-		meta_stmt:bind(client_book_id, book_file_hash, os.time(), #rows)
-		meta_stmt:step()
-		meta_stmt:close()
-
-		self.db:exec("COMMIT;")
+		-- this snapshot" the ledger reads back -- hence SqliteStore.binds,
+		-- which counts a nil rather than stopping at it.
+		return db:exec(INSERT_BOOK, SqliteStore.binds(client_book_id, book_file_hash, os.time(), #rows))
 	end)
-
-	if not success then
-		logger.err("Crossbill HighlightSnapshotStore: Failed to replace book, rolling back:", err)
-		pcall(function()
-			self.db:exec("ROLLBACK;")
-		end)
-		return false
-	end
-
-	return true
 end
 
 --- Read a book's rows
--- Ordered by server id so a read is reproducible; the order carries no meaning.
 -- @param client_book_id string The client book ID
 -- @return table|nil Array of {server_id, text_hash}, nil when the book was
 --   never recorded
@@ -189,32 +142,12 @@ function HighlightSnapshotStore:getBook(client_book_id)
 		return nil
 	end
 
-	local rows = {}
-	local success, err = pcall(function()
-		local stmt = self.db:prepare([[
-            SELECT server_id, text_hash
-            FROM highlight_snapshot
-            WHERE client_book_id = ?
-            ORDER BY server_id ASC
-        ]])
-
-		stmt:bind(client_book_id)
-
-		for row in stmt:rows() do
-			table.insert(rows, {
-				server_id = tonumber(row[1]),
-				text_hash = row[2],
-			})
-		end
-		stmt:close()
+	return self.store:query(SELECT_BOOK, SqliteStore.binds(client_book_id), function(row)
+		return {
+			server_id = tonumber(row[1]),
+			text_hash = row[2],
+		}
 	end)
-
-	if not success then
-		logger.err("Crossbill HighlightSnapshotStore: Error reading a book's snapshot:", err)
-		return nil
-	end
-
-	return rows
 end
 
 --- Read the hash of the file that recorded a book's snapshot
@@ -224,64 +157,36 @@ end
 -- @param client_book_id string The client book ID
 -- @return string|nil The file hash, nil when the book is absent or unstamped
 function HighlightSnapshotStore:getBookFileHash(client_book_id)
-	if not self._initialized or not self.db then
-		return nil
-	end
-
 	if not client_book_id then
 		return nil
 	end
 
-	local hash = nil
-	local success, err = pcall(function()
-		local stmt = self.db:prepare("SELECT book_file_hash FROM highlight_snapshot_book WHERE client_book_id = ?")
-		stmt:bind(client_book_id)
-		for row in stmt:rows() do
-			-- A NULL column can arrive as nil or as the binding's own NULL
-			-- sentinel, so only an actual string counts as an owner.
-			if type(row[1]) == "string" and row[1] ~= "" then
-				hash = row[1]
-			end
+	local hashes = self.store:query(SELECT_BOOK_FILE_HASH, SqliteStore.binds(client_book_id), function(row)
+		-- A NULL column can arrive as nil or as the binding's own NULL
+		-- sentinel, so only an actual string counts as an owner. Anything else
+		-- maps to nil, which drops the row and reads as unstamped.
+		if type(row[1]) == "string" and row[1] ~= "" then
+			return row[1]
 		end
-		stmt:close()
+		return nil
 	end)
 
-	if not success then
-		logger.err("Crossbill HighlightSnapshotStore: Error reading a book's file hash:", err)
-		return nil
-	end
-
-	return hash
+	return hashes and hashes[1] or nil
 end
 
 --- Check whether a book has been recorded at all
 -- @param client_book_id string The client book ID
 -- @return boolean True when the book is enrolled
 function HighlightSnapshotStore:hasBook(client_book_id)
-	if not self._initialized or not self.db then
-		return false
-	end
-
 	if not client_book_id then
 		return false
 	end
 
-	local has = false
-	local success, err = pcall(function()
-		local stmt = self.db:prepare("SELECT 1 FROM highlight_snapshot_book WHERE client_book_id = ? LIMIT 1")
-		stmt:bind(client_book_id)
-		for _ in stmt:rows() do
-			has = true
-		end
-		stmt:close()
+	local rows = self.store:query(SELECT_HAS_BOOK, SqliteStore.binds(client_book_id), function()
+		return true
 	end)
 
-	if not success then
-		logger.err("Crossbill HighlightSnapshotStore: Error checking book presence:", err)
-		return false
-	end
-
-	return has
+	return rows ~= nil and #rows > 0
 end
 
 return HighlightSnapshotStore
