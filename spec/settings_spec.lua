@@ -153,6 +153,16 @@ describe("Settings", function()
 		end)
 	end)
 
+	describe("getApiUrl", function()
+		it("puts the API version below the configured server", function()
+			-- Auth and ApiClient both build their URLs on this, so the version
+			-- prefix is written once and neither of them repeats it.
+			local settings = Settings:new():load():setBaseUrl("https://crossbill.example")
+
+			assert.are.equal("https://crossbill.example/api/v1", settings:getApiUrl())
+		end)
+	end)
+
 	describe("hasCredentials", function()
 		it("is false before anything is configured", function()
 			assert.is_false(Settings:new():load():hasCredentials())

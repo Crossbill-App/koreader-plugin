@@ -37,8 +37,7 @@ function Auth:login()
 		return nil, "Username or password not configured"
 	end
 
-	local base_url = self.settings:getBaseUrl()
-	local api_url = base_url .. "/api/v1/auth/login"
+	local api_url = self.settings:getApiUrl() .. "/auth/login"
 	logger.dbg("Crossbill Auth: Logging in to", api_url)
 
 	local code, response_data, err = Network.postForm(api_url, {
@@ -71,8 +70,7 @@ function Auth:refreshToken()
 		return nil, "No refresh token"
 	end
 
-	local base_url = self.settings:getBaseUrl()
-	local api_url = base_url .. "/api/v1/auth/refresh"
+	local api_url = self.settings:getApiUrl() .. "/auth/refresh"
 	logger.dbg("Crossbill Auth: Refreshing token at", api_url)
 
 	local code, response_data, err = Network.postJson(api_url, {
@@ -94,6 +92,14 @@ function Auth:refreshToken()
 		self.settings:clearTokens()
 		return nil, "Refresh failed: " .. tostring(code)
 	end
+end
+
+--- Forget the stored tokens, so the next call authenticates afresh
+-- The server can revoke a token before the expiry the plugin recorded; a caller
+-- turned away with a 401 says so here, and the next `getValidToken` logs in.
+function Auth:clearTokens()
+	logger.dbg("Crossbill Auth: Clearing stored tokens")
+	self.settings:clearTokens()
 end
 
 --- Get a valid access token, refreshing or logging in as needed
