@@ -13,7 +13,7 @@ module handles the sync business logic.
 ]]
 
 local logger = require("logger")
-local md5 = require("ffi/sha2").md5
+local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
 local HighlightExtractor = require("modules/highlight_extractor")
@@ -23,24 +23,6 @@ local UpgradeRequired = require("modules/upgrade_required")
 
 local SyncService = {}
 SyncService.__index = SyncService
-
---- Identify the file being synced, the way SessionTracker identifies it
--- The snapshot ledger tells its own copy of a book from another one by this
--- hash, so it has to be the same formula SessionTracker's getBookFileHash uses.
--- It is computed here rather than asked of the session tracker, which is an
--- optional collaborator a sync may well run without.
--- @param doc_path string|nil The document's file path
--- @return string|nil The hash, nil when there is no path to hash
-local function bookFileHash(doc_path)
-	if type(doc_path) ~= "string" or doc_path == "" then
-		-- Without an identity nothing may be diffed or flagged against the
-		-- ledger, and the pull records the book as owned by no file.
-		logger.warn("Crossbill SyncService: No document path to identify the book's file by")
-		return nil
-	end
-
-	return md5(doc_path)
-end
 
 --- Create a new SyncService instance
 -- Collaborators come in a table rather than positionally: a caller that wants
@@ -273,7 +255,7 @@ function SyncService:_applyPull(result, ui, client_book_id, doc_path)
 		result.pull_error = tostring(pull_result)
 	elseif pull_result then
 		result.pull = pull_result
-		self:_recordSnapshot(client_book_id, pull_result.placed, bookFileHash(doc_path))
+		self:_recordSnapshot(client_book_id, pull_result.placed, BookIdentity.fileHash(doc_path))
 	else
 		result.pull_error = pull_err or "Highlight pull failed"
 	end
@@ -357,7 +339,7 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 
 	-- The ledger is shared by every copy of the book, but only this file's own
 	-- snapshot says anything about what this file has lost or gained.
-	local book_file_hash = bookFileHash(doc_path)
+	local book_file_hash = BookIdentity.fileHash(doc_path)
 
 	-- Whatever the ledger remembers but the book no longer holds was deleted here
 	local removed_ids = self:_removedHighlightIds(client_book_id, highlights, book_file_hash, opts)
@@ -501,8 +483,7 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 		return result
 	end
 
-	-- Get book file hash using SessionTracker's method for consistency
-	local book_file_hash = self.session_tracker:getBookFileHash(doc_path)
+	local book_file_hash = BookIdentity.fileHash(doc_path)
 
 	-- Get unsynced sessions for this book only
 	local sessions = self.session_tracker:getUnsyncedSessionsForBook(book_file_hash)

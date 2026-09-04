@@ -30,6 +30,7 @@ The plugin follows a modular architecture with dependency injection:
 
 ```
 main.lua (CrossbillSync)
+    ├── BookIdentity    - The client book id and file hash, the only copy of either formula
     ├── Settings        - Configuration persistence via KOReader's G_reader_settings
     ├── Auth            - OAuth token management (login, refresh, caching)
     ├── ApiClient       - HTTP API communication (highlights, sessions, files)
@@ -60,8 +61,17 @@ main.lua (CrossbillSync)
 
 **Book identification:**
 
+`modules/book_identity.lua` owns both hashes, and is the only place either
+formula is written:
+
 - `client_book_id`: MD5 hash of "title|author" - used for server-side deduplication
 - `book_file_hash`: MD5 hash of file path - used for local session tracking
+
+They live together because the snapshot ledger decides whose highlights it is
+looking at by comparing the file hash SyncService computed against the one
+SessionTracker stored, so a second copy of either formula that drifts breaks
+that silently. BookMetadata, SyncService and SessionTracker all call this
+module rather than hashing anything themselves.
 
 ## KOReader Integration Points
 

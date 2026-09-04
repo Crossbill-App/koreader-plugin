@@ -8,6 +8,7 @@ page numbers for fixed-layout docs) for later sync and analytics.
 
 local logger = require("logger")
 local SQ3 = require("lua-ljsqlite3/init")
+local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
 
@@ -121,14 +122,6 @@ function SessionTracker:close()
 	self.current_session = nil
 end
 
---- Get MD5 hash of a file path for consistent book identification
--- @param file_path string The file path to hash
--- @return string MD5 hash of the file path
-function SessionTracker:getBookFileHash(file_path)
-	local md5 = require("ffi/sha2").md5
-	return md5(file_path)
-end
-
 --- Get device identifier
 -- @return string Stable device ID
 function SessionTracker:_getDeviceId()
@@ -220,6 +213,15 @@ function SessionTracker:startSession(document, ui)
 	end
 
 	local file_path = document.file or ""
+	-- Sessions are stored and uploaded under this hash, so a document with no
+	-- file to hash has no session worth recording: every such document would
+	-- otherwise share one identity and be uploaded as a single book.
+	local book_hash = BookIdentity.fileHash(file_path)
+	if not book_hash then
+		logger.warn("Crossbill SessionTracker: Cannot start session - document has no file path")
+		return
+	end
+
 	local position = self:_capturePosition(document, ui)
 
 	if not position then
@@ -267,7 +269,7 @@ function SessionTracker:startSession(document, ui)
 
 	self.current_session = {
 		book_file = file_path,
-		book_hash = self:getBookFileHash(file_path),
+		book_hash = book_hash,
 		book_title = book_title,
 		book_author = book_author,
 		start_time = now,
