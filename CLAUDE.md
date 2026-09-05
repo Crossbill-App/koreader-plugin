@@ -50,6 +50,7 @@ main.lua (CrossbillSync)
 - `main.lua` is the entry point, extending KOReader's `WidgetContainer`
 - All modules use constructor injection: `Module:new(dependencies)`
 - API methods return consistent 3-tuples: `success/code, data, error`
+- Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out.
 - Network module handles WiFi lifecycle (enable before sync, disable after if we enabled it)
 
 **Data flow:**

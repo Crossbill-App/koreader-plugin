@@ -85,10 +85,41 @@ function ApiClient:new(settings, auth)
 	return instance
 end
 
---- Get the API base URL
--- @return string API base URL
-function ApiClient:getApiUrl()
-	return self.settings:getBaseUrl() .. "/api/v1"
+--- Send a request carrying a bearer token, once more if the token is refused
+-- A token the server revoked before its recorded expiry stays cached until that
+-- expiry passes, so without this every later call fails with a 401 the reader
+-- can do nothing about. Forgetting the tokens sends the retry through a fresh
+-- login; a second 401 is the server's answer, and is reported as one.
+-- @param what string What the request carries, for the log lines
+-- @param send function Called with a bearer token; returns code, body, error
+-- @return number|nil HTTP status code
+-- @return table|string|nil Response body
+-- @return any Error message
+function ApiClient:_sendAuthorized(what, send)
+	--- Send once with a freshly fetched token, saying so when nothing answered
+	-- @return number|nil, table|string|nil, any The status, body and error
+	local function attempt()
+		local token, auth_err = self.auth:getValidToken()
+		if not token then
+			return nil, nil, auth_err or "Authentication failed"
+		end
+
+		local code, body, err = send(token)
+		if not code then
+			logger.err("Crossbill API: Network error for", what, err)
+		end
+		return code, body, err
+	end
+
+	local code, body, err = attempt()
+	if code ~= 401 then
+		return code, body, err
+	end
+
+	logger.info("Crossbill API: Token refused for", what, "- logging in again")
+	self.auth:clearTokens()
+
+	return attempt()
 end
 
 --- Fetch a JSON resource with the caller's bearer token
@@ -101,18 +132,14 @@ end
 -- @return table|nil Response data, nil for anything but a 200 with a body
 -- @return string|nil Error message
 function ApiClient:_authorizedGet(path, what)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return nil, nil, auth_err or "Authentication failed"
-	end
+	local api_url = self.settings:getApiUrl() .. path
 
-	local api_url = self:getApiUrl() .. path
-	logger.dbg("Crossbill API: Fetching", what, "from", api_url)
-
-	local code, response_data, err = getJson(api_url, token)
+	local code, response_data, err = self:_sendAuthorized(what, function(token)
+		logger.dbg("Crossbill API: Fetching", what, "from", api_url)
+		return getJson(api_url, token)
+	end)
 
 	if not code then
-		logger.err("Crossbill API: Network error fetching", what, err)
 		return nil, nil, err or "Network error"
 	end
 
@@ -128,6 +155,66 @@ function ApiClient:_authorizedGet(path, what)
 
 	logger.warn("Crossbill API: Fetching", what, "failed with code:", code)
 	return code, nil, failureError(err, "Fetch failed: " .. tostring(code))
+end
+
+--- Post a JSON payload with the caller's bearer token
+-- Every POST the plugin makes answers the same two ways: 200 with a body, or a
+-- failure carrying its status.
+-- @param path string Path below the API root, starting with a slash
+-- @param payload table The data to send
+-- @param what string What is being sent, for the log lines
+-- @param failure string|nil What to call a failure, "Upload failed" by default
+-- @return boolean Success status
+-- @return table|nil Response data, nil for anything but a 200 with a body
+-- @return string|nil Error message
+function ApiClient:_authorizedPost(path, payload, what, failure)
+	local api_url = self.settings:getApiUrl() .. path
+
+	local code, response_data, err = self:_sendAuthorized(what, function(token)
+		logger.dbg("Crossbill API: Sending", what, "to", api_url)
+		return postJson(api_url, payload, token)
+	end)
+
+	if not code then
+		return false, nil, err or "Network error"
+	end
+
+	if code == 200 and response_data then
+		logger.info("Crossbill API: Uploaded", what)
+		return true, response_data, nil
+	end
+
+	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
+	return false, nil, failureError(err, (failure or "Upload failed") .. ": " .. tostring(code))
+end
+
+--- Post a multipart body with the caller's bearer token
+-- Unlike a JSON post this asks for no body back: the status is the whole answer.
+-- @param path string Path below the API root, starting with a slash
+-- @param files table Array of file objects
+-- @param what string What is being sent, for the log lines
+-- @return boolean Success status
+-- @return nil Response data, never carried by these endpoints
+-- @return string|nil Error message
+function ApiClient:_authorizedMultipart(path, files, what)
+	local api_url = self.settings:getApiUrl() .. path
+
+	local code, _, err = self:_sendAuthorized(what, function(token)
+		logger.dbg("Crossbill API: Uploading", what, "to", api_url)
+		return postMultipart(api_url, files, token)
+	end)
+
+	if not code then
+		return false, nil, err or "Network error"
+	end
+
+	if code == 200 then
+		logger.info("Crossbill API: Uploaded", what)
+		return true, nil, nil
+	end
+
+	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
+	return false, nil, failureError(err, "Upload failed: " .. tostring(code))
 end
 
 --- Upload highlights to the server
@@ -146,11 +233,6 @@ end
 --   highlights_skipped, highlights_removed
 -- @return string|nil Error message
 function ApiClient:uploadHighlights(client_book_id, highlights, device_id, removed_ids)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return false, nil, auth_err or "Authentication failed"
-	end
-
 	local payload = {
 		client_book_id = client_book_id,
 		-- An empty Lua table encodes as a JSON object, which the server rejects
@@ -161,23 +243,7 @@ function ApiClient:uploadHighlights(client_book_id, highlights, device_id, remov
 		removed_ids = (removed_ids and #removed_ids > 0) and removed_ids or nil,
 	}
 
-	local api_url = self:getApiUrl() .. "/highlights/sync"
-	logger.dbg("Crossbill API: Sending highlights to", api_url)
-
-	local code, response_data, err = postJson(api_url, payload, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error:", err)
-		return false, nil, err or "Network error"
-	end
-
-	if code == 200 and response_data then
-		logger.dbg("Crossbill API: Highlights uploaded successfully")
-		return true, response_data, nil
-	else
-		logger.err("Crossbill API: Upload failed with code:", code)
-		return false, nil, failureError(err, "Upload failed: " .. tostring(code))
-	end
+	return self:_authorizedPost("/highlights/sync", payload, "highlights")
 end
 
 --- Get book metadata from server by client_book_id
@@ -231,28 +297,7 @@ end
 -- @return table|nil Response data containing book metadata (same as getBookMetadata)
 -- @return string|nil Error message
 function ApiClient:createBook(book_data)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return false, nil, auth_err or "Authentication failed"
-	end
-
-	local api_url = self:getApiUrl() .. "/ereader/books"
-	logger.dbg("Crossbill API: Creating book on server", api_url)
-
-	local code, response_data, err = postJson(api_url, book_data, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error creating book:", err)
-		return false, nil, err or "Network error"
-	end
-
-	if code == 200 and response_data then
-		logger.info("Crossbill API: Book created successfully")
-		return true, response_data, nil
-	else
-		logger.err("Crossbill API: Create book failed with code:", code)
-		return false, nil, failureError(err, "Create book failed: " .. tostring(code))
-	end
+	return self:_authorizedPost("/ereader/books", book_data, "the new book", "Create book failed")
 end
 
 --- Upload an EPUB file for a book using client_book_id
@@ -263,14 +308,6 @@ end
 -- @return nil Response data (always nil for this endpoint)
 -- @return string|nil Error message
 function ApiClient:uploadEpub(client_book_id, epub_data, filename)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return false, nil, auth_err or "Authentication failed"
-	end
-
-	local api_url = self:getApiUrl() .. "/ereader/books/" .. client_book_id .. "/epub"
-	logger.dbg("Crossbill API: Uploading EPUB to", api_url)
-
 	local files = {
 		{
 			name = "epub",
@@ -280,20 +317,7 @@ function ApiClient:uploadEpub(client_book_id, epub_data, filename)
 		},
 	}
 
-	local code, _, err = postMultipart(api_url, files, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error uploading EPUB:", err)
-		return false, nil, err or "Network error"
-	end
-
-	if code == 200 then
-		logger.info("Crossbill API: EPUB uploaded successfully for book", client_book_id)
-		return true, nil, nil
-	else
-		logger.warn("Crossbill API: EPUB upload failed with code:", code)
-		return false, nil, failureError(err, "Upload failed: " .. tostring(code))
-	end
+	return self:_authorizedMultipart("/ereader/books/" .. client_book_id .. "/epub", files, "the EPUB")
 end
 
 local function unixToISO8601(timestamp)
@@ -315,11 +339,6 @@ end
 -- @return table|nil Response data (success, message, created_count, skipped_duplicate_count)
 -- @return string|nil Error message
 function ApiClient:uploadReadingSessions(client_book_id, sessions)
-	local token, auth_err = self.auth:getValidToken()
-	if not token then
-		return false, nil, auth_err or "Authentication failed"
-	end
-
 	-- Transform sessions to API format
 	local api_sessions = {}
 	for _, session in ipairs(sessions) do
@@ -350,23 +369,7 @@ function ApiClient:uploadReadingSessions(client_book_id, sessions)
 		sessions = (#api_sessions > 0) and api_sessions or empty_array,
 	}
 
-	local api_url = self:getApiUrl() .. "/reading_sessions/sync"
-	logger.dbg("Crossbill API: Sending", #api_sessions, "reading sessions to", api_url)
-
-	local code, response_data, err = postJson(api_url, payload, token)
-
-	if not code then
-		logger.err("Crossbill API: Network error:", err)
-		return false, nil, err or "Network error"
-	end
-
-	if code == 200 and response_data then
-		logger.info("Crossbill API: Reading sessions uploaded successfully")
-		return true, response_data, nil
-	else
-		logger.warn("Crossbill API: Reading sessions upload failed with code:", code)
-		return false, nil, failureError(err, "Upload failed: " .. tostring(code))
-	end
+	return self:_authorizedPost("/reading_sessions/sync", payload, "reading sessions")
 end
 
 return ApiClient

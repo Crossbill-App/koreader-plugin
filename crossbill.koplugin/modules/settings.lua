@@ -109,6 +109,14 @@ function Settings:getBaseUrl()
 	return self:get("base_url")
 end
 
+--- Get the API root URL
+-- The version prefix lives here alone: Auth and ApiClient both build their URLs
+-- below this, so neither of them spells it out.
+-- @return string The server's API root URL
+function Settings:getApiUrl()
+	return self:getBaseUrl() .. "/api/v1"
+end
+
 --- Set the base URL (normalizes by removing trailing slash)
 -- @param url string The server base URL
 -- @return self for chaining
