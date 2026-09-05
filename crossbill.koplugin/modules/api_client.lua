@@ -21,38 +21,50 @@ local JSON = require("json")
 -- The most reliable way to get the marker for an empty array is to decode one
 local empty_array = JSON.decode("[]") or {}
 
---- Fetch JSON, recognising a server that refuses this plugin version
+--- Fetch JSON, refusing to answer when the server turns this plugin away
 -- These three wrappers are this module's only route to the network, so the
--- refusal is recognised in one place and a call added later inherits it.
+-- refusal is recognised in one place and a call added later inherits it. It is
+-- raised rather than returned, which is what makes that inheritance real: a
+-- returned refusal is only inherited by a caller that remembers to look for it
+-- in the error slot, while a raised one travels past every step that does not
+-- mention it to the one place that catches it.
 -- @param url string The URL to fetch
 -- @param token string|nil Bearer token for authorization
 -- @return number|nil HTTP status code
 -- @return table|nil Parsed JSON response
--- @return any Error message, or the upgrade error when the plugin was refused
+-- @return any Error message
 local function getJson(url, token)
 	local code, response_data, err = Network.getJson(url, token)
-	return code, response_data, UpgradeRequired.fromResponse(code, response_data) or err
+	local refusal = UpgradeRequired.fromResponse(code, response_data)
+	if refusal then
+		error(refusal, 0)
+	end
+	return code, response_data, err
 end
 
---- Post JSON, recognising a server that refuses this plugin version
+--- Post JSON, refusing to answer when the server turns this plugin away
 -- @param url string The URL to post to
 -- @param payload table The data to send
 -- @param token string|nil Bearer token for authorization
 -- @return number|nil HTTP status code
 -- @return table|nil Parsed JSON response
--- @return any Error message, or the upgrade error when the plugin was refused
+-- @return any Error message
 local function postJson(url, payload, token)
 	local code, response_data, err = Network.postJson(url, payload, token)
-	return code, response_data, UpgradeRequired.fromResponse(code, response_data) or err
+	local refusal = UpgradeRequired.fromResponse(code, response_data)
+	if refusal then
+		error(refusal, 0)
+	end
+	return code, response_data, err
 end
 
---- Post a multipart body, recognising a server that refuses this plugin version
+--- Post a multipart body, refusing to answer when the server turns us away
 -- @param url string The URL to post to
 -- @param files table Array of file objects
 -- @param token string|nil Bearer token for authorization
 -- @return number|nil HTTP status code
 -- @return string Response body
--- @return any Error message, or the upgrade error when the plugin was refused
+-- @return any Error message
 local function postMultipart(url, files, token)
 	local code, response_text, err = Network.postMultipart(url, files, token)
 	if code ~= UpgradeRequired.STATUS then
@@ -62,20 +74,7 @@ local function postMultipart(url, files, token)
 	-- A multipart upload hands back an undecoded body, so the detail is decoded
 	-- here; one that will not decode is still a refusal, only a vaguer one.
 	local decoded, body = pcall(JSON.decode, response_text)
-	return code, response_text, UpgradeRequired.new(decoded and body or nil)
-end
-
---- Keep the server's refusal, or describe the failure by its status
--- A refusal has to survive as itself: it is the one failure the plugin acts on
--- rather than merely reports.
--- @param err any The error the request came back with
--- @param message string What to say about any other failure
--- @return any The error to report
-local function failureError(err, message)
-	if UpgradeRequired.is(err) then
-		return err
-	end
-	return message
+	error(UpgradeRequired.new(decoded and body or nil), 0)
 end
 
 local ApiClient = {}
@@ -165,7 +164,7 @@ function ApiClient:_authorizedGet(path, what)
 	end
 
 	logger.warn("Crossbill API: Fetching", what, "failed with code:", code)
-	return code, nil, failureError(err, "Fetch failed: " .. tostring(code))
+	return code, nil, "Fetch failed: " .. tostring(code)
 end
 
 --- Post a JSON payload with the caller's bearer token
@@ -196,7 +195,7 @@ function ApiClient:_authorizedPost(path, payload, what, failure)
 	end
 
 	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
-	return code, nil, failureError(err, (failure or "Upload failed") .. ": " .. tostring(code))
+	return code, nil, (failure or "Upload failed") .. ": " .. tostring(code)
 end
 
 --- Post a multipart body with the caller's bearer token
@@ -225,7 +224,7 @@ function ApiClient:_authorizedMultipart(path, files, what)
 	end
 
 	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
-	return code, nil, failureError(err, "Upload failed: " .. tostring(code))
+	return code, nil, "Upload failed: " .. tostring(code)
 end
 
 --- Upload highlights to the server

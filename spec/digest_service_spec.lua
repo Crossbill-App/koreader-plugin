@@ -45,22 +45,56 @@ describe("DigestService", function()
 			})
 		end
 
-		it("reports a refused refresh as the refusal it was", function()
-			local ok, err_kind, err = serviceAnswering(426, REFUSAL):refreshBook(CLIENT_BOOK_ID)
+		--- Build a service whose digest fetch raises rather than answering
+		-- @param err any What the api client raises
+		-- @return table The DigestService instance
+		local function serviceRaising(err)
+			return DigestService:new({
+				getBookDigest = function()
+					error(err, 0)
+				end,
+			}, {
+				hasBook = function()
+					return false
+				end,
+			})
+		end
+
+		it("lets a refused refresh raise rather than reporting it as a kind", function()
+			-- A refresh runs inside a sync, which catches the refusal for the
+			-- whole attempt; there is nothing for this to add.
+			local service = serviceRaising(REFUSAL)
+
+			local ok, err = pcall(function()
+				return service:refreshBook(CLIENT_BOOK_ID)
+			end)
 
 			assert.is_false(ok)
-			assert.are.equal(UpgradeRequired.KIND, err_kind)
 			assert.are.equal(REFUSAL, err)
 		end)
 
 		it("passes the refusal on to whoever opened the chapter's digest", function()
-			-- Reported as a missing cache, this would tell the reader to sync
-			-- while online, which is exactly what cannot help.
-			local item, err_kind, err = serviceAnswering(426, REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
+			-- Opened from an event handler, with no sync around it to catch the
+			-- raise. Reported as a missing cache, this would tell the reader to
+			-- sync while online, which is exactly what cannot help.
+			local item, err_kind, err = serviceRaising(REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
 
 			assert.is_nil(item)
 			assert.are.equal(UpgradeRequired.KIND, err_kind)
 			assert.are.equal(REFUSAL, err)
+		end)
+
+		it("lets any other error out of the chapter's digest as it was raised", function()
+			-- Only the refusal is this module's to answer for; the rest is the
+			-- reader's event handler to fail on, as it always was.
+			local service = serviceRaising("socket closed")
+
+			local ok, err = pcall(function()
+				return service:getForCurrentChapter({}, CLIENT_BOOK_ID)
+			end)
+
+			assert.is_false(ok)
+			assert.are.equal("socket closed", err)
 		end)
 
 		it("still reports an ordinary failed fetch as a cache it could not fill", function()
@@ -86,12 +120,16 @@ describe("DigestService", function()
 			end)
 
 			--- Build a service holding a stale, empty cache for the book
-			-- @param code number|nil The HTTP status the re-fetch is answered with
-			-- @param err any The error the api client reports
+			-- @param code number|nil The HTTP status the re-fetch is answered
+			--   with, nil to raise `err` instead
+			-- @param err any The error the api client reports or raises
 			-- @return table The DigestService instance
 			local function serviceRefetching(code, err)
 				return DigestService:new({
 					getBookDigest = function()
+						if not code then
+							error(err, 0)
+						end
 						return code, nil, err
 					end,
 				}, {
@@ -110,7 +148,7 @@ describe("DigestService", function()
 			it("passes on the refusal the re-fetch met", function()
 				-- Reported as an empty book, this would send the reader off to
 				-- generate a digest that may well already exist.
-				local item, err_kind, err = serviceRefetching(426, REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
+				local item, err_kind, err = serviceRefetching(nil, REFUSAL):getForCurrentChapter({}, CLIENT_BOOK_ID)
 
 				assert.is_nil(item)
 				assert.are.equal(UpgradeRequired.KIND, err_kind)

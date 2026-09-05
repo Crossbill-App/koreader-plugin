@@ -497,60 +497,76 @@ describe("ApiClient", function()
 			assert.are.equal("https://github.com/Crossbill-App/koreader-plugin", err.update_url)
 		end
 
-		it("reports a refused fetch as the refusal rather than as a status", function()
+		--- Make a call the server refuses, handing back what it raised
+		-- The refusal is raised rather than returned, so no caller has to
+		-- remember to look for it in an error slot.
+		-- @param fn function The call to make
+		-- @return any The error the call raised
+		local function refusalRaisedBy(fn)
+			local ok, err = pcall(fn)
+
+			assert.is_false(ok)
+			return err
+		end
+
+		it("raises the refusal rather than answering a fetch with a status", function()
 			NetworkFake.setGetResult(426, REFUSAL)
+			local client = clientWithToken(TOKEN)
 
-			local code, items, err = clientWithToken(TOKEN):getHighlights(CLIENT_BOOK_ID)
-
-			assert.are.equal(426, code)
-			assert.is_nil(items)
-			assertRefusal(err)
+			assertRefusal(refusalRaisedBy(function()
+				return client:getHighlights(CLIENT_BOOK_ID)
+			end))
 		end)
 
-		it("reports a refused highlight upload the same way", function()
+		it("raises it out of a refused highlight upload the same way", function()
 			NetworkFake.setPostResult(426, REFUSAL)
+			local client = clientWithToken(TOKEN)
 
-			local code, _, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
-
-			assert.are.equal(426, code)
-			assertRefusal(err)
+			assertRefusal(refusalRaisedBy(function()
+				return client:uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+			end))
 		end)
 
-		it("reports a refused session upload the same way", function()
+		it("raises it out of a refused session upload the same way", function()
 			NetworkFake.setPostResult(426, REFUSAL)
+			local client = clientWithToken(TOKEN)
 
-			local code, _, err = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {})
-
-			assert.are.equal(426, code)
-			assertRefusal(err)
+			assertRefusal(refusalRaisedBy(function()
+				return client:uploadReadingSessions(CLIENT_BOOK_ID, {})
+			end))
 		end)
 
-		it("reports a refused book creation the same way", function()
+		it("raises it out of a refused book creation the same way", function()
 			NetworkFake.setPostResult(426, REFUSAL)
+			local client = clientWithToken(TOKEN)
 
-			local code, _, err = clientWithToken(TOKEN):createBook({ client_book_id = CLIENT_BOOK_ID })
-
-			assert.are.equal(426, code)
-			assertRefusal(err)
+			assertRefusal(refusalRaisedBy(function()
+				return client:createBook({ client_book_id = CLIENT_BOOK_ID })
+			end))
 		end)
 
-		it("reports a refused EPUB upload the same way", function()
+		it("raises it out of a refused EPUB upload the same way", function()
 			-- The multipart helper hands back an undecoded body, so this path
 			-- reads the refusal's detail for itself.
 			NetworkFake.setMultipartResult(426, '{"detail": {}}')
 			stub(json, "decode", REFUSAL)
+			local client = clientWithToken(TOKEN)
 
-			local code, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local err = refusalRaisedBy(function()
+				return client:uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			end)
 
 			json.decode:revert()
-			assert.are.equal(426, code)
 			assertRefusal(err)
 		end)
 
-		it("still reports a refusal whose body could not be read", function()
+		it("still raises a refusal whose body could not be read", function()
 			NetworkFake.setGetResult(426, nil, "Invalid JSON response")
+			local client = clientWithToken(TOKEN)
 
-			local _, _, err = clientWithToken(TOKEN):getHighlights(CLIENT_BOOK_ID)
+			local err = refusalRaisedBy(function()
+				return client:getHighlights(CLIENT_BOOK_ID)
+			end)
 
 			assert.is_true(UpgradeRequired.is(err))
 			assert.is_nil(err.min_supported_version)
@@ -558,12 +574,14 @@ describe("ApiClient", function()
 			assert.is_nil(err.update_url)
 		end)
 
-		it("still reports an EPUB refusal whose body could not be read", function()
+		it("still raises an EPUB refusal whose body could not be read", function()
 			NetworkFake.setMultipartResult(426, "<html>Upgrade required</html>")
+			local client = clientWithToken(TOKEN)
 
-			local code, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local err = refusalRaisedBy(function()
+				return client:uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			end)
 
-			assert.are.equal(426, code)
 			assert.is_true(UpgradeRequired.is(err))
 			assert.is_nil(err.min_supported_version)
 		end)

@@ -7,7 +7,7 @@ cached digest items using a small, staged matching algorithm.
 
 Public API:
   DigestService:new(api_client, digest_cache)
-  DigestService:refreshBook(client_book_id) -> ok, err_kind, err
+  DigestService:refreshBook(client_book_id) -> ok, err_kind
   DigestService:getForCurrentChapter(ui, client_book_id) -> item, err_kind, err
 
 err_kind is one of:
@@ -20,6 +20,12 @@ err_kind is one of:
 
 The third return value is only filled in for that last kind, and carries the
 refusal itself so the reader can be told which version the server wants.
+
+The refusal is raised by the api client rather than returned, so refreshBook
+raises it at whichever caller is running a sync -- SyncService catches it there.
+getForCurrentChapter is opened straight from a KOReader event handler, which has
+no such catch, so it is the one place here that turns the refusal back into a
+kind of its own.
 ]]
 
 local logger = require("logger")
@@ -241,25 +247,20 @@ local function matchCurrentChapter(ui, items)
 end
 
 --- Fetch a book's digests from the server and replace the cache
--- Caller is responsible for WiFi lifecycle.
+-- Caller is responsible for WiFi lifecycle. A server that refuses this plugin
+-- version is not a digest problem -- it serves this plugin nothing until it is
+-- updated -- so that refusal is left to travel as the error the api client
+-- raised it as, rather than being reported here as a kind of failed fetch.
 -- @param client_book_id string The client book ID
 -- @return boolean ok True if fetched and cached successfully
--- @return string|nil err_kind "book_unknown" (404), "client_upgrade_required"
---   or "fetch_failed", nil on success
--- @return table|nil err The refusal, for "client_upgrade_required" only
+-- @return string|nil err_kind "book_unknown" (404) or "fetch_failed", nil on
+--   success
 function DigestService:refreshBook(client_book_id)
 	if not client_book_id then
 		return false, "fetch_failed"
 	end
 
 	local code, data, err = self.api_client:getBookDigest(client_book_id)
-
-	if UpgradeRequired.is(err) then
-		-- Not a digest problem: the server serves this plugin nothing until it
-		-- is updated, and that is what the reader has to hear.
-		logger.warn("Crossbill DigestService: The server refuses this plugin version")
-		return false, UpgradeRequired.KIND, err
-	end
 
 	if code == 404 then
 		logger.dbg("Crossbill DigestService: Book unknown to server (404)")
@@ -287,9 +288,6 @@ end
 -- wait for a request that cannot succeed.
 -- @param client_book_id string The client book ID
 -- @return table Cached items after the attempt (empty if it was skipped or failed)
--- @return string|nil err_kind Why the re-fetch failed, nil when it did not run
---   or succeeded
--- @return table|nil err The refusal, for "client_upgrade_required" only
 function DigestService:_refetchStaleEmptyBook(client_book_id)
 	local fetched_at = self.cache:getFetchedAt(client_book_id)
 	if not fetched_at then
@@ -307,11 +305,12 @@ function DigestService:_refetchStaleEmptyBook(client_book_id)
 	end
 
 	logger.dbg("Crossbill DigestService: Re-fetching empty digest cache, last fetched", age, "seconds ago")
-	local ok, err_kind, err = self:refreshBook(client_book_id)
+	local ok = self:refreshBook(client_book_id)
 	if not ok then
-		-- Why it failed is the caller's to weigh: a refusal is not about this
-		-- book at all and must not be reported as a missing digest.
-		return {}, err_kind, err
+		-- A re-fetch that found nothing leaves the book as empty as it was. The
+		-- one failure that is not about this book -- the server refusing the
+		-- plugin -- is raised rather than returned, and never arrives here.
+		return {}
 	end
 
 	return self.cache:getBook(client_book_id) or {}
@@ -320,27 +319,50 @@ end
 --- Resolve the digest item for the current chapter
 -- Tries the cache first; if the book is absent, fetches it, then matches the
 -- current chapter against the cached items.
+--
+-- The popup is opened from a KOReader event handler, with no sync around it to
+-- catch what the fetches raise, so the server's refusal to serve this plugin
+-- version is turned back into an answer here -- once, for whichever fetch met
+-- it. Reported as anything else it would tell the reader to sync while online,
+-- or to go and generate a digest that may well exist: neither can help a plugin
+-- the server will not talk to.
 -- @param ui table The KOReader UI context
 -- @param client_book_id string The client book ID
 -- @return table|nil item The matched digest item, or nil
 -- @return string|nil err_kind One of the documented error kinds, nil on success
 -- @return table|nil err The refusal, for "client_upgrade_required" only
 function DigestService:getForCurrentChapter(ui, client_book_id)
+	local ok, result, err_kind = pcall(self._resolveCurrentChapter, self, ui, client_book_id)
+	if ok then
+		return result, err_kind
+	end
+
+	-- Past here `result` is what was raised rather than an item.
+	if not UpgradeRequired.is(result) then
+		-- Anything else is nobody's to answer for here.
+		error(result, 0)
+	end
+
+	logger.warn("Crossbill DigestService: The server refuses this plugin version")
+	return nil, UpgradeRequired.KIND, result
+end
+
+--- Resolve the digest item for the current chapter, fetching what it needs
+-- @param ui table The KOReader UI context
+-- @param client_book_id string The client book ID
+-- @return table|nil item The matched digest item, or nil
+-- @return string|nil err_kind One of the documented error kinds, nil on success
+function DigestService:_resolveCurrentChapter(ui, client_book_id)
 	if not client_book_id then
 		return nil, "no_cache"
 	end
 
 	-- Populate the cache if this book has never been fetched.
 	if not self.cache:hasBook(client_book_id) then
-		local ok, refresh_err, err = self:refreshBook(client_book_id)
+		local ok, refresh_err = self:refreshBook(client_book_id)
 		if not ok then
 			if refresh_err == "book_unknown" then
 				return nil, "book_unknown"
-			end
-			if refresh_err == UpgradeRequired.KIND then
-				-- Not an empty cache: no amount of waiting for WiFi will fix a
-				-- plugin the server refuses.
-				return nil, refresh_err, err
 			end
 			return nil, "no_cache"
 		end
@@ -350,13 +372,7 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 	if not items or #items == 0 then
 		-- The book was fetched but had no digests then; the server may have
 		-- generated them since.
-		local refetch_kind, refetch_err
-		items, refetch_kind, refetch_err = self:_refetchStaleEmptyBook(client_book_id)
-		if refetch_kind == UpgradeRequired.KIND then
-			-- Swallowed here, the refusal would surface as "no digest for this
-			-- book yet" and send the reader off to generate one that may exist.
-			return nil, refetch_kind, refetch_err
-		end
+		items = self:_refetchStaleEmptyBook(client_book_id)
 	end
 
 	if not items or #items == 0 then
