@@ -1,4 +1,5 @@
 local AuthFailed = require("modules/auth_failed")
+local UpgradeRequired = require("modules/upgrade_required")
 
 -- `modules/network` is the plugin's own module rather than one of KOReader's,
 -- so it cannot be shadowed from spec/support, and it is the one module that must
@@ -77,6 +78,17 @@ local function settingsWith(fields)
 	}
 end
 
+-- What the server answers a plugin it will no longer serve, on any route
+local REFUSAL_BODY = {
+	detail = {
+		code = "client_upgrade_required",
+		client = "koreader-plugin",
+		min_supported_version = "0.13.0",
+		received_version = "0.12.0",
+		update_url = "https://github.com/Crossbill-App/koreader-plugin",
+	},
+}
+
 describe("Auth", function()
 	before_each(function()
 		NetworkFake.reset()
@@ -113,6 +125,33 @@ describe("Auth", function()
 			assert.are.equal("Connection refused", err)
 		end)
 
+		it("raises the server's refusal instead of blaming the credentials", function()
+			-- Every request carries the version header, so a plugin the server has
+			-- stopped serving is refused at the login endpoint, before it has a
+			-- token to be turned away over. Read as an authentication failure it
+			-- would put the credentials dialog in front of a working password.
+			NetworkFake.form_result = { 426, REFUSAL_BODY }
+
+			local ok, err = pcall(function()
+				return Auth:new(settingsWith({ username = "ada", password = "secret" })):login()
+			end)
+
+			assert.is_false(ok)
+			assert.is_true(UpgradeRequired.is(err))
+			assert.is_false(AuthFailed.is(err))
+		end)
+
+		it("raises it carrying the versions the server named", function()
+			NetworkFake.form_result = { 426, REFUSAL_BODY }
+
+			local _, err = pcall(function()
+				return Auth:new(settingsWith({ username = "ada", password = "secret" })):login()
+			end)
+
+			assert.are.equal("0.12.0", err.received_version)
+			assert.are.equal("0.13.0", err.min_supported_version)
+		end)
+
 		it("hands back the token the server issued", function()
 			NetworkFake.form_result = { 200, { access_token = "fresh", refresh_token = "r", expires_in = 3600 } }
 			local settings = settingsWith({ username = "ada", password = "secret" })
@@ -138,6 +177,24 @@ describe("Auth", function()
 			assert.are.equal(1, settings.cleared)
 			assert.are.equal(1, #NetworkFake.posted_json)
 			assert.are.equal(1, #NetworkFake.posted_forms)
+		end)
+
+		it("raises a refusal met by the refresh instead of trying the login", function()
+			-- The login would only be told the same thing, and the stored tokens
+			-- are not what the server objected to.
+			NetworkFake.json_result = { 426, REFUSAL_BODY }
+			local settings = settingsWith({ refresh_token = "stale", username = "ada", password = "secret" })
+
+			local ok, err = pcall(function()
+				return Auth:new(settings):getValidToken()
+			end)
+
+			assert.is_false(ok)
+			assert.is_true(UpgradeRequired.is(err))
+			assert.are.equal("0.12.0", err.received_version)
+			assert.are.equal("0.13.0", err.min_supported_version)
+			assert.are.same({}, NetworkFake.posted_forms)
+			assert.are.equal(0, settings.cleared)
 		end)
 
 		it("reports the login's failure, not the refresh's", function()

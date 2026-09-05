@@ -12,10 +12,19 @@ tell it from every other error without reading its wording. A network error on
 the way to the login endpoint stays a plain string: nothing is wrong with the
 reader's credentials, and dressing it up as an authentication failure would send
 them to change a password that works.
+
+The server's refusal to serve this plugin version is neither, and is raised here
+just as the api client raises it elsewhere. Every request carries the version
+header, so a plugin the server has stopped serving meets that answer at the login
+endpoint, before it holds a token to be turned away over; classified as an
+authentication failure it would put the credentials dialog in front of a reader
+whose password is fine, and nothing further down the sync could tell otherwise,
+this module having already decided what the answer meant.
 ]]
 
 local AuthFailed = require("modules/auth_failed")
 local Network = require("modules/network")
+local UpgradeRequired = require("modules/upgrade_required")
 local logger = require("logger")
 
 local Auth = {}
@@ -37,6 +46,8 @@ end
 -- @return string|nil Access token on success
 -- @return any Error on failure: an AuthFailed when the credentials are the
 --   problem, a plain message when the network is
+-- @raise The server's refusal to serve this plugin version, which the login
+--   meets before any other call does
 function Auth:login()
 	local username = self.settings:getUsername()
 	local password = self.settings:getPassword()
@@ -53,6 +64,11 @@ function Auth:login()
 		username = username,
 		password = password,
 	})
+
+	-- Asked before the answer is classified: a 426 is the server refusing the
+	-- plugin, not the credentials, and every other reading of it sends the reader
+	-- somewhere that cannot help them.
+	UpgradeRequired.raiseIfRefused(code, response_data)
 
 	if not code then
 		logger.err("Crossbill Auth: Network error during login:", err)
@@ -73,6 +89,7 @@ end
 -- @return string|nil New access token on success
 -- @return any Error on failure: an AuthFailed when the stored tokens are the
 --   problem, a plain message when the network is
+-- @raise The server's refusal to serve this plugin version
 function Auth:refreshToken()
 	local refresh_token = self.settings:getRefreshToken()
 	if not refresh_token then
@@ -86,6 +103,11 @@ function Auth:refreshToken()
 	local code, response_data, err = Network.postJson(api_url, {
 		refresh_token = refresh_token,
 	})
+
+	-- Before the answer is classified, as in login: a refusal read as a rejected
+	-- refresh token would throw away tokens that are perfectly good and go on to
+	-- a login that meets the very same answer.
+	UpgradeRequired.raiseIfRefused(code, response_data)
 
 	if not code then
 		logger.err("Crossbill Auth: Network error during refresh:", err)
@@ -115,9 +137,12 @@ end
 --- Get a valid access token, refreshing or logging in as needed
 -- A failed refresh is not reported: it falls through to a full login, and it is
 -- that login's answer -- an AuthFailed, or a plain network message -- the caller
--- is handed.
+-- is handed. The one refresh failure that does not fall through is the server's
+-- refusal to serve this plugin version: it is raised rather than returned, so it
+-- travels straight out past the login, which would only be told the same thing.
 -- @return string|nil Access token on success
 -- @return any Error on failure, as `login` reports it
+-- @raise The server's refusal to serve this plugin version
 function Auth:getValidToken()
 	local current_time = os.time()
 	local expires_at = self.settings:getTokenExpiresAt()

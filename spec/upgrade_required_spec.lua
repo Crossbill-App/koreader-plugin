@@ -66,6 +66,44 @@ describe("UpgradeRequired", function()
 		end)
 	end)
 
+	describe("raiseIfRefused", function()
+		--- Ask the helper about an answer, catching whatever it raises
+		-- @param code number|nil The HTTP status
+		-- @param body table|nil The decoded body
+		-- @return boolean, any Whether it returned quietly, and what it raised
+		local function raiseFor(code, body)
+			return pcall(UpgradeRequired.raiseIfRefused, code, body)
+		end
+
+		it("raises the refusal rather than handing it back to be noticed", function()
+			local ok, err = raiseFor(426, refusalBody(FULL_DETAIL))
+
+			assert.is_false(ok)
+			assert.is_true(UpgradeRequired.is(err))
+		end)
+
+		it("raises it carrying the versions the body named", function()
+			local _, err = raiseFor(426, refusalBody(FULL_DETAIL))
+
+			assert.are.equal("0.13.0", err.min_supported_version)
+			assert.are.equal("0.12.0", err.received_version)
+			assert.are.equal(UPDATE_URL, err.update_url)
+		end)
+
+		it("raises a refusal that arrived with no body at all", function()
+			local _, err = raiseFor(426, nil)
+
+			assert.is_true(UpgradeRequired.is(err))
+		end)
+
+		it("returns quietly for every answer that is not a refusal", function()
+			assert.is_true(raiseFor(200, {}))
+			assert.is_true(raiseFor(404, nil))
+			assert.is_true(raiseFor(500, refusalBody(FULL_DETAIL)))
+			assert.is_true(raiseFor(nil, nil))
+		end)
+	end)
+
 	describe("is", function()
 		it("tells the refusal apart from the error strings everything else reports", function()
 			assert.is_false(UpgradeRequired.is("Upload failed: 500"))

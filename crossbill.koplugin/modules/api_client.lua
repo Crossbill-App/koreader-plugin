@@ -35,10 +35,7 @@ local empty_array = JSON.decode("[]") or {}
 -- @return any Error message
 local function getJson(url, token)
 	local code, response_data, err = Network.getJson(url, token)
-	local refusal = UpgradeRequired.fromResponse(code, response_data)
-	if refusal then
-		error(refusal, 0)
-	end
+	UpgradeRequired.raiseIfRefused(code, response_data)
 	return code, response_data, err
 end
 
@@ -51,10 +48,7 @@ end
 -- @return any Error message
 local function postJson(url, payload, token)
 	local code, response_data, err = Network.postJson(url, payload, token)
-	local refusal = UpgradeRequired.fromResponse(code, response_data)
-	if refusal then
-		error(refusal, 0)
-	end
+	UpgradeRequired.raiseIfRefused(code, response_data)
 	return code, response_data, err
 end
 
@@ -67,14 +61,17 @@ end
 -- @return any Error message
 local function postMultipart(url, files, token)
 	local code, response_text, err = Network.postMultipart(url, files, token)
-	if code ~= UpgradeRequired.STATUS then
-		return code, response_text, err
+
+	-- A multipart upload hands back an undecoded body, so this is the one route
+	-- that has to decode the refusal's detail for itself, and only bothers when
+	-- there is a refusal to decode it for; a body that will not decode is still a
+	-- refusal, only a vaguer one.
+	if code == UpgradeRequired.STATUS then
+		local decoded, body = pcall(JSON.decode, response_text)
+		UpgradeRequired.raiseIfRefused(code, decoded and body or nil)
 	end
 
-	-- A multipart upload hands back an undecoded body, so the detail is decoded
-	-- here; one that will not decode is still a refusal, only a vaguer one.
-	local decoded, body = pcall(JSON.decode, response_text)
-	error(UpgradeRequired.new(decoded and body or nil), 0)
+	return code, response_text, err
 end
 
 local ApiClient = {}

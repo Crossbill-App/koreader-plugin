@@ -586,6 +586,23 @@ describe("ApiClient", function()
 			assert.is_nil(err.min_supported_version)
 		end)
 
+		it("lets a refusal met while authenticating out of the call", function()
+			-- The login carries the version header too, so a plugin the server will
+			-- not serve is refused while fetching a token rather than while using
+			-- one. Auth raises it, and nothing between there and here turns it back
+			-- into a status.
+			local client = clientWithAuth({
+				getValidToken = function()
+					error(UpgradeRequired.new(REFUSAL), 0)
+				end,
+			})
+
+			assertRefusal(refusalRaisedBy(function()
+				return client:getBookMetadata(CLIENT_BOOK_ID)
+			end))
+			assert.are.same({}, NetworkFake.requested)
+		end)
+
 		it("leaves every other failure as the message it was", function()
 			NetworkFake.setPostResult(500, nil)
 
