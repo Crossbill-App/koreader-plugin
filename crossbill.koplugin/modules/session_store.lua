@@ -9,18 +9,15 @@ keeping it out of here is what lets the tracker be tested at all.
 The tracker takes this store as a dependency rather than requiring it, so specs
 can hand it an in-memory stand-in instead of the reader's SQLite binding, the
 way `modules/highlight_snapshot` already does.
+
+The database itself is `main.lua`'s: this store is handed the open connection
+and asks it for the `sessions` table alone.
 ]]
 
-local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local SessionStore = {}
 SessionStore.__index = SessionStore
-
--- Constants
--- Named after the plugin, so the side-by-side test build writes its own
--- database rather than the reader's (see modules/plugin_identity.lua)
-local DB_FILENAME = PluginIdentity.namespace .. "_sessions.sqlite3"
 
 -- Database schema
 local SCHEMA = [[
@@ -77,24 +74,25 @@ ORDER BY start_time ASC
 ]]
 
 --- Create a new SessionStore instance
+-- @param store SqliteStore The plugin's open database
 -- @return SessionStore instance
-function SessionStore:new()
+function SessionStore:new(store)
 	local instance = setmetatable({}, SessionStore)
-	instance.store = SqliteStore:new("SessionStore")
+	instance.store = store
 	return instance
 end
 
---- Open the database, creating it and its schema when needed
--- @param data_dir string Path to KOReader's settings directory
+--- Create this store's tables in the database, when they are not there yet
 -- @return boolean Success status
-function SessionStore:open(data_dir)
-	return self.store:open(data_dir .. "/" .. DB_FILENAME, SCHEMA, MIGRATIONS)
+function SessionStore:prepare()
+	return self.store:ensureSchema(SCHEMA, MIGRATIONS)
 end
 
---- Close the database connection
-function SessionStore:close()
-	self.store:close()
-end
+--- Stop using the database
+-- The connection is shared with the digest cache and the snapshot ledger and
+-- belongs to whoever opened it, so closing it here would take those two down
+-- as well. Nothing to do, then, beyond letting the tracker say it is done.
+function SessionStore:close() end
 
 --- Save one finished session
 -- @param session table The session's columns, already decided by the tracker

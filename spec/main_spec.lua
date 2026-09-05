@@ -40,9 +40,10 @@ describe("CrossbillSync", function()
 		UIManager.close:revert()
 	end)
 
-	--- Build the plugin without letting init() near the databases
-	-- `init` opens three SQLite files and registers a menu, none of which the
-	-- paths below touch; each spec hands over only what its path reaches for.
+	--- Build the plugin without letting init() near the database
+	-- `init` opens the plugin's SQLite file and registers a menu, neither of
+	-- which the paths below touch; each spec hands over only what its path
+	-- reaches for.
 	-- @param fields table|nil The instance's fields
 	-- @return table The plugin instance
 	local function pluginWith(fields)

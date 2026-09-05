@@ -2,12 +2,12 @@
 Plugin Identity for Crossbill
 
 Every string the plugin names itself with, derived from the one name in
-`_meta.lua`: the settings key, the database filenames, the dispatcher action
+`_meta.lua`: the settings key, the database filename, the dispatcher action
 ids, the event names, the menu key and the label a reader sees.
 
 This exists for the side-by-side test build. `scripts/copy_to_pocketbook.sh`
 installs a second copy of the plugin that has to keep its own settings, its own
-databases and its own gesture bindings, or it overwrites the production
+database and its own gesture bindings, or it overwrites the production
 plugin's as it runs. That used to be a dozen seds over half the source tree,
 one per string, each of which had to be remembered when a new key or database
 was added -- and forgetting one looked like a plugin bug on a device rather
@@ -28,7 +28,8 @@ local PluginIdentity = {}
 --- Derive the identity strings from a plugin name
 -- Pure, so a spec can ask what any name would give without a second _meta.
 -- @param name string The plugin's name, as `_meta.lua` spells it
--- @return table The display name, the namespace and the event prefix
+-- @return table The display name, the namespace, the database filename and the
+--   event prefix
 function PluginIdentity.derive(name)
 	-- Lowercase with whitespace as underscores: the shape of a settings key and
 	-- of a database filename ("Crossbill Test" -> "crossbill_test").
@@ -41,6 +42,10 @@ function PluginIdentity.derive(name)
 	return {
 		display_name = name,
 		namespace = namespace,
+		-- The one database the plugin keeps everything in, named after the
+		-- plugin so the side-by-side test build writes its own rather than the
+		-- reader's.
+		database_filename = namespace .. ".sqlite3",
 		event_prefix = event_prefix,
 	}
 end

@@ -22,10 +22,10 @@ function FakeSessionStore:new()
 		-- Saved sessions, in the order they were saved, each with the id the
 		-- store handed it.
 		sessions = {},
-		opened_with = nil,
+		prepared = false,
 		closed = false,
 		next_id = 1,
-		-- Set to "open", "saveSession" or "markSessionsSynced" to make that
+		-- Set to "prepare", "saveSession" or "markSessionsSynced" to make that
 		-- call misbehave.
 		fails_at = nil,
 	}, FakeSessionStore)
@@ -42,14 +42,13 @@ local function copySession(session)
 	return copied
 end
 
---- Open the store
--- @param data_dir string Directory the database would live in
+--- Create the store's tables in the database it was given
 -- @return boolean Success status
-function FakeSessionStore:open(data_dir)
-	if self.fails_at == "open" then
+function FakeSessionStore:prepare()
+	if self.fails_at == "prepare" then
 		return false
 	end
-	self.opened_with = data_dir
+	self.prepared = true
 	return true
 end
 

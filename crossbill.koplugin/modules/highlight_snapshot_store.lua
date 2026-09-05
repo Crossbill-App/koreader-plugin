@@ -13,18 +13,15 @@ snapshot from one another copy of the same book left behind.
 
 The ledger takes this store as a dependency rather than requiring it, so specs
 can stand in an in-memory store instead of the reader's SQLite binding.
+
+The database itself is `main.lua`'s: this store is handed the open connection
+and asks it for its two tables alone.
 ]]
 
-local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local HighlightSnapshotStore = {}
 HighlightSnapshotStore.__index = HighlightSnapshotStore
-
--- Constants
--- Named after the plugin, so the side-by-side test build writes its own
--- database rather than the reader's (see modules/plugin_identity.lua)
-local DB_FILENAME = PluginIdentity.namespace .. "_highlights.sqlite3"
 
 -- Database schema
 -- The primary key is (client_book_id, server_id) rather than the hash: two
@@ -86,24 +83,25 @@ local SELECT_BOOK_FILE_HASH = "SELECT book_file_hash FROM highlight_snapshot_boo
 local SELECT_HAS_BOOK = "SELECT 1 FROM highlight_snapshot_book WHERE client_book_id = ? LIMIT 1"
 
 --- Create a new HighlightSnapshotStore instance
+-- @param store SqliteStore The plugin's open database
 -- @return HighlightSnapshotStore instance
-function HighlightSnapshotStore:new()
+function HighlightSnapshotStore:new(store)
 	local instance = setmetatable({}, HighlightSnapshotStore)
-	instance.store = SqliteStore:new("HighlightSnapshotStore")
+	instance.store = store
 	return instance
 end
 
---- Open the database, creating it and its schema when needed
--- @param data_dir string Path to KOReader's settings directory
+--- Create this store's tables in the database, when they are not there yet
 -- @return boolean Success status
-function HighlightSnapshotStore:open(data_dir)
-	return self.store:open(data_dir .. "/" .. DB_FILENAME, SCHEMA, MIGRATIONS)
+function HighlightSnapshotStore:prepare()
+	return self.store:ensureSchema(SCHEMA, MIGRATIONS)
 end
 
---- Close the database connection
-function HighlightSnapshotStore:close()
-	self.store:close()
-end
+--- Stop using the database
+-- The connection is shared with the session store and the digest cache and
+-- belongs to whoever opened it, so closing it here would take those two down
+-- as well. Nothing to do, then, beyond letting the ledger say it is done.
+function HighlightSnapshotStore:close() end
 
 --- Replace a book's rows with the given set, in one transaction
 -- Also stamps the book as enrolled, which is what tells an empty snapshot from

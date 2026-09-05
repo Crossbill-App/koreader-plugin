@@ -1,11 +1,17 @@
 --[[
 SQLite Store for Crossbill Sync
 
-One database file, opened in WAL mode with a schema and its migrations, plus the
-statements run against it and the checkpointing close. Three stores each kept
-their own copy of that -- the session store, the digest cache and the highlight
-snapshot store -- so each one now holds one of these and is left with its schema
-and its queries.
+The plugin's one database file, opened in WAL mode, plus the statements run
+against it and the checkpointing close. `main.lua` opens it and hands it to the
+three stores over it -- the session store, the digest cache and the highlight
+snapshot store -- each of which asks `ensureSchema` for its own tables and is
+otherwise left with its queries. Three files were three of everything for no
+reason a reader could see: three connections, three write-ahead logs and three
+files cluttering the settings directory.
+
+Opening and the schema are two calls because of that sharing: the file is opened
+once, and each store brings its own CREATE statements and its own migrations to
+the connection it was given.
 
 Nothing here raises. Every caller is reached from a KOReader event handler, and
 a page turn that ends in an error is a page turn the reader loses, so a database
@@ -42,25 +48,21 @@ local function bindCount(binds)
 	return binds.n or #binds
 end
 
---- Create a store for one database file
--- @param name string Name for this store's log messages, e.g. "SessionStore"
+--- Create the plugin's database
 -- @return SqliteStore instance
-function SqliteStore:new(name)
+function SqliteStore:new()
 	local instance = setmetatable({}, SqliteStore)
-	instance.log = Log.forModule(name or "SqliteStore")
+	instance.log = Log.forModule("Database")
 	instance.db = nil
 	instance.db_path = nil
 	instance._initialized = false
 	return instance
 end
 
---- Open the database, creating it and its schema when needed
+--- Open the database file, creating it when it is not there yet
 -- @param path string Where the database file lives
--- @param schema string The CREATE statements, run on every open
--- @param migrations table|nil SQL statements that bring an older database up to
---   the schema; each is expected to fail once it has been applied
 -- @return boolean Success status
-function SqliteStore:open(path, schema, migrations)
+function SqliteStore:open(path)
 	if self._initialized then
 		return true
 	end
@@ -73,7 +75,6 @@ function SqliteStore:open(path, schema, migrations)
 		-- WAL mode, so a write does not block the read behind the reader's next
 		-- page turn.
 		self.db:exec("PRAGMA journal_mode=WAL;")
-		self.db:exec(schema)
 	end)
 
 	if not success then
@@ -82,11 +83,38 @@ function SqliteStore:open(path, schema, migrations)
 		return false
 	end
 
+	self._initialized = true
+	self.log.dbg("Database open")
+	return true
+end
+
+--- Give one store the tables it works over
+-- Called once per store on the open database, so each brings its own CREATE
+-- statements to the connection it shares with the others.
+-- @param schema string The CREATE statements, run on every open
+-- @param migrations table|nil SQL statements that bring an older database up to
+--   the schema; each is expected to fail once it has been applied
+-- @return boolean Success status
+function SqliteStore:ensureSchema(schema, migrations)
+	if not self:isOpen() then
+		self.log.warn("Cannot create a schema - database not open")
+		return false
+	end
+
+	local success, err = pcall(function()
+		self.db:exec(schema)
+	end)
+
+	if not success then
+		self.log.err("Failed to create the schema:", err)
+		return false
+	end
+
 	-- The schema only creates what is not there yet, so a column added to it
 	-- later never reaches a database that already has the table. Migrations are
 	-- how such a column arrives, and each is guarded on its own: on a database
 	-- that already has it the statement fails, and that is the ordinary case
-	-- rather than a reason to refuse the whole open.
+	-- rather than a reason to refuse the whole schema.
 	for _, migration in ipairs(migrations or {}) do
 		local applied, migration_err = pcall(function()
 			self.db:exec(migration)
@@ -96,8 +124,6 @@ function SqliteStore:open(path, schema, migrations)
 		end
 	end
 
-	self._initialized = true
-	self.log.dbg("Database open")
 	return true
 end
 

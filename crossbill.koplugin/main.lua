@@ -27,6 +27,7 @@ local DigestService = require("modules/digest_service")
 local HighlightImporter = require("modules/highlight_importer")
 local HighlightSnapshot = require("modules/highlight_snapshot")
 local HighlightSnapshotStore = require("modules/highlight_snapshot_store")
+local SqliteStore = require("modules/sqlite_store")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
@@ -96,21 +97,29 @@ function CrossbillSync:init()
 	-- Initialize API client with settings and auth
 	self.api_client = ApiClient:new(self.settings, self.auth)
 
-	-- Initialize the session tracker over its own SQLite store
-	self.session_tracker = SessionTracker:new({ settings = self.settings, store = SessionStore:new() })
-	self.session_tracker:init(DataStorage:getSettingsDir())
+	-- One SQLite file for everything the plugin keeps, opened here and shared
+	-- by the three stores below, each of which asks it for its own tables. A
+	-- file that will not open leaves those stores unprepared, which is how they
+	-- already answer a database that is not there: nothing is written, nothing
+	-- is read, and the sync carries on without them.
+	self.database = SqliteStore:new()
+	self.database:open(DataStorage:getSettingsDir() .. "/" .. PluginIdentity.database_filename)
 
-	-- Initialize digest cache (SQLite) and service
-	self.digest_cache = DigestCache:new()
-	self.digest_cache:init(DataStorage:getSettingsDir())
+	-- Initialize the session tracker over its tables in that database
+	self.session_tracker = SessionTracker:new({ settings = self.settings, store = SessionStore:new(self.database) })
+	self.session_tracker:init()
+
+	-- Initialize digest cache and service
+	self.digest_cache = DigestCache:new(self.database)
+	self.digest_cache:prepare()
 	self.digest_service = DigestService:new(self.api_client, self.digest_cache)
 
 	-- Initialize the importer that writes pulled highlights back to the book
 	self.highlight_importer = HighlightImporter:new()
 
-	-- Initialize the ledger (SQLite) of the server highlights last applied
-	self.highlight_snapshot = HighlightSnapshot:new({ store = HighlightSnapshotStore:new() })
-	self.highlight_snapshot:init(DataStorage:getSettingsDir())
+	-- Initialize the ledger of the server highlights last applied
+	self.highlight_snapshot = HighlightSnapshot:new({ store = HighlightSnapshotStore:new(self.database) })
+	self.highlight_snapshot:init()
 
 	-- Initialize sync service with all dependencies
 	self.sync_service = SyncService:new({
@@ -508,15 +517,16 @@ function CrossbillSync:onExit()
 		log.info("Auto-syncing on exit")
 		self:syncCurrentBook(true)
 	end
-	-- Close databases after sync attempts
+	-- The stores let go of the database first, then it is closed -- after the
+	-- sync attempts above, which were still reading from it.
 	if self.session_tracker then
 		self.session_tracker:close()
 	end
-	if self.digest_cache then
-		self.digest_cache:close()
-	end
 	if self.highlight_snapshot then
 		self.highlight_snapshot:close()
+	end
+	if self.database then
+		self.database:close()
 	end
 	return false
 end

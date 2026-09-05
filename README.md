@@ -63,7 +63,7 @@ make check         # lint + formatting check + tests
 make help          # list all targets
 ```
 
-The test plugin is a renamed copy of the production one with its own settings key and databases, so both can run side by side
+The test plugin is a renamed copy of the production one with its own settings key and database, so both can run side by side
 with different server configurations. `make install`/`install-test`/`install-all` wrap `scripts/copy_to_pocketbook.sh`, which
 can also be called directly with `production`, `test` or `all`.
 
