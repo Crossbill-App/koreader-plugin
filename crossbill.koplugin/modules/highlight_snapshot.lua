@@ -74,29 +74,28 @@ function HighlightSnapshot:new(deps)
 	return instance
 end
 
---- Open the ledger's storage
--- @param data_dir string Path to KOReader's settings directory
+--- Ready the ledger's storage
 -- @return boolean Success status
-function HighlightSnapshot:init(data_dir)
+function HighlightSnapshot:init()
 	if self._initialized then
 		return true
 	end
 
 	if not self.store then
-		log.warn("No store to open")
+		log.warn("No store to prepare")
 		return false
 	end
 
-	local ok, opened = pcall(function()
-		return self.store:open(data_dir)
+	local ok, prepared = pcall(function()
+		return self.store:prepare()
 	end)
 
 	if not ok then
-		log.err("Failed to open the store:", opened)
+		log.err("Failed to prepare the store:", prepared)
 		return false
 	end
-	if not opened then
-		log.err("The store refused to open")
+	if not prepared then
+		log.err("The store refused to prepare")
 		return false
 	end
 

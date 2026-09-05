@@ -6,12 +6,12 @@
 #
 #   production  Install crossbill.koplugin only
 #   test        Install crossbill-test.koplugin only (a renamed copy that keeps
-#               its own settings and databases, so it can run alongside production)
+#               its own settings and database, so it can run alongside production)
 #   all         Install both (default)
 #
 # The test build is a copy of the production plugin with its name changed in
-# _meta.lua. Everything else that has to differ -- the settings key, the three
-# database filenames, the menu key, the two dispatcher action ids, the two
+# _meta.lua. Everything else that has to differ -- the settings key, the
+# database filename, the menu key, the two dispatcher action ids, the two
 # events and the labels a reader sees -- is derived from that name by
 # modules/plugin_identity.lua, so renaming the plugin renames all of it. Only
 # two things cannot be derived and are still done here: the modules/ directory
@@ -127,7 +127,7 @@ install_test() {
     # check is that the string actually changed. A rewrite of _meta.lua that the
     # sed above no longer matches -- a reformatted table, a renamed plugin --
     # would leave the test build deriving the production namespace and quietly
-    # reading and writing the reader's own settings and databases.
+    # reading and writing the reader's own settings and database.
     check_identity() {
         local lua
         for lua in luajit lua5.1 lua; do
@@ -157,7 +157,7 @@ install_test() {
 
         if [ "$namespace" = "crossbill" ]; then
             echo "Error: the test plugin derives the production namespace '$namespace'."
-            echo "It would share the production plugin's settings and databases."
+            echo "It would share the production plugin's settings and database."
             echo "The name in _meta.lua was not renamed; check the seds in $0."
             exit 1
         fi

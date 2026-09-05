@@ -2,24 +2,18 @@
 Digest Cache Module for Crossbill Sync
 
 Caches per-chapter digests (summary, key points, questions) so they can be
-viewed offline. The connection, its WAL and its lifecycle belong to
-`modules/sqlite_store`; what is left here is the schema, the queries and the
-JSON columns the API's arrays are folded into.
+viewed offline. The connection, its WAL and its lifecycle belong to the
+`SqliteStore` `main.lua` opens and hands over; what is left here is the schema,
+the queries and the JSON columns the API's arrays are folded into.
 ]]
 
 local Log = require("modules/log")
 local log = Log.forModule("DigestCache")
 local JSON = require("json")
-local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local DigestCache = {}
 DigestCache.__index = DigestCache
-
--- Constants
--- Named after the plugin, so the side-by-side test build writes its own
--- database rather than the reader's (see modules/plugin_identity.lua)
-local DB_FILENAME = PluginIdentity.namespace .. "_digests.sqlite3"
 
 -- Database schema
 local SCHEMA = [[
@@ -75,23 +69,18 @@ local SELECT_HAS_BOOK = "SELECT 1 FROM digest_fetch_meta WHERE client_book_id = 
 local SELECT_FETCHED_AT = "SELECT fetched_at FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1"
 
 --- Create a new DigestCache instance
+-- @param store SqliteStore The plugin's open database
 -- @return DigestCache instance
-function DigestCache:new()
+function DigestCache:new(store)
 	local instance = setmetatable({}, DigestCache)
-	instance.store = SqliteStore:new("DigestCache")
+	instance.store = store
 	return instance
 end
 
---- Initialize the cache with its database
--- @param data_dir string Path to KOReader settings directory
+--- Create this cache's tables in the database, when they are not there yet
 -- @return boolean Success status
-function DigestCache:init(data_dir)
-	return self.store:open(data_dir .. "/" .. DB_FILENAME, SCHEMA)
-end
-
---- Close the database connection
-function DigestCache:close()
-	self.store:close()
+function DigestCache:prepare()
+	return self.store:ensureSchema(SCHEMA)
 end
 
 --- Coerce a decoded JSON value to a string, treating anything else as nil.

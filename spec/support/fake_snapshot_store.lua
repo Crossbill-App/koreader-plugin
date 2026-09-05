@@ -17,9 +17,9 @@ FakeSnapshotStore.__index = FakeSnapshotStore
 function FakeSnapshotStore:new()
 	return setmetatable({
 		books = {},
-		opened_with = nil,
+		prepared = false,
 		closed = false,
-		-- Set to "open" or "replaceBook" to make that call misbehave.
+		-- Set to "prepare" or "replaceBook" to make that call misbehave.
 		fails_at = nil,
 	}, FakeSnapshotStore)
 end
@@ -35,14 +35,13 @@ local function copyRows(rows)
 	return copied
 end
 
---- Open the store
--- @param data_dir string Directory the database would live in
+--- Create the store's tables in the database it was given
 -- @return boolean Success status
-function FakeSnapshotStore:open(data_dir)
-	if self.fails_at == "open" then
+function FakeSnapshotStore:prepare()
+	if self.fails_at == "prepare" then
 		return false
 	end
-	self.opened_with = data_dir
+	self.prepared = true
 	return true
 end
 

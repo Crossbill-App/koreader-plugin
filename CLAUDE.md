@@ -8,7 +8,7 @@ This is a KOReader plugin (Lua) that syncs book highlights and reading sessions 
 
 ## Development
 
-**Testing on device**: Use the Makefile with a `.env` file containing the path to your device's KOReader plugins folder (`KOREADER_PLUGINS_PATH`): `make install` (production), `make install-test` (test version), `make install-all` (both). These wrap `scripts/copy_to_pocketbook.sh`, which builds the test plugin as a copy of the production one with a different `name` in `_meta.lua`, so both versions can run side by side. Everything the plugin keys itself by follows from that name through `modules/plugin_identity.lua` -- the settings key, the three database filenames, the menu key, the two dispatcher action ids, the two events and the labels a reader sees -- so a new key or database needs nothing added to the script. The derivations are pinned as literals in `spec/plugin_identity_spec.lua`, because for the name "Crossbill" every one of them has to stay byte-identical to what is already on readers' devices.
+**Testing on device**: Use the Makefile with a `.env` file containing the path to your device's KOReader plugins folder (`KOREADER_PLUGINS_PATH`): `make install` (production), `make install-test` (test version), `make install-all` (both). These wrap `scripts/copy_to_pocketbook.sh`, which builds the test plugin as a copy of the production one with a different `name` in `_meta.lua`, so both versions can run side by side. Everything the plugin keys itself by follows from that name through `modules/plugin_identity.lua` -- the settings key, the database filename, the menu key, the two dispatcher action ids, the two events and the labels a reader sees -- so a new key needs nothing added to the script. The derivations are pinned as literals in `spec/plugin_identity_spec.lua`, because for the name "Crossbill" every one of them has to stay byte-identical to what is already on readers' devices.
 
 Two things cannot be derived and the script still does them by hand: the `modules/` directory and the copy of `_meta` the plugin requires are renamed, and everything that requires them rewritten to match. Lua caches a module by name, so a name both copies use means whichever plugin KOReader loads first answers for both, and the production plugin reports the test build's name and version as its own. Two guards run before anything is installed: one refuses a test build that still requires a name the production plugin uses, the other evaluates the built plugin's identity module and refuses a build that still derives the production namespace -- which is what catches an `_meta.lua` edit the rename no longer matches.
 
@@ -17,6 +17,8 @@ Two things cannot be derived and the script still does them by hand: the `module
 **Unit tests**: `make test` runs busted over `spec/` (config in `.busted`). Specs are named `<module>_spec.lua` and target Lua 5.1, matching the LuaJIT KOReader runs plugins on. Because the plugin's modules `require` KOReader internals that do not exist outside the reader, `spec/support/koreader/` holds thin stand-ins (`logger`, `docsettings`, `ffi/sha2`, `ffi/util`, `ffi/archiver`, `device`, `random`, `json`, `gettext`, the `ui/*` widgets, and — for `main.lua` — `dispatcher`, `datastorage` and the `lua-ljsqlite3` binding). `libs/libkoreader-lfs` hands over the real LuaFileSystem rather than a fake, and the `ffi/util` stand-in does real path and directory work, so the installer's staging and swap are tested against real directories — a swap with its arguments the wrong way round passes a mock and destroys a reader's plugin that `.busted` puts on `package.path` — so plugin sources never need test-only branches. `G_reader_settings` is a global rather than a module; `spec/support/global_settings_fake.lua` installs and restores it around a test. The SQLite binding is deliberately not stubbed into a working database: the modules over a store take it as a dependency, so `spec/support/fake_session_store.lua` and `spec/support/fake_snapshot_store.lua` stand in for the real one, and `SessionTracker` takes its clock the same way so a spec can move it past a gap. When one test needs different behaviour, prefer busted's `stub`/`spy` over growing a stub module.
 
 `make check` runs lint, the formatting check and the tests. Keep `make check` green.
+
+**Verifying the database migration**: `make verify-migration LJSQLITE3_DIR=<dir>` runs `scripts/verify_database_migration.lua`, which does the one thing busted cannot. `modules/legacy_databases` moves a reader's reading history and highlight ledger out of the three databases the plugin used to keep and then deletes those files, and the SQLite binding is deliberately not stubbed, so `spec/legacy_databases_spec.lua` checks the statements and the decisions rather than what SQLite makes of them. The script builds both the oldest schemas and the last three-file ones with real rows in WAL mode, migrates them for real and checks what landed. It needs luajit and a directory holding KOReader's `lua-ljsqlite3` binding; run it after touching that module or any of the three schemas.
 
 **Releases and the version**: never edit `version` in `crossbill.koplugin/_meta.lua`. The Release workflow owns it (`workflow_dispatch`, pick patch/minor/major): it bumps the line, commits it to main, tags it and publishes the plugin zip. CI fails any pull request whose `_meta.lua` evaluates to a different version than the one at its merge base (`scripts/check_version_unchanged.sh`, which compares the value rather than the text). Every request carries the version as `X-Crossbill-Client: koreader-plugin/<version>`, and the server refuses versions it no longer supports. `_meta.lua` also owns the project URL as `homepage`; the About menu item and the too-old-plugin message both read it from there, so never write that address out a second time. It owns `update_check_url` in the same way: `modules/update/check.lua` asks that address for the newest published release, so pointing the check at a different service is an edit to that one line. The Release workflow also signs the zip with the Ed25519 key in the `CROSSBILL_SIGNING_KEY` secret, publishes the detached signature as `crossbill.koplugin.zip.sig`, and fails if that signature matches no key in `crossbill.koplugin/modules/update/keys.lua` — so a release nobody could install never ships. Generate or rotate the key with `scripts/setup_signing_key.sh`.
 
@@ -74,7 +76,8 @@ Shared by all of them
     ├── TitleMatch      - How a chapter title is normalized before it is compared
     ├── UpgradeRequired - Typed error: the server refuses this plugin version
     ├── AuthFailed      - Typed error: credentials the server would not accept
-    ├── SqliteStore     - One database file: WAL, schema, migrations, statements
+    ├── SqliteStore     - The one database file: WAL, schemas, migrations, statements
+    ├── LegacyDatabases - Carries the three databases the plugin used to keep into that one, then deletes them
     └── UI              - KOReader dialogs and menu building
 ```
 
@@ -87,10 +90,21 @@ Shared by all of them
 - A failure a caller acts on rather than merely reports travels as a typed error, never as prose to match on: `modules/upgrade_required.lua` for the server refusing this plugin version, `modules/auth_failed.lua` for credentials the server would not accept. Both carry `__tostring` and `__concat`, so a path that logs or appends the error still works. A plain network error stays a plain string.
 - Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out. The server's 426 refusal is raised as an `UpgradeRequired` error from the three wrappers those helpers send through, caught once in `SyncService:syncBook` and once in `DigestService:getForCurrentChapter`, so no call site has to check for it.
 - Network module handles WiFi lifecycle (enable before sync, disable after if we enabled it)
-- The SQLite-backed stores -- `session_store`, `digest_cache`,
-  `highlight_snapshot_store` -- are each a schema and its queries over a
-  `SqliteStore`, which owns the connection, WAL mode, migrations, the
-  not-open guard and the logging of anything that fails. Nothing there raises:
+- There is one database file, `crossbill.sqlite3` in KOReader's settings
+  directory (`crossbill_test.sqlite3` in the side-by-side test build, the name
+  coming from `modules/plugin_identity.lua`). `main.lua` opens it as a
+  `SqliteStore` and hands that to the three stores over it -- `session_store`,
+  `digest_cache` and `highlight_snapshot_store` -- each of which is a schema and
+  its queries, owning its own tables and asking `ensureSchema` for them at
+  startup. The `SqliteStore` owns the connection, WAL mode, migrations, the
+  not-open guard and the logging of anything that fails, and `main.lua` closes
+  it on exit; a store never closes what it did not open. On the first open
+  after the update that made the three files one, `modules/legacy_databases`
+  absorbs whatever a reader still has in `<namespace>_sessions.sqlite3` and
+  `<namespace>_highlights.sqlite3`, counts what arrived and deletes the old
+  files, sidecars and all; `<namespace>_digests.sqlite3` is a cache and is only
+  deleted. A copy that does not add up leaves its file where it was, and the
+  next open tries again. Nothing there raises either:
   every caller is a KOReader event handler. A bind list that can hold a nil is
   built with `SqliteStore.binds`, because `#` stops at the first one.
 - `SessionTracker` and `HighlightSnapshot` take their store as a dependency, so
@@ -113,8 +127,8 @@ push and a pull:
 4. The server's copy comes back: `HighlightImporter` rebuilds the book's
    highlights from it, and `HighlightSnapshot` records what was placed, so the
    next sync can tell a deletion from a highlight that was never here
-5. `SessionTracker` decides what a session is; `SessionStore` keeps them in
-   SQLite (`crossbill_sessions.sqlite3`) until the same sync uploads them
+5. `SessionTracker` decides what a session is; `SessionStore` keeps them in the
+   plugin's database until the same sync uploads them
 6. `DigestService` refreshes the book's chapter digests into `DigestCache`,
    which is what the digest menu item and gesture read from -- including offline
 

@@ -114,7 +114,7 @@ local function trackerWith(opts)
 		now = clock.now,
 	})
 	if opts.init ~= false then
-		tracker:init("/settings")
+		tracker:init()
 	end
 	return tracker, store, clock
 end
@@ -134,32 +134,32 @@ describe("SessionTracker", function()
 	end)
 
 	describe("init", function()
-		it("opens the store in the given data directory", function()
+		it("prepares the store's tables in the plugin's database", function()
 			local _, store = trackerWith()
 
-			assert.are.equal("/settings", store.opened_with)
+			assert.is_true(store.prepared)
 		end)
 
-		it("reports a store that would not open", function()
+		it("reports a store that would not prepare", function()
 			local store = FakeSessionStore:new()
-			store.fails_at = "open"
+			store.fails_at = "prepare"
 			local tracker = trackerWith({ store = store, init = false })
 
-			assert.is_false(tracker:init("/settings"))
+			assert.is_false(tracker:init())
 		end)
 
-		it("refuses without a store to open", function()
+		it("refuses without a store to prepare", function()
 			local tracker = SessionTracker:new({ settings = settingsKeeping() })
 
-			assert.is_false(tracker:init("/settings"))
+			assert.is_false(tracker:init())
 		end)
 
-		it("opens the store once, however often it is asked", function()
+		it("prepares the store once, however often it is asked", function()
 			local tracker, store = trackerWith()
-			store.opened_with = nil
+			store.prepared = false
 
-			assert.is_true(tracker:init("/elsewhere"))
-			assert.is_nil(store.opened_with)
+			assert.is_true(tracker:init())
+			assert.is_false(store.prepared)
 		end)
 	end)
 
@@ -253,9 +253,9 @@ describe("SessionTracker", function()
 			assert.are.equal(0, #store.sessions)
 		end)
 
-		it("does not start when the store never opened", function()
+		it("does not start when the store was never prepared", function()
 			local store = FakeSessionStore:new()
-			store.fails_at = "open"
+			store.fails_at = "prepare"
 			local tracker = trackerWith({ store = store })
 			local document = documentAt("/body/DocFragment[1]")
 
@@ -516,9 +516,9 @@ describe("SessionTracker", function()
 			assert.are.same({}, tracker:getUnsyncedSessionsForBook("md5:" .. FILE))
 		end)
 
-		it("answers nothing when the store never opened", function()
+		it("answers nothing when the store was never prepared", function()
 			local store = FakeSessionStore:new()
-			store.fails_at = "open"
+			store.fails_at = "prepare"
 			local tracker = trackerWith({ store = store })
 
 			assert.are.same({}, tracker:getUnsyncedSessionsForBook("md5:" .. FILE))

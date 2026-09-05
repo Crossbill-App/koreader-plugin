@@ -60,10 +60,11 @@ make lint          # luacheck
 make format        # stylua
 make test          # busted unit tests
 make check         # lint + formatting check + tests
+make verify-migration LJSQLITE3_DIR=<dir>  # the one-database migration, against real SQLite
 make help          # list all targets
 ```
 
-The test plugin is a renamed copy of the production one with its own settings key and databases, so both can run side by side
+The test plugin is a renamed copy of the production one with its own settings key and database, so both can run side by side
 with different server configurations. `make install`/`install-test`/`install-all` wrap `scripts/copy_to_pocketbook.sh`, which
 can also be called directly with `production`, `test` or `all`.
 
@@ -87,3 +88,13 @@ directory on `package.path`, so the plugin sources need no test-only branches. S
 [`spec/support/koreader/README.md`](spec/support/koreader/README.md) before adding a stub.
 
 Tests target Lua 5.1, matching the LuaJIT that KOReader runs plugins on.
+
+One thing busted cannot cover is `modules/legacy_databases`, which carries a reader's rows out of the three databases the
+plugin kept before this one and then deletes those files: the specs have no SQLite binding on purpose, so they check the
+statements rather than what SQLite makes of them. `scripts/verify_database_migration.lua` runs the whole migration over real
+files with real rows, in both the oldest and the last three-file schema. It needs luajit and a directory holding KOReader's
+`lua-ljsqlite3` binding:
+
+```bash
+make verify-migration LJSQLITE3_DIR=/path/to/koreader/frontend
+```

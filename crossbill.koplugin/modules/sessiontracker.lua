@@ -64,25 +64,24 @@ function SessionTracker:new(deps)
 	return instance
 end
 
---- Open the tracker's storage
--- @param data_dir string Path to KOReader's settings directory
+--- Ready the tracker's storage
 -- @return boolean Success status
-function SessionTracker:init(data_dir)
+function SessionTracker:init()
 	if self._initialized then
 		return true
 	end
 
 	if not self.store then
-		log.warn("No store to open")
+		log.warn("No store to prepare")
 		return false
 	end
 
-	local opened = guarded("open", function()
-		return self.store:open(data_dir)
+	local prepared = guarded("prepare", function()
+		return self.store:prepare()
 	end)
 
-	if not opened then
-		log.err("The store would not open")
+	if not prepared then
+		log.err("The store would not prepare")
 		return false
 	end
 

@@ -1005,7 +1005,7 @@ describe("SyncService", function()
 			-- @return table The ledger, backed by the in-memory store
 			local function ledgerOwnedByTheFirstCopy()
 				local ledger = HighlightSnapshot:new({ store = FakeSnapshotStore:new() })
-				ledger:init("/settings")
+				ledger:init()
 				ledger:recordPlaced(CLIENT_BOOK_ID, { { server_id = 7, text = THE_OTHER_COPYS_HIGHLIGHT } }, FILE_HASH)
 				return ledger
 			end

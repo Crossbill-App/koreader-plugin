@@ -24,7 +24,7 @@ local function ledgerWith(opts)
 	local store = opts.store or FakeSnapshotStore:new()
 	local snapshot = HighlightSnapshot:new({ store = store })
 	if opts.init ~= false then
-		snapshot:init("/settings")
+		snapshot:init()
 	end
 	return snapshot, store
 end
@@ -51,18 +51,18 @@ describe("HighlightSnapshot", function()
 	end)
 
 	describe("init", function()
-		it("opens the store in the given data directory", function()
+		it("prepares the store's tables in the plugin's database", function()
 			local _, store = ledgerWith()
 
-			assert.are.equal("/settings", store.opened_with)
+			assert.is_true(store.prepared)
 		end)
 
-		it("reports a store that could not open", function()
+		it("reports a store that could not prepare", function()
 			local store = FakeSnapshotStore:new()
-			store.fails_at = "open"
+			store.fails_at = "prepare"
 			local snapshot = HighlightSnapshot:new({ store = store })
 
-			assert.is_false(snapshot:init("/settings"))
+			assert.is_false(snapshot:init())
 		end)
 	end)
 
