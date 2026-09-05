@@ -45,14 +45,13 @@ local function fakeClock(start)
 end
 
 --- Build a reflowable document whose position the test can move
--- Reflowable, so the tracker records XPointers: that is the interesting case,
--- and the one every EPUB takes.
+-- Reflowable, so the tracker records XPointers: that is the only case, since
+-- the plugin stays inert on anything but an EPUB.
 -- @param xpointer string Where the reader is
 -- @return table The document stand-in
 local function documentAt(xpointer)
 	return {
 		file = FILE,
-		info = { has_pages = false },
 		xpointer = xpointer,
 		getXPointer = function(self)
 			return self.xpointer
@@ -176,6 +175,19 @@ describe("SessionTracker", function()
 			assert.are.equal(412, session.total_pages)
 			assert.are.equal(START_TIME, session.start_time)
 			assert.is_true(type(session.device_id) == "string" and session.device_id ~= "")
+		end)
+
+		it("records no page count for a document that cannot say how long it is", function()
+			local tracker, store, clock = trackerWith()
+			local document = documentAt("/body/DocFragment[1]")
+			document.getPageCount = nil
+			local ui = uiFor(document, 1)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.equal(0, store.sessions[1].total_pages)
 		end)
 
 		it("falls back to the document's own properties when metadata extraction fails", function()
@@ -458,7 +470,13 @@ describe("SessionTracker", function()
 
 			local sessions = tracker:getUnsyncedSessionsForBook("md5:" .. FILE)
 			assert.are.equal(1, #sessions)
-			assert.are.equal(TITLE, sessions[1].book_title)
+			-- What the upload sends: the store answers those columns and the id,
+			-- not the whole row it wrote.
+			assert.are.equal(START_TIME, sessions[1].start_time)
+			assert.are.equal("xpointer", sessions[1].position_type)
+			assert.are.equal("/body/DocFragment[1]", sessions[1].start_position)
+			assert.is_not_nil(sessions[1].id)
+			assert.is_nil(sessions[1].book_title)
 		end)
 
 		it("stops answering the sessions the server has taken", function()

@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     end_page INTEGER,
     total_pages INTEGER,
     synced INTEGER DEFAULT 0,
-    sync_attempts INTEGER DEFAULT 0,
     created_at INTEGER DEFAULT (strftime('%s', 'now')),
     device_id TEXT
 );
@@ -63,12 +62,12 @@ INSERT INTO sessions (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ]]
 
+-- Only what the upload sends, plus the id the sync marks synced by. The rest of
+-- a row is written for the record and read by nothing.
 local SELECT_UNSYNCED_FOR_BOOK = [[
-SELECT id, book_file, book_hash, book_title, book_author,
-       start_time, end_time, duration_seconds,
+SELECT id, start_time, end_time,
        position_type, start_position, end_position,
-       start_page, end_page, total_pages,
-       device_id, created_at
+       start_page, end_page, device_id
 FROM sessions
 WHERE book_hash = ? AND synced = 0
 ORDER BY start_time ASC
@@ -128,6 +127,8 @@ function SessionStore:saveSession(session)
 end
 
 --- Read a book's sessions that have not reached the server
+-- Each record carries the columns the upload sends and the id it is marked
+-- synced by, not the whole row.
 -- @param book_file_hash string MD5 hash of the book file path
 -- @return table Array of session records, oldest first
 function SessionStore:getUnsyncedSessionsForBook(book_file_hash)
@@ -138,21 +139,14 @@ function SessionStore:getUnsyncedSessionsForBook(book_file_hash)
 	local sessions = self.store:query(SELECT_UNSYNCED_FOR_BOOK, SqliteStore.binds(book_file_hash), function(row)
 		return {
 			id = row[1],
-			book_file = row[2],
-			book_hash = row[3],
-			book_title = row[4],
-			book_author = row[5],
-			start_time = row[6],
-			end_time = row[7],
-			duration_seconds = row[8],
-			position_type = row[9],
-			start_position = row[10],
-			end_position = row[11],
-			start_page = row[12],
-			end_page = row[13],
-			total_pages = row[14],
-			device_id = row[15],
-			created_at = row[16],
+			start_time = row[2],
+			end_time = row[3],
+			position_type = row[4],
+			start_position = row[5],
+			end_position = row[6],
+			start_page = row[7],
+			end_page = row[8],
+			device_id = row[9],
 		}
 	end)
 

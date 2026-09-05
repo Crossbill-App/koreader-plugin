@@ -102,13 +102,11 @@ function SessionTracker:close()
 	self.current_session = nil
 end
 
---- Get device identifier
--- @return string Stable device ID
-function SessionTracker:_getDeviceId()
-	return DeviceIdentity.getDeviceId()
-end
-
 --- Capture current reading position from document
+-- There is no fixed-layout branch here because there are no fixed-layout
+-- documents to reach it: `modules/document_support` keeps the whole plugin
+-- inert on anything but an EPUB (see `main.lua:init`), so every document that
+-- gets this far is reflowable and has an XPointer to record.
 -- @param document The document object
 -- @param ui The UI object
 -- @return table Position data {type, position, page}
@@ -118,32 +116,19 @@ function SessionTracker:_capturePosition(document, ui)
 	end
 
 	local position_data = {
-		type = "page",
+		type = "xpointer",
 		position = "0",
 		page = 0,
 	}
 
 	local success, err = pcall(function()
-		-- Check if document has fixed pages (PDF, DjVu) or is reflowable (EPUB, etc.)
-		local has_pages = document.info and document.info.has_pages
-
-		if has_pages then
-			-- Fixed layout document - use page number
-			position_data.type = "page"
-			local page = ui.view and ui.view.state and ui.view.state.page or 1
-			position_data.position = tostring(page)
-			position_data.page = page
-		else
-			-- Reflowable document - use XPointer
-			position_data.type = "xpointer"
-			local xpointer = document:getXPointer()
-			if xpointer then
-				position_data.position = xpointer
-			end
-			-- Also capture page for reference
-			if ui.view and ui.view.state and ui.view.state.page then
-				position_data.page = ui.view.state.page
-			end
+		local xpointer = document:getXPointer()
+		if xpointer then
+			position_data.position = xpointer
+		end
+		-- Also capture page for reference
+		if ui and ui.view and ui.view.state and ui.view.state.page then
+			position_data.page = ui.view.state.page
 		end
 	end)
 
@@ -156,20 +141,13 @@ end
 
 --- Get total pages in document
 -- @param document The document object
--- @param ui The UI object
 -- @return number Total pages or 0
-function SessionTracker:_getTotalPages(document, ui)
-	local success, pages = pcall(function()
-		if ui.view and ui.view.state and ui.view.state.doc_height then
-			-- For reflowable docs, this might need adjustment
-			return ui.document:getPageCount()
-		elseif document.getPageCount then
-			return document:getPageCount()
-		end
+function SessionTracker:_getTotalPages(document)
+	if not document or not document.getPageCount then
 		return 0
-	end)
+	end
 
-	return success and pages or 0
+	return document:getPageCount() or 0
 end
 
 --- Start tracking a new reading session
@@ -209,40 +187,48 @@ function SessionTracker:startSession(document, ui)
 		return
 	end
 
-	-- Get book title and author from document properties
-	local book_title = nil
-	local book_author = nil
+	-- Title and author for the session row, from the metadata extractor first
+	-- and the document's own properties second. Either reaches into a document
+	-- that may not hold what it expects -- the extractor needs doc_props, which
+	-- is missing outside normal reading -- and a session is not worth losing
+	-- over that, so each is asked under a guard and only what is still missing
+	-- is asked of the next.
+	local book_title, book_author
+	local failure
 
-	-- Extract full metadata if UI is available
-	if ui then
-		local meta_extractor = BookMetadata:new(ui)
-		local success, book_data = pcall(function()
-			return meta_extractor:extractBookData()
-		end)
-		if success and book_data then
-			book_title = book_data.title
-			book_author = book_data.author
-		else
-			logger.warn("Crossbill SessionTracker: Failed to extract book metadata")
+	--- Fill in whichever of the title and author is still missing
+	-- @param read function Answers the title and the author, or raises
+	local function fillFrom(read)
+		if book_title and book_author then
+			return
+		end
+
+		local ok, title, author = pcall(read)
+		if not ok then
+			failure = title
+			return
+		end
+		if not book_title and title and title ~= "" then
+			book_title = title
+		end
+		if not book_author and author and author ~= "" then
+			book_author = author
 		end
 	end
 
-	-- Fallback if metadata extraction failed or UI not available (shouldn't happen in normal reading)
-	if not book_title or not book_author then
-		local success, err = pcall(function()
-			local props = document:getProps()
-			if props then
-				if not book_title and props.title and props.title ~= "" then
-					book_title = props.title
-				end
-				if not book_author and props.authors and props.authors ~= "" then
-					book_author = props.authors
-				end
-			end
+	if ui then
+		fillFrom(function()
+			local book_data = BookMetadata:new(ui):extractBookData() or {}
+			return book_data.title, book_data.author
 		end)
-		if not success then
-			logger.dbg("Crossbill SessionTracker: Could not get book properties:", err)
-		end
+	end
+	fillFrom(function()
+		local props = document:getProps() or {}
+		return props.title, props.authors
+	end)
+
+	if failure and (not book_title or not book_author) then
+		logger.warn("Crossbill SessionTracker: Could not read the book's title and author:", failure)
 	end
 
 	local now = self.now()
@@ -261,7 +247,7 @@ function SessionTracker:startSession(document, ui)
 		current_page = position.page,
 		last_activity_time = now,
 		last_capture_time = now,
-		total_pages = self:_getTotalPages(document, ui),
+		total_pages = self:_getTotalPages(document),
 	}
 
 	logger.dbg("Crossbill SessionTracker: Started session for", book_title or file_path)
@@ -352,7 +338,7 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 			start_page = session.start_page,
 			end_page = end_page,
 			total_pages = session.total_pages,
-			device_id = self:_getDeviceId(),
+			device_id = DeviceIdentity.getDeviceId(),
 		})
 	end)
 

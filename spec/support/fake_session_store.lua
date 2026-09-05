@@ -4,7 +4,8 @@ In-memory stand-in for the session tracker's SQLite store.
 `modules/session_store` talks to `lua-ljsqlite3`, which does not exist outside
 KOReader, so the tracker takes its store as a dependency and specs hand it this
 one. It implements the same contract: a saved session keeps the columns it was
-given, `getUnsyncedSessionsForBook` answers a book's sessions oldest first, and
+given, `getUnsyncedSessionsForBook` answers a book's sessions oldest first --
+carrying only the columns the upload sends, the way the real query does -- and
 one marked synced stops being answered.
 
 Follows `spec/support/fake_snapshot_store.lua`, down to `fails_at` for the tests
@@ -69,6 +70,20 @@ function FakeSessionStore:saveSession(session)
 	return true
 end
 
+-- What `SessionStore:getUnsyncedSessionsForBook` selects: the columns the
+-- upload sends, plus the id the sync marks them synced by.
+local UNSYNCED_COLUMNS = {
+	"id",
+	"start_time",
+	"end_time",
+	"position_type",
+	"start_position",
+	"end_position",
+	"start_page",
+	"end_page",
+	"device_id",
+}
+
 --- Read a book's sessions that have not been marked synced
 -- @param book_file_hash string Hash of the book file path
 -- @return table Array of session records, oldest first
@@ -76,7 +91,11 @@ function FakeSessionStore:getUnsyncedSessionsForBook(book_file_hash)
 	local found = {}
 	for _, session in ipairs(self.sessions) do
 		if session.book_hash == book_file_hash and not session.synced then
-			table.insert(found, copySession(session))
+			local record = {}
+			for _, column in ipairs(UNSYNCED_COLUMNS) do
+				record[column] = session[column]
+			end
+			table.insert(found, record)
 		end
 	end
 	return found
