@@ -10,8 +10,10 @@ local Dispatcher = require("dispatcher")
 local logger = require("logger")
 local DataStorage = require("datastorage")
 local Trapper = require("ui/trapper")
+local T = require("ffi/util").template
 local _ = require("gettext")
 
+local PluginIdentity = require("modules/plugin_identity")
 local Settings = require("modules/settings")
 local Network = require("modules/network")
 local Auth = require("modules/auth")
@@ -31,8 +33,23 @@ local DocumentSupport = require("modules/document_support")
 local UpdateCheck = require("modules/update/check")
 local UpdateInstaller = require("modules/update/installer")
 
+-- The plugin's own names for the things KOReader keys by: the menu entry, the
+-- two gesture-bindable actions and the two events they dispatch. All of them
+-- come from the plugin's name, so the side-by-side test build gets its own set
+-- rather than seizing the production plugin's; see modules/plugin_identity.lua.
+local MENU_KEY = PluginIdentity.namespace .. "_sync"
+local ACTION_SYNC = PluginIdentity.namespace .. "_sync_current_book"
+-- The action name is the key KOReader stores in a user's gesture and profile
+-- settings, and Dispatcher silently skips names it no longer knows. Renaming
+-- this to ..._digest would leave existing bindings pointing at nothing, with no
+-- error to tell the user why their gesture stopped working, so the old name
+-- stays. Only the title is user-visible.
+local ACTION_DIGEST = PluginIdentity.namespace .. "_show_chapter_summary"
+local EVENT_SYNC = PluginIdentity.event_prefix .. "SyncCurrentBook"
+local EVENT_DIGEST = PluginIdentity.event_prefix .. "ShowChapterDigest"
+
 local CrossbillSync = WidgetContainer:extend({
-	name = "Crossbill",
+	name = PluginIdentity.display_name,
 	is_doc_only = true, -- Only show when document is open
 })
 
@@ -40,21 +57,16 @@ local CrossbillSync = WidgetContainer:extend({
 -- These show up in the gesture manager under "Sync current book with
 -- Crossbill" and "Crossbill chapter digest".
 function CrossbillSync:onDispatcherRegisterActions()
-	Dispatcher:registerAction("crossbill_sync_current_book", {
+	Dispatcher:registerAction(ACTION_SYNC, {
 		category = "none",
-		event = "CrossbillSyncCurrentBook",
-		title = _("Sync current book with Crossbill"),
+		event = EVENT_SYNC,
+		title = T(_("Sync current book with %1"), PluginIdentity.display_name),
 		reader = true,
 	})
-	-- The action name is the key KOReader stores in a user's gesture and
-	-- profile settings, and Dispatcher silently skips names it no longer
-	-- knows. Renaming this to ..._digest would leave existing bindings
-	-- pointing at nothing, with no error to tell the user why their gesture
-	-- stopped working, so the old name stays. Only the title is user-visible.
-	Dispatcher:registerAction("crossbill_show_chapter_summary", {
+	Dispatcher:registerAction(ACTION_DIGEST, {
 		category = "none",
-		event = "CrossbillShowChapterDigest",
-		title = _("Crossbill chapter digest"),
+		event = EVENT_DIGEST,
+		title = T(_("%1 chapter digest"), PluginIdentity.display_name),
 		reader = true,
 	})
 end
@@ -115,7 +127,7 @@ end
 
 --- Add plugin menu items to KOReader main menu
 function CrossbillSync:addToMainMenu(menu_items)
-	menu_items.crossbill_sync = UI.buildMenuItems({
+	menu_items[MENU_KEY] = UI.buildMenuItems({
 		on_sync = function()
 			self:syncCurrentBook()
 		end,
@@ -414,15 +426,22 @@ function CrossbillSync:doSync(is_autosync)
 end
 
 -- Event handlers for gesture-bound actions (dispatched via Dispatcher)
+--
+-- KOReader dispatches an event by calling the method named "on" .. event, so
+-- these two are assigned under the derived names rather than written out as
+-- `function CrossbillSync:onCrossbillSyncCurrentBook()`. Spelling them out
+-- would leave the test build registering CrossbillTestSyncCurrentBook and
+-- answering only to CrossbillSyncCurrentBook -- a gesture that does nothing,
+-- with nothing anywhere to say why.
 
 --- Handle the "sync current book" gesture action
-function CrossbillSync:onCrossbillSyncCurrentBook()
+CrossbillSync["on" .. EVENT_SYNC] = function(self)
 	self:syncCurrentBook()
 	return true
 end
 
 --- Handle the "chapter digest" gesture action
-function CrossbillSync:onCrossbillShowChapterDigest()
+CrossbillSync["on" .. EVENT_DIGEST] = function(self)
 	self:showChapterDigest()
 	return true
 end

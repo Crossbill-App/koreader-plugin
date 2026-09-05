@@ -11,13 +11,16 @@ can hand it an in-memory stand-in instead of the reader's SQLite binding, the
 way `modules/highlight_snapshot` already does.
 ]]
 
+local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local SessionStore = {}
 SessionStore.__index = SessionStore
 
 -- Constants
-local DB_FILENAME = "crossbill_sessions.sqlite3"
+-- Named after the plugin, so the side-by-side test build writes its own
+-- database rather than the reader's (see modules/plugin_identity.lua)
+local DB_FILENAME = PluginIdentity.namespace .. "_sessions.sqlite3"
 
 -- Database schema
 local SCHEMA = [[

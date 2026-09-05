@@ -13,6 +13,7 @@ and KOReader flushes that to disk on its own schedule.
 ]]
 
 local logger = require("logger")
+local PluginIdentity = require("modules/plugin_identity")
 
 local Settings = {}
 Settings.__index = Settings
@@ -30,7 +31,10 @@ local DEFAULTS = {
 }
 
 -- Settings key in KOReader's global settings
-local SETTINGS_KEY = "crossbill_sync"
+-- The one key everything the plugin remembers lives under. Derived rather
+-- than written out, so the side-by-side test build gets its own; see
+-- modules/plugin_identity.lua.
+local SETTINGS_KEY = PluginIdentity.namespace .. "_sync"
 
 -- Returns the plugin's settings table, registering it with G_reader_settings on
 -- first use so that every reader of the namespace shares one table.

@@ -9,13 +9,16 @@ JSON columns the API's arrays are folded into.
 
 local logger = require("logger")
 local JSON = require("json")
+local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local DigestCache = {}
 DigestCache.__index = DigestCache
 
 -- Constants
-local DB_FILENAME = "crossbill_digests.sqlite3"
+-- Named after the plugin, so the side-by-side test build writes its own
+-- database rather than the reader's (see modules/plugin_identity.lua)
+local DB_FILENAME = PluginIdentity.namespace .. "_digests.sqlite3"
 
 -- Database schema
 local SCHEMA = [[

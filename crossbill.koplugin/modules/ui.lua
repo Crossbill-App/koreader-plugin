@@ -15,6 +15,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Trapper = require("ui/trapper")
 local AuthFailed = require("modules/auth_failed")
 local DigestFormat = require("modules/digest_format")
+local PluginIdentity = require("modules/plugin_identity")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
 local logger = require("logger")
@@ -476,7 +477,10 @@ end
 -- @return table Menu item table for KOReader
 function UI.buildMenuItems(handlers)
 	return {
-		text = _("Crossbill"),
+		-- The plugin's own name, not a translatable string: it is a proper noun,
+		-- and it is what tells the side-by-side test build's menu entry apart
+		-- from the production one.
+		text = PluginIdentity.display_name,
 		sorting_hint = "tools",
 		sub_item_table = {
 			{

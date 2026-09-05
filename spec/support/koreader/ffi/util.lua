@@ -1,10 +1,11 @@
 --[[
 Stand-in for koreader-base's `ffi/util`.
 
-Only the handful of helpers the update installer reaches for. The path and
-directory ones do the real work against the real filesystem, so a spec that
-stages and swaps directories is testing what will happen on a device rather
-than what a mock was told to say.
+Only the handful of helpers the update installer reaches for, plus the string
+templating `main.lua` fills its gesture titles with. The path and directory ones
+do the real work against the real filesystem, so a spec that stages and swaps
+directories is testing what will happen on a device rather than what a mock was
+told to say.
 
 Two are not real, because they cannot be here:
 
@@ -95,5 +96,23 @@ end
 
 --- Flush a directory entry to disk, which a test cannot observe
 function util.fsyncDirectory() end
+
+--- Fill %1, %2, ... in a translated string with the arguments that follow
+-- The real one, transcribed: a translator may reorder the placeholders, so
+-- they are numbered rather than positional, and a string with none is handed
+-- straight back.
+-- @param str string The template
+-- @param ... any The values to substitute
+-- @return string The filled-in string
+function util.template(str, ...)
+	local params = { ... }
+	if #params == 0 then
+		return str
+	end
+
+	return (str:gsub("%%([1-9][0-9]?)", function(index)
+		return params[tonumber(index)]
+	end))
+end
 
 return util
