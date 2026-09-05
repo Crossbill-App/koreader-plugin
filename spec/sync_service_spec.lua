@@ -586,9 +586,6 @@ describe("SyncService", function()
 				end,
 			})
 			local session_tracker = {
-				getBookFileHash = function()
-					return "hash"
-				end,
 				getUnsyncedSessionsForBook = function()
 					return { { id = 7 } }
 				end,
@@ -1123,9 +1120,6 @@ describe("SyncService", function()
 					end,
 				})
 				local session_tracker = {
-					getBookFileHash = function()
-						return "hash"
-					end,
 					getUnsyncedSessionsForBook = function()
 						return { { id = 7 } }
 					end,
@@ -1229,9 +1223,6 @@ describe("SyncService", function()
 				local service = serviceFor(api, {
 					highlight_importer = importerReturning({ inserted = 0 }),
 					session_tracker = {
-						getBookFileHash = function()
-							return "hash"
-						end,
 						getUnsyncedSessionsForBook = function()
 							return { { id = 7 } }
 						end,
