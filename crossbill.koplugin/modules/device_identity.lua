@@ -17,7 +17,6 @@ local DeviceIdentity = {}
 -- The server accepts at most 100 characters for a device id
 local MAX_LENGTH = 100
 local UUID_PREFIX_LENGTH = 8
-local UUID_SETTING_KEY = "device_uuid"
 
 local cached_device_id = nil
 
@@ -31,13 +30,18 @@ local function getUuid()
 		return koreader_uuid
 	end
 
-	local stored_uuid = Settings.readShared(UUID_SETTING_KEY)
+	-- Its own Settings instance rather than an injected one: getDeviceId takes no
+	-- arguments -- SessionTracker and SyncService call it without a settings
+	-- object -- and every instance shares the one table G_reader_settings holds,
+	-- so this sees and is seen by the plugin's own instance.
+	local settings = Settings:new():load()
+	local stored_uuid = settings:getDeviceUuid()
 	if isNonEmptyString(stored_uuid) then
 		return stored_uuid
 	end
 
 	local uuid = random.uuid()
-	Settings.saveShared(UUID_SETTING_KEY, uuid)
+	settings:setDeviceUuid(uuid)
 	logger.dbg("Crossbill DeviceIdentity: Generated a device UUID")
 	return uuid
 end

@@ -427,8 +427,7 @@ function UI.showMinSessionDurationDialog(settings)
 						local duration = tonumber(fields[1])
 
 						if duration and duration > 0 then
-							settings:set("min_reading_session_duration", duration)
-							settings:save()
+							settings:setMinReadingSessionDuration(duration)
 							UIManager:close(dialog)
 							UI.showSettingsSaved()
 						else

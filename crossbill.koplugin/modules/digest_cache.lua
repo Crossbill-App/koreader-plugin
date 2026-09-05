@@ -71,12 +71,10 @@ local SELECT_HAS_BOOK = "SELECT 1 FROM digest_fetch_meta WHERE client_book_id = 
 local SELECT_FETCHED_AT = "SELECT fetched_at FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1"
 
 --- Create a new DigestCache instance
--- @param settings Settings instance for accessing configuration
 -- @return DigestCache instance
-function DigestCache:new(settings)
+function DigestCache:new()
 	local instance = setmetatable({}, DigestCache)
 	instance.store = SqliteStore:new("DigestCache")
-	instance.settings = settings
 	return instance
 end
 

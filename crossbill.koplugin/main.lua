@@ -88,7 +88,7 @@ function CrossbillSync:init()
 	self.session_tracker:init(DataStorage:getSettingsDir())
 
 	-- Initialize digest cache (SQLite) and service
-	self.digest_cache = DigestCache:new(self.settings)
+	self.digest_cache = DigestCache:new()
 	self.digest_cache:init(DataStorage:getSettingsDir())
 	self.digest_service = DigestService:new(self.api_client, self.digest_cache)
 
