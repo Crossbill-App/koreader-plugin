@@ -27,7 +27,6 @@ local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
 local DocumentSupport = require("modules/document_support")
-local UpgradeRequired = require("modules/upgrade_required")
 local UpdateCheck = require("modules/update/check")
 local UpdateInstaller = require("modules/update/installer")
 
@@ -244,20 +243,10 @@ end
 function CrossbillSync:_showDigestResult(item, err_kind, err)
 	if item then
 		UI.showDigestPopup(item)
-	elseif err_kind == UpgradeRequired.KIND then
-		-- The digest is beside the point: nothing is served to this plugin
-		-- until it is updated.
-		UI.showUpgradeRequired(err)
-	elseif err_kind == "book_unknown" then
-		UI.showDigestBookUnknown()
-	elseif err_kind == "no_digest_for_book" then
-		UI.showDigestEmptyBook()
-	elseif err_kind == "chapter_not_matched" then
-		UI.showDigestChapterNotMatched()
-	else
-		-- err_kind == "no_cache" (or any unexpected value)
-		UI.showDigestNoCache()
+		return
 	end
+
+	UI.showDigestError(err_kind, err)
 end
 
 --- Show the current chapter's digest
@@ -277,7 +266,7 @@ function CrossbillSync:showChapterDigest()
 	end)
 	if not ok or not book_data or not book_data.client_book_id then
 		logger.err("Crossbill: Failed to extract book metadata for the digest")
-		UI.showDigestNoCache()
+		UI.showDigestError("no_cache")
 		return
 	end
 

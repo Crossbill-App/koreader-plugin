@@ -37,6 +37,7 @@ main.lua (CrossbillSync)
     ├── SessionTracker  - Reading session tracking (over SessionStore)
     ├── SyncService     - Orchestrates sync workflow (uses ApiClient, SessionTracker)
     ├── UI              - KOReader dialogs and menu building
+    ├── DigestFormat    - A digest item as title, HTML and plain text; no widgets
     ├── SqliteStore     - One database file: WAL, schema, migrations, statements
     │   ├── SessionStore           - Finished reading sessions
     │   ├── DigestCache            - Chapter digests, kept for offline reading

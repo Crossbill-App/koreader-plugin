@@ -138,6 +138,42 @@ describe("UI", function()
 		end)
 	end)
 
+	describe("showDigestError", function()
+		local REFUSAL = UpgradeRequired.fromResponse(426, {
+			detail = {
+				min_supported_version = "0.13.0",
+				received_version = "0.12.0",
+				update_url = "https://github.com/Crossbill-App/koreader-plugin",
+			},
+		})
+
+		it("names the reason the digest service gave", function()
+			UI.showDigestError("chapter_not_matched")
+
+			assert.are.equal("Couldn't match the current chapter to Crossbill's chapter list.", shownText())
+		end)
+
+		it("shows the refusal itself when the server turned the plugin away", function()
+			UI.showDigestError(UpgradeRequired.KIND, REFUSAL)
+
+			assert.are.equal(UpgradeRequired.message(REFUSAL), shownText())
+		end)
+
+		it("falls back to the missing-cache message for a kind it does not know", function()
+			-- The one a reader can act on, and the kinds are the digest
+			-- service's to add to.
+			UI.showDigestError("something_new")
+
+			assert.are.equal("No digest cached yet. Sync this book while online.", shownText())
+		end)
+
+		it("falls back the same way when there is no kind at all", function()
+			UI.showDigestError(nil)
+
+			assert.are.equal("No digest cached yet. Sync this book while online.", shownText())
+		end)
+	end)
+
 	describe("showAbout", function()
 		it("names the version and the address the plugin comes from", function()
 			-- Read from _meta rather than written out, so the release workflow's
