@@ -9,6 +9,13 @@ the HTTP status the server replied with, nil when nothing answered at all, and
 success is `code == 200`. The GETs and the POSTs used to disagree about that --
 the POSTs handed back a boolean -- which left every caller remembering which
 kind of call it was making.
+
+The status alone says whether the call succeeded. The data is whatever the
+server sent with it, which is nil when it sent nothing -- some endpoints answer
+with a status only -- so a caller that needs a body is the one that checks for
+one. A 200 whose body would not decode is not a success with a complaint
+attached but no usable answer at all, and is reported the way a request that
+never arrived is: no status, and an error saying which call it was.
 ]]
 
 local AuthFailed = require("modules/auth_failed")
@@ -130,13 +137,15 @@ function ApiClient:_sendAuthorized(what, send)
 end
 
 --- Fetch a JSON resource with the caller's bearer token
--- Every GET the plugin makes answers the same three ways: 200 with a body, 404
--- for a book the server has never been told about, and anything else a failure
--- carrying its status.
+-- Every GET the plugin makes answers the same three ways: a 200, 404 for a book
+-- the server has never been told about, and anything else a failure carrying its
+-- status. A 200 is a success whether or not a body came with it: reading an
+-- empty one as a failure handed the caller a 200 and an error at the same time,
+-- which every caller that goes by the status read as success anyway.
 -- @param path string Path below the API root, starting with a slash
 -- @param what string What is being fetched, for the log lines
--- @return number|nil HTTP status code
--- @return table|nil Response data, nil for anything but a 200 with a body
+-- @return number|nil HTTP status code, nil when there was no usable answer
+-- @return table|nil Response data, nil when the server sent no body
 -- @return any Error message, nil on success
 function ApiClient:_authorizedGet(path, what)
 	local api_url = self.settings:getApiUrl() .. path
@@ -150,7 +159,15 @@ function ApiClient:_authorizedGet(path, what)
 		return nil, nil, err or "Network error"
 	end
 
-	if code == 200 and response_data then
+	if code == 200 then
+		if err then
+			-- Network only reports an error alongside a status for a body it could
+			-- not decode. Nothing about that answer is usable, so it is reported
+			-- without one rather than as a 200 the caller has to disbelieve.
+			logger.warn("Crossbill API: Fetching", what, "answered 200 with a body that would not decode")
+			return nil, nil, what .. ": the server answered 200 with a body that would not decode"
+		end
+
 		logger.dbg("Crossbill API: Fetched", what)
 		return code, response_data, nil
 	end
@@ -165,14 +182,17 @@ function ApiClient:_authorizedGet(path, what)
 end
 
 --- Post a JSON payload with the caller's bearer token
--- Every POST the plugin makes answers the same two ways: 200 with a body, or a
--- failure carrying its status.
+-- Every POST the plugin makes answers the same two ways: a 200, or a failure
+-- carrying its status. As with a fetch, the body is not part of that verdict: a
+-- caller that acts on what the server sent back -- the counts of a highlight
+-- push, the book a create returns -- checks for it and says what its absence
+-- cost, which the status could never say for it.
 -- @param path string Path below the API root, starting with a slash
 -- @param payload table The data to send
 -- @param what string What is being sent, for the log lines
 -- @param failure string|nil What to call a failure, "Upload failed" by default
--- @return number|nil HTTP status code
--- @return table|nil Response data, nil for anything but a 200 with a body
+-- @return number|nil HTTP status code, nil when there was no usable answer
+-- @return table|nil Response data, nil when the server sent no body
 -- @return any Error message, nil on success
 function ApiClient:_authorizedPost(path, payload, what, failure)
 	local api_url = self.settings:getApiUrl() .. path
@@ -186,7 +206,14 @@ function ApiClient:_authorizedPost(path, payload, what, failure)
 		return nil, nil, err or "Network error"
 	end
 
-	if code == 200 and response_data then
+	if code == 200 then
+		if err then
+			-- As in a fetch: a body that would not decode leaves no usable answer,
+			-- so there is no status to report either.
+			logger.warn("Crossbill API: Sending", what, "answered 200 with a body that would not decode")
+			return nil, nil, what .. ": the server answered 200 with a body that would not decode"
+		end
+
 		logger.info("Crossbill API: Uploaded", what)
 		return code, response_data, nil
 	end
@@ -281,14 +308,17 @@ end
 function ApiClient:getHighlights(client_book_id)
 	local code, response_data, err =
 		self:_authorizedGet("/ereader/books/" .. client_book_id .. "/highlights", "highlights")
-	if not response_data then
+	if code ~= 200 then
 		return code, nil, err
 	end
 
 	-- An empty list decodes to the JSON library's array marker rather than a
-	-- plain table, so copy the items into one.
+	-- plain table, so copy the items into one. A 200 that carried no body at all
+	-- is a book with no highlights and answers with the same empty array this
+	-- method promises: handing back nil instead would have the pull report a
+	-- fetch failure over an answer that succeeded.
 	local items = {}
-	if type(response_data.items) == "table" then
+	if response_data and type(response_data.items) == "table" then
 		for _, item in ipairs(response_data.items) do
 			table.insert(items, item)
 		end

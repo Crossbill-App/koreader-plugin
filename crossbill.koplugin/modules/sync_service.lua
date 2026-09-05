@@ -172,9 +172,13 @@ function SyncService:_runSyncSteps(result, ui, opts)
 		-- Book doesn't exist on server, create it
 		logger.info("Crossbill SyncService: Book not found on server, creating it")
 		local create_code, created_metadata, create_err = self.api_client:createBook(book_data)
-		if create_code ~= 200 then
+		if create_code ~= 200 or not created_metadata then
+			-- A create that answered 200 and said nothing about the book leaves the
+			-- steps below nothing to work from: the EPUB upload would skip quietly
+			-- for want of server metadata, and a sync that silently sends no file
+			-- is worse than one that says what it could not do.
 			result.success = false
-			result.error = create_err or "Failed to create book on server"
+			result.error = create_err or "Create book failed: the server sent no book back"
 			return
 		end
 		server_metadata = created_metadata
@@ -518,6 +522,10 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 	logger.info("Crossbill SyncService: Found", #sessions, "unsynced reading sessions")
 
 	local code, response, err = self.api_client:uploadReadingSessions(client_book_id, sessions)
+	-- The endpoint is all-or-nothing, and its answer is what says how it went, so
+	-- a 200 that arrived without one is not taken as confirmation: the sessions
+	-- stay unsynced and the next sync offers them again, which costs a duplicate
+	-- the server discards rather than a reading history nobody kept.
 	if code == 200 and response then
 		-- Mark all sessions as synced (all-or-nothing API)
 		local session_ids = {}
@@ -602,10 +610,12 @@ function SyncService:_getServerBookMetadata(client_book_id)
 	end
 
 	if not metadata then
-		logger.warn("Crossbill SyncService: Failed to fetch book metadata from server")
+		logger.warn("Crossbill SyncService: No usable book metadata from server:", err)
 		-- Never a bare nil: that is how a book the server does not have is
-		-- reported, and a failure read as one would create the book again.
-		return nil, err or "Failed to fetch book metadata from server"
+		-- reported, and a failure read as one would create the book again. The
+		-- fallback covers the one answer that is not a failure but is still no
+		-- metadata: a 200 the server sent no body with.
+		return nil, err or "The server sent no book metadata back"
 	end
 
 	return metadata, nil

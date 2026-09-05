@@ -367,14 +367,16 @@ describe("ApiClient", function()
 			assert.are.equal("Fetch failed: 500", err)
 		end)
 
-		it("treats a 200 with no body as a failure", function()
+		it("reads a 200 with no body at all as a book with no highlights", function()
+			-- The status is the verdict, and an endpoint that answers one with no
+			-- body is answering that there is nothing to send.
 			NetworkFake.setGetResult(200, nil)
 
 			local code, items, err = clientWithToken(TOKEN):getHighlights(CLIENT_BOOK_ID)
 
 			assert.are.equal(200, code)
-			assert.is_nil(items)
-			assert.is_not_nil(err)
+			assert.are.same({}, items)
+			assert.is_nil(err)
 		end)
 
 		it("passes a network error straight back", function()
@@ -436,6 +438,58 @@ describe("ApiClient", function()
 			assert.are.equal(500, code)
 			assert.is_nil(response)
 			assert.are.equal("Upload failed: 500", err)
+		end)
+	end)
+
+	describe("a 200 the server sent no body with", function()
+		-- The status is the whole verdict: a caller that goes by `code == 200`
+		-- must not be handed a success and an error at the same time. What the
+		-- missing body cost is the caller's to say, since only it knows whether it
+		-- needed one.
+
+		it("is a success without data on a fetch", function()
+			NetworkFake.setGetResult(200, nil)
+
+			local code, data, err = clientWithToken(TOKEN):getBookMetadata(CLIENT_BOOK_ID)
+
+			assert.are.equal(200, code)
+			assert.is_nil(data)
+			assert.is_nil(err)
+		end)
+
+		it("is a success without data on a post", function()
+			NetworkFake.setPostResult(200, nil)
+
+			local code, data, err = clientWithToken(TOKEN):createBook({ client_book_id = CLIENT_BOOK_ID })
+
+			assert.are.equal(200, code)
+			assert.is_nil(data)
+			assert.is_nil(err)
+		end)
+	end)
+
+	describe("a 200 whose body would not decode", function()
+		-- Nothing about that answer is usable, so it is reported the way a request
+		-- that never arrived is: no status, and a message saying which call it was.
+
+		it("is reported without a status on a fetch", function()
+			NetworkFake.setGetResult(200, nil, "Invalid JSON response")
+
+			local code, data, err = clientWithToken(TOKEN):getBookMetadata(CLIENT_BOOK_ID)
+
+			assert.is_nil(code)
+			assert.is_nil(data)
+			assert.are.equal("book metadata: the server answered 200 with a body that would not decode", err)
+		end)
+
+		it("is reported without a status on a post", function()
+			NetworkFake.setPostResult(200, nil, "Invalid JSON response")
+
+			local code, data, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+
+			assert.is_nil(code)
+			assert.is_nil(data)
+			assert.are.equal("highlights: the server answered 200 with a body that would not decode", err)
 		end)
 	end)
 

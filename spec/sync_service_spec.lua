@@ -192,6 +192,24 @@ describe("SyncService", function()
 			assert.is_nil(result.pull)
 		end)
 
+		it("pulls a book the server holds no highlights for without reporting a failure", function()
+			-- An empty list is an answer, not a failed fetch: the api client makes
+			-- one of a 200 that carried no body, and the importer is asked to apply
+			-- it, which is what clears out highlights removed elsewhere.
+			local importer = importerReturning({ inserted = 0, placed = {} })
+			local service = syncServiceWith({
+				api_client = apiReturning(200, {}),
+				highlight_importer = importer,
+			})
+			local result = {}
+
+			service:_applyPull(result, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.equal(1, importer.calls)
+			assert.are.same({}, importer.received)
+			assert.is_nil(result.pull_error)
+		end)
+
 		it("reports the network's error when the fetch never reached the server", function()
 			local service = syncServiceWith({
 				api_client = apiReturning(nil, nil, "Connection refused"),
@@ -637,7 +655,10 @@ describe("SyncService", function()
 				assert.is_true(result.success)
 			end)
 
-			it("skips the upload when the server has no metadata for the book", function()
+			it("ends the sync when the created book came back with no metadata", function()
+				-- Without the book the server made there is nothing to upload the
+				-- EPUB against, and a sync that quietly sends no file is worse than
+				-- one that says what it could not do.
 				local api = apiForSyncBook({
 					getBookMetadata = function()
 						return 404
@@ -651,8 +672,9 @@ describe("SyncService", function()
 
 				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
 
+				assert.is_false(result.success)
+				assert.are.equal("Create book failed: the server sent no book back", result.error)
 				assert.is_nil(api.uploaded_epub)
-				assert.is_true(result.success)
 			end)
 
 			it("carries on with the sync when the file cannot be read", function()
@@ -1135,6 +1157,29 @@ describe("SyncService", function()
 
 				assert.is_false(result.success)
 				assert.are.equal("Fetch failed: 500", result.error)
+				assert.is_nil(api.created)
+			end)
+		end)
+
+		describe("a metadata fetch the server answered with no book", function()
+			it("ends the sync saying so, rather than creating the book again", function()
+				-- A 200 with no body is a successful call that told the sync
+				-- nothing, and only a 404 means the server does not have the book.
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 200, nil
+					end,
+					createBook = function(self)
+						self.created = true
+						return 200, {}
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+				assert.is_false(result.success)
+				assert.are.equal("The server sent no book metadata back", result.error)
 				assert.is_nil(api.created)
 			end)
 		end)
