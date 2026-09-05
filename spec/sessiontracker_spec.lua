@@ -45,8 +45,8 @@ local function fakeClock(start)
 end
 
 --- Build a reflowable document whose position the test can move
--- Reflowable, so the tracker records XPointers: that is the only case, since
--- the plugin stays inert on anything but an EPUB.
+-- Reflowable, so the tracker records XPointers; see `pagedDocument` for the
+-- EPUB that KOReader opened with MuPDF instead.
 -- @param xpointer string Where the reader is
 -- @return table The document stand-in
 local function documentAt(xpointer)
@@ -63,6 +63,17 @@ local function documentAt(xpointer)
 			return 412
 		end,
 	}
+end
+
+--- Build an EPUB that KOReader opened as a paged document
+-- What "Open with... MuPDF" produces: the file still ends in .epub, so the
+-- plugin is active, but the document has pages and no XPointer method at all.
+-- @return table The document stand-in
+local function pagedDocument()
+	local document = documentAt(nil)
+	document.getXPointer = nil
+	document.info = { has_pages = true }
+	return document
 end
 
 --- Build the reader UI around a document
@@ -175,6 +186,21 @@ describe("SessionTracker", function()
 			assert.are.equal(412, session.total_pages)
 			assert.are.equal(START_TIME, session.start_time)
 			assert.is_true(type(session.device_id) == "string" and session.device_id ~= "")
+		end)
+
+		it("records the page, not an XPointer, for an EPUB opened as a paged document", function()
+			local tracker, store, clock = trackerWith()
+			local document = pagedDocument()
+			local ui = uiFor(document, 17)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			local session = store.sessions[1]
+			assert.are.equal("page", session.position_type)
+			assert.are.equal("17", session.start_position)
+			assert.are.equal(17, session.start_page)
 		end)
 
 		it("records no page count for a document that cannot say how long it is", function()

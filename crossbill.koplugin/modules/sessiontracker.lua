@@ -104,10 +104,12 @@ function SessionTracker:close()
 end
 
 --- Capture current reading position from document
--- There is no fixed-layout branch here because there are no fixed-layout
--- documents to reach it: `modules/document_support` keeps the whole plugin
--- inert on anything but an EPUB (see `main.lua:init`), so every document that
--- gets this far is reflowable and has an XPointer to record.
+-- `modules/document_support` keeps the plugin inert on anything but an EPUB,
+-- but an EPUB is not always reflowable: KOReader can open one with MuPDF
+-- ("Open with..."), and then it is a paged document with no XPointer to give.
+-- Such a session records its page instead, the way the highlight importer
+-- declines to pull for the same book. The page is read before the XPointer,
+-- so a document that cannot answer the second still keeps the first.
 -- @param document The document object
 -- @param ui The UI object
 -- @return table Position data {type, position, page}
@@ -117,19 +119,28 @@ function SessionTracker:_capturePosition(document, ui)
 	end
 
 	local position_data = {
-		type = "xpointer",
+		type = "page",
 		position = "0",
 		page = 0,
 	}
 
 	local success, err = pcall(function()
+		local page = ui and ui.view and ui.view.state and ui.view.state.page
+		if page then
+			position_data.page = page
+		end
+
+		local has_pages = document.info and document.info.has_pages
+		if has_pages then
+			position_data.position = tostring(page or 1)
+			position_data.page = page or 1
+			return
+		end
+
+		position_data.type = "xpointer"
 		local xpointer = document:getXPointer()
 		if xpointer then
 			position_data.position = xpointer
-		end
-		-- Also capture page for reference
-		if ui and ui.view and ui.view.state and ui.view.state.page then
-			position_data.page = ui.view.state.page
 		end
 	end)
 
