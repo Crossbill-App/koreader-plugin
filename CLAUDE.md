@@ -34,9 +34,8 @@ main.lua (CrossbillSync)
     ├── Settings        - Configuration persistence via KOReader's G_reader_settings
     ├── Auth            - OAuth token management (login, refresh, caching)
     ├── ApiClient       - HTTP API communication (highlights, sessions, files)
-    ├── FileUploader    - EPUB uploads (uses ApiClient)
     ├── SessionTracker  - Reading session tracking (over SessionStore)
-    ├── SyncService     - Orchestrates sync workflow (uses ApiClient, FileUploader, SessionTracker)
+    ├── SyncService     - Orchestrates sync workflow (uses ApiClient, SessionTracker)
     ├── UI              - KOReader dialogs and menu building
     ├── SqliteStore     - One database file: WAL, schema, migrations, statements
     │   ├── SessionStore           - Finished reading sessions

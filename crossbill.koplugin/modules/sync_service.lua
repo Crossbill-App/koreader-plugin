@@ -16,6 +16,7 @@ local logger = require("logger")
 local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
+local DocumentSupport = require("modules/document_support")
 local HighlightExtractor = require("modules/highlight_extractor")
 local HighlightImporter = require("modules/highlight_importer")
 local NoteEdits = require("modules/note_edits")
@@ -24,23 +25,40 @@ local UpgradeRequired = require("modules/upgrade_required")
 local SyncService = {}
 SyncService.__index = SyncService
 
+--- Read a whole file, the default behind the injected reader
+-- @param path string The file to read
+-- @return string|nil The file's bytes, nil when it could not be read
+-- @return string|nil Why it could not be read
+local function readWholeFile(path)
+	local file, open_err = io.open(path, "rb")
+	if not file then
+		return nil, open_err or "Failed to open file"
+	end
+
+	local data = file:read("*all")
+	file:close()
+	return data
+end
+
 --- Create a new SyncService instance
 -- Collaborators come in a table rather than positionally: a caller that wants
 -- only some of them (a test, or a sync path that skips the digest refresh) can
 -- name those instead of counting nils.
 -- @param deps table Collaborators, all optional except api_client:
 --   api_client ApiClient instance for server communication
---   file_uploader FileUploader instance for file uploads
 --   session_tracker SessionTracker instance for reading sessions
 --   settings Settings instance for configuration
 --   digest_service DigestService instance for digest refresh
 --   highlight_importer HighlightImporter instance for the pull
 --   highlight_snapshot HighlightSnapshot ledger of the last applied pull
+--   read_file function(path) -> data|nil, err, the one thing this service does
+--     to the filesystem, injectable so a spec can hand it an EPUB without
+--     putting one on disk. Called as a plain function, not a method.
 -- @return SyncService instance
 function SyncService:new(deps)
 	local instance = setmetatable({}, SyncService)
 	instance.api_client = deps.api_client
-	instance.file_uploader = deps.file_uploader
+	instance.read_file = deps.read_file or readWholeFile
 	instance.session_tracker = deps.session_tracker
 	instance.settings = deps.settings
 	instance.digest_service = deps.digest_service
@@ -515,17 +533,47 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 	return result
 end
 
---- Sync files (EPUB) for the current book
+--- Send the book's EPUB up to the server
+-- The upload is unconditional, including when server_metadata.has_ebook says a
+-- copy is already there: while the server's text extraction keeps changing, a
+-- re-upload is what guarantees it holds a copy it can still read. That costs a
+-- full EPUB over WiFi on every sync, so it is a deliberate trade to revisit
+-- rather than an oversight.
+--
+-- Nothing here fails the sync on its own: a book the server has not heard of
+-- yet, or a document that is not an EPUB, is skipped quietly, and a file that
+-- cannot be read or an upload the server rejects is handed back for the caller
+-- to log. Only the server's refusal to serve this plugin version stops the
+-- sync, and it is _abortIfTooOld that acts on it.
 -- @param client_book_id string The client book ID
 -- @param book_metadata BookMetadata instance
--- @param server_metadata table Server metadata containing has_ebook, etc.
+-- @param server_metadata table|nil Server metadata containing has_ebook, etc.
 -- @return any|nil The error the upload failed with
 function SyncService:_syncFiles(client_book_id, book_metadata, server_metadata)
-	-- Upload EPUB file if available (errors are logged but don't fail sync)
-	local epub_ok, epub_err = self.file_uploader:uploadEpub(client_book_id, book_metadata, server_metadata)
-	if not epub_ok then
-		logger.warn("Crossbill SyncService: EPUB upload issue:", epub_err)
-		return epub_err
+	if not server_metadata then
+		logger.dbg("Crossbill SyncService: No server metadata, skipping EPUB upload")
+		return nil
+	end
+
+	local doc_path = book_metadata:getDocPath()
+	if not DocumentSupport.isEpubPath(doc_path) then
+		logger.dbg("Crossbill SyncService: Document is not an EPUB file, skipping upload")
+		return nil
+	end
+
+	local epub_data, read_err = self.read_file(doc_path)
+	if not epub_data or epub_data == "" then
+		logger.err("Crossbill SyncService: Failed to read EPUB data:", read_err)
+		return read_err or "Failed to read EPUB data"
+	end
+
+	local filename = BookMetadata.getFilename(doc_path)
+	logger.dbg("Crossbill SyncService: Uploading EPUB file:", filename, "size:", #epub_data, "bytes")
+
+	local upload_ok, _, upload_err = self.api_client:uploadEpub(client_book_id, epub_data, filename)
+	if not upload_ok then
+		logger.warn("Crossbill SyncService: EPUB upload issue:", upload_err)
+		return upload_err
 	end
 
 	return nil

@@ -25,9 +25,13 @@ function BookMetadata:new(ui)
 end
 
 --- Extract filename from a file path
+-- Public because the EPUB upload names the file it sends with it, and a second
+-- copy of the pattern is a second place to get it wrong. A path with no
+-- separator in it is already a bare filename, so it is handed back whole
+-- rather than replaced with a placeholder.
 -- @param path string Full file path
 -- @return string Filename only
-local function getFilename(path)
+function BookMetadata.getFilename(path)
 	return path:match("^.+/(.+)$") or path
 end
 
@@ -115,7 +119,7 @@ function BookMetadata:extractBookData()
 
 	local keywords = parseKeywords(metadata_props.keywords)
 
-	local title = book_props.display_title or book_props.title or getFilename(doc_path)
+	local title = book_props.display_title or book_props.title or BookMetadata.getFilename(doc_path)
 	local author = book_props.authors or nil
 	local client_book_id = BookIdentity.clientBookId(title, author)
 	logger.dbg("Crossbill Metadata: Syncing book:", title, "client_book_id:", client_book_id)

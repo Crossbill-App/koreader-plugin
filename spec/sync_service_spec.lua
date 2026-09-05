@@ -503,6 +503,10 @@ describe("SyncService", function()
 				getHighlights = function()
 					return 200, {}
 				end,
+				uploadEpub = function(self, _, data, filename)
+					self.uploaded_epub = { data = data, filename = filename }
+					return true, {}
+				end,
 				uploadReadingSessions = function(self, _, sessions)
 					self.sessions_uploaded = sessions
 					return true, {}
@@ -534,14 +538,11 @@ describe("SyncService", function()
 					return opts.session_tracker ~= nil
 				end,
 			}
-			local file_uploader = opts.file_uploader or {
-				uploadEpub = function()
-					return true
-				end,
-			}
 			return SyncService:new({
 				api_client = api,
-				file_uploader = file_uploader,
+				read_file = opts.read_file or function()
+					return "epub-bytes"
+				end,
 				session_tracker = opts.session_tracker,
 				settings = settings,
 				digest_service = opts.digest_service,
@@ -600,6 +601,107 @@ describe("SyncService", function()
 			assert.is_truthy(result.pull_error)
 			assert.are.equal(1, result.sessions_synced)
 			assert.are.same({ 7 }, session_tracker.marked)
+		end)
+
+		describe("the EPUB it sends up with the book", function()
+			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
+
+			it("uploads the file under its own name", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.same({ data = "epub-bytes", filename = "dune.epub" }, api.uploaded_epub)
+			end)
+
+			it("uploads a book whose extension is upper case", function()
+				-- A reader's library is full of Book.EPUB, and a case-sensitive
+				-- check used to sync its highlights while never sending the file.
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }, "/books/DUNE.EPUB"))
+
+				assert.are.same({ data = "epub-bytes", filename = "DUNE.EPUB" }, api.uploaded_epub)
+			end)
+
+			it("skips a document that is not an EPUB", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }, "/books/dune.pdf"))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+			end)
+
+			it("skips the upload when the server has no metadata for the book", function()
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 404
+					end,
+					createBook = function()
+						return true, nil
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+			end)
+
+			it("carries on with the sync when the file cannot be read", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					read_file = function()
+						return nil, "No such file"
+					end,
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+				assert.are.equal(1, #api.uploaded.highlights)
+			end)
+
+			it("carries on with the sync when the file is empty", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					read_file = function()
+						return ""
+					end,
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+			end)
+
+			it("hands back the upload's own error without failing the sync", function()
+				local api = apiForSyncBook({
+					uploadEpub = function()
+						return false, nil, "server exploded"
+					end,
+				})
+				local service = serviceFor(api, {})
+				local book_metadata = {
+					getDocPath = function()
+						return BOOK_PATH
+					end,
+				}
+
+				local err = service:_syncFiles(CLIENT_BOOK_ID, book_metadata, { book_id = 1 })
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.equal("server exploded", err)
+				assert.is_true(result.success)
+				assert.are.equal(1, #api.uploaded.highlights)
+			end)
 		end)
 
 		describe("the removals it sends with the push", function()
@@ -1145,18 +1247,15 @@ describe("SyncService", function()
 				-- An EPUB upload that fails is otherwise only logged, but a refusal
 				-- is about the plugin rather than about the file.
 				local api = apiForSyncBook({
+					uploadEpub = function()
+						return false, nil, REFUSAL
+					end,
 					uploadHighlights = function(self)
 						self.pushed = true
 						return true, {}
 					end,
 				})
-				local service = serviceFor(api, {
-					file_uploader = {
-						uploadEpub = function()
-							return false, REFUSAL
-						end,
-					},
-				})
+				local service = serviceFor(api, {})
 
 				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
