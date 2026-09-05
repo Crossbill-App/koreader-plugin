@@ -1,24 +1,17 @@
 local UIManager = require("ui/uimanager")
 local AuthFailed = require("modules/auth_failed")
 local UpgradeRequired = require("modules/upgrade_required")
+local FakeNetwork = require("fake_network")
 
 -- Requiring main.lua loads `modules/network`, which reaches for a socket. It is
 -- the plugin's own module rather than one of KOReader's, so it cannot be
 -- shadowed from spec/support: seeding the package cache before requiring main
 -- keeps the wire out of the run (see spec/api_client_spec.lua). The fake leaves
 -- the sync paths below already online, with nothing to clean up.
-local NetworkFake = {
-	whenOnline = function(fn)
-		fn()
-	end,
-	disableWifiIfNeeded = function() end,
-	isConnected = function()
-		return true
-	end,
-}
+local network = FakeNetwork:new({ connected = true })
 
 local real_network = package.loaded["modules/network"]
-package.loaded["modules/network"] = NetworkFake
+package.loaded["modules/network"] = network
 local CrossbillSync = require("main")
 -- Loaded while the fake was seeded, so this is the same module main holds, and
 -- stubbing its check here is what the plugin will call.
@@ -226,7 +219,7 @@ describe("CrossbillSync", function()
 
 		before_each(function()
 			waiting_callback = nil
-			stub(NetworkFake, "disableWifiIfNeeded")
+			stub(network, "disableWifiIfNeeded")
 		end)
 
 		--- Put a field back if this test replaced it
@@ -241,9 +234,9 @@ describe("CrossbillSync", function()
 		end
 
 		after_each(function()
-			NetworkFake.disableWifiIfNeeded:revert()
+			network.disableWifiIfNeeded:revert()
 			revertIfStubbed(UpdateCheck, "check")
-			revertIfStubbed(NetworkFake, "whenOnline")
+			revertIfStubbed(network, "whenOnline")
 		end)
 
 		--- Answer every check with the same outcome
@@ -256,7 +249,7 @@ describe("CrossbillSync", function()
 
 		--- Leave the device offline, keeping the work WiFi would run
 		local function wifiOff()
-			stub(NetworkFake, "whenOnline").invokes(function(fn)
+			stub(network, "whenOnline").invokes(function(fn)
 				waiting_callback = fn
 			end)
 		end
@@ -277,7 +270,7 @@ describe("CrossbillSync", function()
 				"Checking for updates...",
 				"Crossbill Sync 0.13.0 is available.\nYou have 0.12.0.\n\nDownload:\nhttps://example.test/releases/tag/v0.13.0",
 			}, shownTexts())
-			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+			assert.stub(network.disableWifiIfNeeded).was_called()
 		end)
 
 		it("says the plugin is ahead rather than up to date", function()
@@ -308,7 +301,7 @@ describe("CrossbillSync", function()
 				"Checking for updates...",
 				"Could not check for updates. Please try again later.",
 			}, shownTexts())
-			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+			assert.stub(network.disableWifiIfNeeded).was_called()
 		end)
 
 		it("waits for WiFi rather than checking while offline", function()
@@ -326,7 +319,7 @@ describe("CrossbillSync", function()
 				"Checking for updates...",
 				"Crossbill Sync 0.12.0 is the latest version.",
 			}, shownTexts())
-			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+			assert.stub(network.disableWifiIfNeeded).was_called()
 		end)
 	end)
 	describe("installUpdate", function()
@@ -342,18 +335,18 @@ describe("CrossbillSync", function()
 		}
 
 		before_each(function()
-			stub(NetworkFake, "disableWifiIfNeeded")
+			stub(network, "disableWifiIfNeeded")
 			stub(UIManagerModule, "askForRestart")
 		end)
 
 		after_each(function()
-			NetworkFake.disableWifiIfNeeded:revert()
+			network.disableWifiIfNeeded:revert()
 			UIManagerModule.askForRestart:revert()
 			if type(UpdateInstaller.install) == "table" then
 				UpdateInstaller.install:revert()
 			end
-			if type(NetworkFake.whenOnline) == "table" then
-				NetworkFake.whenOnline:revert()
+			if type(network.whenOnline) == "table" then
+				network.whenOnline:revert()
 			end
 		end)
 
@@ -373,7 +366,7 @@ describe("CrossbillSync", function()
 				.stub(UIManagerModule.askForRestart)
 				.was_called_with(UIManagerModule, "Crossbill Sync 0.14.0 is installed.")
 			assert.are.same({ "Installing update..." }, closedTexts())
-			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+			assert.stub(network.disableWifiIfNeeded).was_called()
 		end)
 
 		it("hands the installer the directory KOReader loaded the plugin from", function()
@@ -415,12 +408,12 @@ describe("CrossbillSync", function()
 			pluginWith({ path = "/plugins/crossbill.koplugin" }):installUpdate(AVAILABLE)
 
 			assert.are.same({ "Installing update..." }, closedTexts())
-			assert.stub(NetworkFake.disableWifiIfNeeded).was_called()
+			assert.stub(network.disableWifiIfNeeded).was_called()
 		end)
 
 		it("waits for WiFi rather than installing while offline", function()
 			local waiting
-			stub(NetworkFake, "whenOnline").invokes(function(fn)
+			stub(network, "whenOnline").invokes(function(fn)
 				waiting = fn
 			end)
 			installReturning(true, nil)

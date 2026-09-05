@@ -36,7 +36,8 @@ local Signature = require("modules/update/signature")
 local TrustedKeys = require("modules/update/keys")
 local ffiUtil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("UpdateInstaller")
 
 local UpdateInstaller = {}
 
@@ -101,7 +102,7 @@ local function loadArchiver()
 	local ok, lib = pcall(require, "ffi/archiver")
 
 	if not ok then
-		logger.warn("Crossbill: no archive reader here:", tostring(lib))
+		log.warn("no archive reader here:", tostring(lib))
 		return nil
 	end
 
@@ -126,7 +127,7 @@ local function discard(path)
 
 	local ok, err = ffiUtil.purgeDir(path)
 	if not ok then
-		logger.warn("Crossbill: could not remove", path, tostring(err))
+		log.warn("could not remove", path, tostring(err))
 	end
 end
 
@@ -199,7 +200,7 @@ end
 local function looksLikeThePlugin(staging)
 	for _index, name in ipairs(REQUIRED_FILES) do
 		if lfs.attributes(ffiUtil.joinPath(staging, name), "mode") ~= "file" then
-			logger.warn("Crossbill: the staged update has no", name)
+			log.warn("the staged update has no", name)
 			return false
 		end
 	end
@@ -230,7 +231,7 @@ local function swap(plugin_dir, staging)
 		-- The plugin directory is gone and the staged copy would not take its
 		-- place. Put the old one back rather than leave nothing there.
 		local restored = os.rename(retired, plugin_dir)
-		logger.err("Crossbill: could not install the update:", tostring(err), "restored:", tostring(restored))
+		log.err("could not install the update:", tostring(err), "restored:", tostring(restored))
 		return false, "could not move the update into place: " .. tostring(err)
 	end
 

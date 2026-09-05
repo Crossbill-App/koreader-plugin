@@ -8,7 +8,9 @@ This is a KOReader plugin (Lua) that syncs book highlights and reading sessions 
 
 ## Development
 
-**Testing on device**: Use the Makefile with a `.env` file containing the path to your device's KOReader plugins folder (`KOREADER_PLUGINS_PATH`): `make install` (production), `make install-test` (test version), `make install-all` (both). These wrap `scripts/copy_to_pocketbook.sh`, which builds the test plugin as a renamed copy with its own settings key and databases so both versions can run side by side. Its `modules/` directory and its `_meta` are renamed too, and everything that requires them rewritten to match: Lua caches a module by name, so a name both copies use means whichever plugin KOReader loads first answers for both, and the production plugin reports the test build's name and version as its own. The script refuses to install a test build that still shares a name, rather than leaving that to be noticed on a device.
+**Testing on device**: Use the Makefile with a `.env` file containing the path to your device's KOReader plugins folder (`KOREADER_PLUGINS_PATH`): `make install` (production), `make install-test` (test version), `make install-all` (both). These wrap `scripts/copy_to_pocketbook.sh`, which builds the test plugin as a copy of the production one with a different `name` in `_meta.lua`, so both versions can run side by side. Everything the plugin keys itself by follows from that name through `modules/plugin_identity.lua` -- the settings key, the three database filenames, the menu key, the two dispatcher action ids, the two events and the labels a reader sees -- so a new key or database needs nothing added to the script. The derivations are pinned as literals in `spec/plugin_identity_spec.lua`, because for the name "Crossbill" every one of them has to stay byte-identical to what is already on readers' devices.
+
+Two things cannot be derived and the script still does them by hand: the `modules/` directory and the copy of `_meta` the plugin requires are renamed, and everything that requires them rewritten to match. Lua caches a module by name, so a name both copies use means whichever plugin KOReader loads first answers for both, and the production plugin reports the test build's name and version as its own. Two guards run before anything is installed: one refuses a test build that still requires a name the production plugin uses, the other evaluates the built plugin's identity module and refuses a build that still derives the production namespace -- which is what catches an `_meta.lua` edit the rename no longer matches.
 
 **Linting and formatting**: `make lint` runs luacheck (config in `.luacheckrc`), `make format` runs StyLua (config in `.stylua.toml`).
 
@@ -26,33 +28,61 @@ The installer stages the new version as a sibling of the plugin directory and sw
 
 ## Architecture
 
-The plugin follows a modular architecture with dependency injection:
+The plugin follows a modular architecture with dependency injection. The
+modules are grouped below by the flow they belong to rather than by the order
+`main.lua` happens to build them: the push, the pull, the digest, the updater,
+and the pieces every flow leans on.
 
 ```
-main.lua (CrossbillSync)
-    ├── BookIdentity    - The client book id and file hash, the only copy of either formula
+main.lua (CrossbillSync) - KOReader event handlers, the menu, and the wiring of everything below
+
+The push -- highlights and sessions out
+    ├── BookMetadata       - Title, author, ISBN, language and page count off the document
+    ├── HighlightExtractor - Highlights from ReaderAnnotation's memory, or the sidecar on disk
+    ├── SessionTracker     - Decides what a reading session is and where the reader got to
+    ├── SessionStore       - Finished sessions as rows, and the two queries the sync needs
+    ├── SyncService        - Orders the sync: the book, the EPUB, the push, the pull, sessions, digests
+    ├── ApiClient          - Every server call, answering `code, data, error`
+    └── Auth               - Login, refresh and token caching
+
+The pull -- the server's highlights back, and the ledger that makes it safe
+    ├── HighlightImporter      - Rebuilds the book's highlights from the server's copy
+    ├── HighlightSnapshot      - Per book, the server highlights this file last applied
+    ├── HighlightSnapshotStore - Those rows in SQLite: the schema and the queries
+    └── NoteEdits              - Stamps notes edited since the last sync, which KOReader does not
+
+The chapter digest
+    ├── DigestService - Fetches, caches and matches the current chapter to a digest
+    ├── DigestCache   - Digests in SQLite, so a chapter can be read offline
+    ├── DigestFormat  - A digest item as title, HTML and plain text; no widgets
+    └── DigestViewer  - The scrollable HTML dialog that shows one; no spec, by design
+
+update/ -- checking for, verifying and installing a newer plugin
+    ├── check.lua     - Asks the release service what the newest version is
+    ├── installer.lua - Downloads, verifies and swaps in a new version
+    ├── signature.lua - Ed25519 verification, the only FFI in the plugin
+    └── keys.lua      - Public keys a release may be signed with
+
+Shared by all of them
     ├── Settings        - Configuration persistence via KOReader's G_reader_settings
-    ├── Auth            - OAuth token management (login, refresh, caching)
-    ├── ApiClient       - HTTP API communication (highlights, sessions, files)
-    ├── SessionTracker  - Reading session tracking (over SessionStore)
-    ├── SyncService     - Orchestrates sync workflow (uses ApiClient, SessionTracker)
-    ├── UI              - KOReader dialogs and menu building
-    ├── DigestFormat    - A digest item as title, HTML and plain text; no widgets
+    ├── Network         - HTTP/HTTPS requests and the WiFi lifecycle
+    ├── Log             - A logger bound to one module's name; the only caller of `logger`
+    ├── PluginIdentity  - Every string the plugin keys itself by, derived from its name
+    ├── DocumentSupport - Whether the open document is an EPUB, and so the plugin's business
+    ├── DeviceIdentity  - A stable id for this device, shared by sessions and highlights
+    ├── BookIdentity    - The client book id and file hash, the only copy of either formula
+    ├── TitleMatch      - How a chapter title is normalized before it is compared
+    ├── UpgradeRequired - Typed error: the server refuses this plugin version
+    ├── AuthFailed      - Typed error: credentials the server would not accept
     ├── SqliteStore     - One database file: WAL, schema, migrations, statements
-    │   ├── SessionStore           - Finished reading sessions
-    │   ├── DigestCache            - Chapter digests, kept for offline reading
-    │   └── HighlightSnapshotStore - The server highlights a book last applied
-    └── update/         - Checking for, verifying and installing a newer plugin
-        ├── check.lua       - Asks the release service what the newest version is
-        ├── installer.lua   - Downloads, verifies and swaps in a new version
-        ├── signature.lua   - Ed25519 verification, the only FFI in the plugin
-        └── keys.lua        - Public keys a release may be signed with
+    └── UI              - KOReader dialogs and menu building
 ```
 
 **Key patterns:**
 
 - `main.lua` is the entry point, extending KOReader's `WidgetContainer`
 - All modules use constructor injection: `Module:new(dependencies)`
+- Nothing but `modules/log.lua` requires `logger` directly. A module takes its logger from `modules/log.lua` -- `local log = Log.forModule("SyncService")` -- and calls `log.dbg`, `log.info`, `log.warn` or `log.err` with the message alone. The prefix is built there as `<display name> <ModuleName>:` (so `Crossbill SyncService:`, and `Crossbill Test SyncService:` in the side-by-side test build), which is why a log prefix is never written out as a literal
 - API methods return `code, data, error`; success is `code == 200`, and a `code` of nil means nothing answered at all. The data is whatever the server sent, nil when it sent nothing, and a caller that needs a body checks for one. A 200 whose body would not decode is no usable answer either, so it comes back with a nil code and a message saying which call it was
 - A failure a caller acts on rather than merely reports travels as a typed error, never as prose to match on: `modules/upgrade_required.lua` for the server refusing this plugin version, `modules/auth_failed.lua` for credentials the server would not accept. Both carry `__tostring` and `__concat`, so a path that logs or appends the error still works. A plain network error stays a plain string.
 - Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out. The server's 426 refusal is raised as an `UpgradeRequired` error from the three wrappers those helpers send through, caught once in `SyncService:syncBook` and once in `DigestService:getForCurrentChapter`, so no call site has to check for it.
@@ -69,11 +99,28 @@ main.lua (CrossbillSync)
 
 **Data flow:**
 
-1. `BookMetadata` extracts title, author and ISBN from document
-2. `HighlightExtractor` reads annotations from memory (preferred) or disk
-3. `SyncService` coordinates upload of highlights, sessions, and files
-4. `SessionTracker` decides what a session is; `SessionStore` keeps them in
-   SQLite (`crossbill_sessions.sqlite3`)
+A sync is one ordered walk through `SyncService:syncBook`, and it is both a
+push and a pull:
+
+1. `BookMetadata` extracts title, author and ISBN from the document, and
+   `BookIdentity` hashes them into the client book id the server knows the book by
+2. `SyncService` asks the server for that book, creates it when it is new, and
+   uploads the EPUB the server has no copy of
+3. `NoteEdits` stamps the notes edited since the last sync, then
+   `HighlightExtractor` reads the annotations from memory (preferred) or disk,
+   and the push carries them together with what `HighlightSnapshot` says was
+   deleted on this device
+4. The server's copy comes back: `HighlightImporter` rebuilds the book's
+   highlights from it, and `HighlightSnapshot` records what was placed, so the
+   next sync can tell a deletion from a highlight that was never here
+5. `SessionTracker` decides what a session is; `SessionStore` keeps them in
+   SQLite (`crossbill_sessions.sqlite3`) until the same sync uploads them
+6. `DigestService` refreshes the book's chapter digests into `DigestCache`,
+   which is what the digest menu item and gesture read from -- including offline
+
+Steps 4 and 6 are best-effort: they are run through `SyncService:_bookkeeping`
+and a failure is logged rather than failing the sync. Only the server's refusal
+to serve this plugin version travels out of them.
 
 **Book identification:**
 

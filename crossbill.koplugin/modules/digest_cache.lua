@@ -7,15 +7,19 @@ viewed offline. The connection, its WAL and its lifecycle belong to
 JSON columns the API's arrays are folded into.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("DigestCache")
 local JSON = require("json")
+local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local DigestCache = {}
 DigestCache.__index = DigestCache
 
 -- Constants
-local DB_FILENAME = "crossbill_digests.sqlite3"
+-- Named after the plugin, so the side-by-side test build writes its own
+-- database rather than the reader's (see modules/plugin_identity.lua)
+local DB_FILENAME = PluginIdentity.namespace .. "_digests.sqlite3"
 
 -- Database schema
 local SCHEMA = [[
@@ -154,7 +158,7 @@ end
 -- @return boolean Success status
 function DigestCache:replaceBook(client_book_id, items)
 	if not client_book_id then
-		logger.warn("Crossbill DigestCache: Cannot replace book - missing client_book_id")
+		log.warn("Cannot replace book - missing client_book_id")
 		return false
 	end
 
@@ -172,10 +176,7 @@ function DigestCache:replaceBook(client_book_id, items)
 			local chapter_number = tonumber(item.chapter_number)
 			if chapter_number == nil then
 				-- The primary key requires an integer chapter_number; skip defensively.
-				logger.warn(
-					"Crossbill DigestCache: Skipping item with nil chapter_number for chapter",
-					tostring(item.chapter_name)
-				)
+				log.warn("Skipping item with nil chapter_number for chapter", tostring(item.chapter_name))
 				failed_count = failed_count + 1
 			else
 				local inserted = db:exec(
@@ -197,8 +198,8 @@ function DigestCache:replaceBook(client_book_id, items)
 					inserted_count = inserted_count + 1
 				else
 					failed_count = failed_count + 1
-					logger.err(
-						"Crossbill DigestCache: Failed to cache digest item for book",
+					log.err(
+						"Failed to cache digest item for book",
 						tostring(client_book_id),
 						"chapter",
 						tostring(chapter_number),
@@ -221,8 +222,8 @@ function DigestCache:replaceBook(client_book_id, items)
 	end
 
 	if failed_count > 0 then
-		logger.warn(
-			"Crossbill DigestCache: cached",
+		log.warn(
+			"cached",
 			inserted_count,
 			"of",
 			#items,
@@ -233,7 +234,7 @@ function DigestCache:replaceBook(client_book_id, items)
 		)
 	end
 
-	logger.dbg("Crossbill DigestCache: Replaced digests for book", client_book_id)
+	log.dbg("Replaced digests for book", client_book_id)
 	return true
 end
 

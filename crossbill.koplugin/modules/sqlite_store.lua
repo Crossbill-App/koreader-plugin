@@ -15,7 +15,7 @@ assumed: `isOpen` is the single guard the three stores used to write out one
 method at a time.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
 local SQ3 = require("lua-ljsqlite3/init")
 
 local SqliteStore = {}
@@ -47,17 +47,11 @@ end
 -- @return SqliteStore instance
 function SqliteStore:new(name)
 	local instance = setmetatable({}, SqliteStore)
-	instance.name = name or "SqliteStore"
+	instance.log = Log.forModule(name or "SqliteStore")
 	instance.db = nil
 	instance.db_path = nil
 	instance._initialized = false
 	return instance
-end
-
---- The prefix this store's log lines carry
--- @return string The log prefix
-function SqliteStore:_prefix()
-	return "Crossbill " .. self.name .. ":"
 end
 
 --- Open the database, creating it and its schema when needed
@@ -72,7 +66,7 @@ function SqliteStore:open(path, schema, migrations)
 	end
 
 	self.db_path = path
-	logger.dbg(self:_prefix(), "Opening database at", path)
+	self.log.dbg("Opening database at", path)
 
 	local success, err = pcall(function()
 		self.db = SQ3.open(path)
@@ -83,7 +77,7 @@ function SqliteStore:open(path, schema, migrations)
 	end)
 
 	if not success then
-		logger.err(self:_prefix(), "Failed to open database:", err)
+		self.log.err("Failed to open database:", err)
 		self.db = nil
 		return false
 	end
@@ -98,12 +92,12 @@ function SqliteStore:open(path, schema, migrations)
 			self.db:exec(migration)
 		end)
 		if not applied then
-			logger.dbg(self:_prefix(), "Migration left alone (already applied?):", migration_err)
+			self.log.dbg("Migration left alone (already applied?):", migration_err)
 		end
 	end
 
 	self._initialized = true
-	logger.dbg(self:_prefix(), "Database open")
+	self.log.dbg("Database open")
 	return true
 end
 
@@ -116,7 +110,7 @@ end
 --- Close the database connection
 function SqliteStore:close()
 	if self.db then
-		logger.dbg(self:_prefix(), "Closing database")
+		self.log.dbg("Closing database")
 		local success, err = pcall(function()
 			-- Checkpoint so the write-ahead log reaches the database file: this
 			-- is usually the last thing to happen before the device is put away.
@@ -124,7 +118,7 @@ function SqliteStore:close()
 			self.db:close()
 		end)
 		if not success then
-			logger.warn(self:_prefix(), "Error closing database:", err)
+			self.log.warn("Error closing database:", err)
 		end
 		self.db = nil
 	end
@@ -144,7 +138,7 @@ function SqliteStore:checkpoint()
 	end)
 
 	if not success then
-		logger.warn(self:_prefix(), "Checkpoint failed:", err)
+		self.log.warn("Checkpoint failed:", err)
 	end
 end
 
@@ -155,7 +149,7 @@ end
 -- @return boolean Success status
 function SqliteStore:exec(sql, binds)
 	if not self:isOpen() then
-		logger.warn(self:_prefix(), "Cannot run a statement - database not open")
+		self.log.warn("Cannot run a statement - database not open")
 		return false
 	end
 
@@ -178,7 +172,7 @@ function SqliteStore:exec(sql, binds)
 	end
 
 	if not success then
-		logger.err(self:_prefix(), "Statement failed:", err, sql)
+		self.log.err("Statement failed:", err, sql)
 		return false
 	end
 
@@ -220,7 +214,7 @@ function SqliteStore:query(sql, binds, mapRow)
 	end
 
 	if not success then
-		logger.err(self:_prefix(), "Query failed:", err, sql)
+		self.log.err("Query failed:", err, sql)
 		return nil
 	end
 
@@ -235,7 +229,7 @@ end
 -- @return boolean Success status
 function SqliteStore:transaction(fn)
 	if not self:isOpen() then
-		logger.warn(self:_prefix(), "Cannot run a transaction - database not open")
+		self.log.warn("Cannot run a transaction - database not open")
 		return false
 	end
 
@@ -251,9 +245,9 @@ function SqliteStore:transaction(fn)
 		if committed then
 			return true
 		end
-		logger.err(self:_prefix(), "Failed to commit, rolling back:", commit_err)
+		self.log.err("Failed to commit, rolling back:", commit_err)
 	else
-		logger.err(self:_prefix(), "Transaction failed, rolling back:", success and "a statement was refused" or result)
+		self.log.err("Transaction failed, rolling back:", success and "a statement was refused" or result)
 	end
 
 	pcall(function()

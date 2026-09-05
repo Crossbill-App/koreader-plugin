@@ -15,9 +15,11 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Trapper = require("ui/trapper")
 local AuthFailed = require("modules/auth_failed")
 local DigestFormat = require("modules/digest_format")
+local PluginIdentity = require("modules/plugin_identity")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("UI")
 local _ = require("gettext")
 
 -- The rich HTML viewer pulls in several KOReader widgets. On an exotic build
@@ -27,7 +29,7 @@ local ok_viewer, DigestViewer = pcall(function()
 	return require("modules/digest_viewer")
 end)
 if not ok_viewer then
-	logger.warn("Crossbill: digest HTML viewer unavailable: " .. tostring(DigestViewer))
+	log.warn("digest HTML viewer unavailable: " .. tostring(DigestViewer))
 	DigestViewer = nil
 end
 
@@ -110,7 +112,7 @@ end
 -- @return boolean True when the reader confirmed the removal
 function UI.confirmRemoveAll(count)
 	if not coroutine.running() then
-		logger.warn("Crossbill: Cannot ask about removing highlights outside a Trapper coroutine")
+		log.warn("Cannot ask about removing highlights outside a Trapper coroutine")
 		return false
 	end
 
@@ -184,7 +186,7 @@ function UI.showDigestPopup(item)
 		if ok then
 			return
 		end
-		logger.warn("Crossbill: digest HTML viewer failed, using plain text: " .. tostring(err))
+		log.warn("digest HTML viewer failed, using plain text: " .. tostring(err))
 	end
 
 	UIManager:show(TextViewer:new({
@@ -476,7 +478,10 @@ end
 -- @return table Menu item table for KOReader
 function UI.buildMenuItems(handlers)
 	return {
-		text = _("Crossbill"),
+		-- The plugin's own name, not a translatable string: it is a proper noun,
+		-- and it is what tells the side-by-side test build's menu entry apart
+		-- from the production one.
+		text = PluginIdentity.display_name,
 		sorting_hint = "tools",
 		sub_item_table = {
 			{

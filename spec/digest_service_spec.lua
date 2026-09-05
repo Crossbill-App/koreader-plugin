@@ -1,17 +1,15 @@
 local UpgradeRequired = require("modules/upgrade_required")
+local FakeNetwork = require("fake_network")
 
 -- `modules/digest_service` asks `modules/network` whether the device is online.
 -- That is the plugin's own module rather than one of KOReader's, so it cannot be
 -- shadowed from spec/support: seeding the package cache before requiring the
 -- service keeps the socket layer out of the run (see spec/api_client_spec.lua).
 -- Offline unless a spec says otherwise.
-local NetworkFake = { connected = false }
-NetworkFake.isConnected = function()
-	return NetworkFake.connected
-end
+local network = FakeNetwork:new()
 
 local real_network = package.loaded["modules/network"]
-package.loaded["modules/network"] = NetworkFake
+package.loaded["modules/network"] = network
 local DigestService = require("modules/digest_service")
 package.loaded["modules/network"] = real_network
 
@@ -112,11 +110,11 @@ describe("DigestService", function()
 			local BEYOND_THE_REFETCH_WINDOW = 1000
 
 			before_each(function()
-				NetworkFake.connected = true
+				network.connected = true
 			end)
 
 			after_each(function()
-				NetworkFake.connected = false
+				network.connected = false
 			end)
 
 			--- Build a service holding a stale, empty cache for the book

@@ -15,14 +15,14 @@ Syncs your KOReader highlights to your Crossbill server.
 
 2. Restart KOReader
 
-3. Open any book and go to: Menu → crossbill Sync → Configure Server
+3. Open any EPUB and go to: Menu → Tools → Crossbill → Settings → Configure Server
 
 4. Enter your Crossbill server host URL (e.g., `http://192.168.1.100:8000`)
 
 ## Usage
 
 1. Open a book with highlights
-2. Menu → Crossbill Sync → Sync Current Book
+2. Menu → Tools → Crossbill → Sync Current Book
 3. View your synced highlights on your crossbill server
 
 ## Features

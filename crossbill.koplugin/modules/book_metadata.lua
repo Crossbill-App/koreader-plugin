@@ -9,7 +9,8 @@ Extracts book metadata from KOReader documents including:
 ]]
 
 local DocSettings = require("docsettings")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("BookMetadata")
 local BookIdentity = require("modules/book_identity")
 
 local BookMetadata = {}
@@ -47,9 +48,9 @@ local function extractISBN(identifiers)
 	-- Match ISBN: followed by digits/hyphens/X until we hit a non-ISBN character
 	local isbn = identifiers:match("ISBN:([%d%-xX]+)")
 	if isbn then
-		logger.dbg("Crossbill Metadata: Extracted ISBN:", isbn)
+		log.dbg("Extracted ISBN:", isbn)
 	else
-		logger.dbg("Crossbill Metadata: No ISBN found in identifiers:", identifiers)
+		log.dbg("No ISBN found in identifiers:", identifiers)
 	end
 	return isbn
 end
@@ -72,7 +73,7 @@ local function parseKeywords(keywords_str)
 	end
 
 	if #keywords > 0 then
-		logger.dbg("Crossbill Metadata: Extracted", #keywords, "keywords")
+		log.dbg("Extracted", #keywords, "keywords")
 		return keywords
 	end
 	return nil
@@ -109,12 +110,12 @@ function BookMetadata:extractBookData()
 
 	local language = metadata_props.language or nil
 	if language then
-		logger.dbg("Crossbill Metadata: Extracted language:", language)
+		log.dbg("Extracted language:", language)
 	end
 
 	local page_count = doc_settings:readSetting("doc_pages") or nil
 	if page_count then
-		logger.dbg("Crossbill Metadata: Extracted page count:", page_count)
+		log.dbg("Extracted page count:", page_count)
 	end
 
 	local keywords = parseKeywords(metadata_props.keywords)
@@ -122,7 +123,7 @@ function BookMetadata:extractBookData()
 	local title = book_props.display_title or book_props.title or BookMetadata.getFilename(doc_path)
 	local author = book_props.authors or nil
 	local client_book_id = BookIdentity.clientBookId(title, author)
-	logger.dbg("Crossbill Metadata: Syncing book:", title, "client_book_id:", client_book_id)
+	log.dbg("Syncing book:", title, "client_book_id:", client_book_id)
 
 	return {
 		title = title,

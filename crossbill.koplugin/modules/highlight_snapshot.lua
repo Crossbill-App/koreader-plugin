@@ -42,7 +42,8 @@ in-memory stand-in, so this module never pulls the reader's SQLite binding into
 their require graph.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("HighlightSnapshot")
 local sha2 = require("ffi/sha2")
 
 local HighlightSnapshot = {}
@@ -82,7 +83,7 @@ function HighlightSnapshot:init(data_dir)
 	end
 
 	if not self.store then
-		logger.warn("Crossbill HighlightSnapshot: No store to open")
+		log.warn("No store to open")
 		return false
 	end
 
@@ -91,16 +92,16 @@ function HighlightSnapshot:init(data_dir)
 	end)
 
 	if not ok then
-		logger.err("Crossbill HighlightSnapshot: Failed to open the store:", opened)
+		log.err("Failed to open the store:", opened)
 		return false
 	end
 	if not opened then
-		logger.err("Crossbill HighlightSnapshot: The store refused to open")
+		log.err("The store refused to open")
 		return false
 	end
 
 	self._initialized = true
-	logger.dbg("Crossbill HighlightSnapshot: Ledger open")
+	log.dbg("Ledger open")
 	return true
 end
 
@@ -114,7 +115,7 @@ function HighlightSnapshot:close()
 		self.store:close()
 	end)
 	if not ok then
-		logger.warn("Crossbill HighlightSnapshot: Error closing the store:", err)
+		log.warn("Error closing the store:", err)
 	end
 
 	self._initialized = false
@@ -139,9 +140,9 @@ local function buildRows(placed)
 	for _, item in ipairs(placed) do
 		local text_hash = HighlightSnapshot.hashText(item.text)
 		if not isWholeNumber(item.server_id) then
-			logger.warn("Crossbill HighlightSnapshot: Skipping a highlight without a server id")
+			log.warn("Skipping a highlight without a server id")
 		elseif not text_hash then
-			logger.warn("Crossbill HighlightSnapshot: Skipping highlight", item.server_id, "without text")
+			log.warn("Skipping highlight", item.server_id, "without text")
 		else
 			table.insert(rows, { server_id = item.server_id, text_hash = text_hash })
 		end
@@ -174,22 +175,22 @@ end
 -- @return boolean Success status
 function HighlightSnapshot:recordPlaced(client_book_id, placed, book_file_hash)
 	if not self._initialized then
-		logger.warn("Crossbill HighlightSnapshot: Cannot record - the ledger is not open")
+		log.warn("Cannot record - the ledger is not open")
 		return false
 	end
 
 	if type(client_book_id) ~= "string" or client_book_id == "" then
-		logger.warn("Crossbill HighlightSnapshot: Cannot record without a book id")
+		log.warn("Cannot record without a book id")
 		return false
 	end
 
 	if type(placed) ~= "table" then
-		logger.warn("Crossbill HighlightSnapshot: Cannot record a placed set that is not a list")
+		log.warn("Cannot record a placed set that is not a list")
 		return false
 	end
 
 	if not isHash(book_file_hash) then
-		logger.warn("Crossbill HighlightSnapshot: Recording", client_book_id, "without an owning file")
+		log.warn("Recording", client_book_id, "without an owning file")
 		book_file_hash = nil
 	end
 
@@ -200,11 +201,11 @@ function HighlightSnapshot:recordPlaced(client_book_id, placed, book_file_hash)
 	end)
 
 	if not ok then
-		logger.err("Crossbill HighlightSnapshot: Failed to record the snapshot:", stored)
+		log.err("Failed to record the snapshot:", stored)
 		return false
 	end
 
-	logger.dbg("Crossbill HighlightSnapshot: Recorded", #rows, "highlights for", client_book_id)
+	log.dbg("Recorded", #rows, "highlights for", client_book_id)
 	return stored == true
 end
 
@@ -222,7 +223,7 @@ function HighlightSnapshot:getBook(client_book_id)
 	end)
 
 	if not ok then
-		logger.err("Crossbill HighlightSnapshot: Failed to read the snapshot:", rows)
+		log.err("Failed to read the snapshot:", rows)
 		return nil
 	end
 
@@ -244,7 +245,7 @@ function HighlightSnapshot:hasBook(client_book_id)
 	end)
 
 	if not ok then
-		logger.err("Crossbill HighlightSnapshot: Failed to read the snapshot:", has)
+		log.err("Failed to read the snapshot:", has)
 		return false
 	end
 
@@ -265,7 +266,7 @@ function HighlightSnapshot:getBookFileHash(client_book_id)
 	end)
 
 	if not ok then
-		logger.err("Crossbill HighlightSnapshot: Failed to read the snapshot's owner:", hash)
+		log.err("Failed to read the snapshot's owner:", hash)
 		return nil
 	end
 
@@ -348,12 +349,12 @@ function HighlightSnapshot:findRemoved(client_book_id, highlights, book_file_has
 	end
 
 	if not self:_ownsSnapshot(client_book_id, book_file_hash) then
-		logger.dbg("Crossbill HighlightSnapshot: Not diffing", client_book_id, "against another file's snapshot")
+		log.dbg("Not diffing", client_book_id, "against another file's snapshot")
 		return nil
 	end
 
 	if type(highlights) ~= "table" then
-		logger.warn("Crossbill HighlightSnapshot: Cannot diff a highlight set that is not a list")
+		log.warn("Cannot diff a highlight set that is not a list")
 		return nil
 	end
 
@@ -387,12 +388,12 @@ function HighlightSnapshot:flagNew(client_book_id, highlights, book_file_hash)
 	end
 
 	if not self:_ownsSnapshot(client_book_id, book_file_hash) then
-		logger.dbg("Crossbill HighlightSnapshot: Not flagging", client_book_id, "against another file's snapshot")
+		log.dbg("Not flagging", client_book_id, "against another file's snapshot")
 		return 0
 	end
 
 	if type(highlights) ~= "table" then
-		logger.warn("Crossbill HighlightSnapshot: Cannot flag a highlight set that is not a list")
+		log.warn("Cannot flag a highlight set that is not a list")
 		return 0
 	end
 
@@ -412,7 +413,7 @@ function HighlightSnapshot:flagNew(client_book_id, highlights, book_file_hash)
 		end
 	end
 
-	logger.dbg("Crossbill HighlightSnapshot: Flagged", flagged, "new highlights for", client_book_id)
+	log.dbg("Flagged", flagged, "new highlights for", client_book_id)
 	return flagged
 end
 

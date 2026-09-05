@@ -9,6 +9,15 @@
 #               its own settings and databases, so it can run alongside production)
 #   all         Install both (default)
 #
+# The test build is a copy of the production plugin with its name changed in
+# _meta.lua. Everything else that has to differ -- the settings key, the three
+# database filenames, the menu key, the two dispatcher action ids, the two
+# events and the labels a reader sees -- is derived from that name by
+# modules/plugin_identity.lua, so renaming the plugin renames all of it. Only
+# two things cannot be derived and are still done here: the modules/ directory
+# and the copy of _meta the plugin requires, both of which are renamed because
+# Lua caches a module by name.
+#
 # The destination is read from KOREADER_PLUGINS_PATH in the repository's .env file.
 
 set -euo pipefail
@@ -88,45 +97,11 @@ install_test() {
     # plugin would report the test build's name and version as its own.
     cp "$test_dir/_meta.lua" "$test_dir/test_meta.lua"
 
-    # Modify main.lua for test version
-    # Change the class name
-    sed -i 's/name = "Crossbill"/name = "Crossbill Test"/' "$test_dir/main.lua"
-    # Change the menu key to avoid conflicts with production
-    sed -i 's/menu_items\.crossbill_sync/menu_items.crossbill_test_sync/g' "$test_dir/main.lua"
-    # Rename dispatcher action ids and events so gestures don't trigger both versions
-    sed -i \
-        -e 's/crossbill_sync_current_book/crossbill_test_sync_current_book/g' \
-        -e 's/crossbill_show_chapter_summary/crossbill_test_show_chapter_summary/g' \
-        -e 's/CrossbillSyncCurrentBook/CrossbillTestSyncCurrentBook/g' \
-        -e 's/CrossbillShowChapterDigest/CrossbillTestShowChapterDigest/g' \
-        -e 's/Sync current book with Crossbill/Sync current book with Crossbill Test/' \
-        -e 's/Crossbill chapter digest/Crossbill Test chapter digest/' \
-        "$test_dir/main.lua"
     # Update require paths to use the renamed modules and meta (in main.lua and
     # all module files)
     find "$test_dir" -name "*.lua" -exec sed -i \
         -e 's|require("modules/|require("test_modules/|g' \
         -e 's|require("_meta")|require("test_meta")|g' {} \;
-
-    # Modify test_modules/settings.lua for test version
-    # Change settings key to separate from production version
-    sed -i 's/crossbill_sync/crossbill_test_sync/g' "$test_dir/test_modules/settings.lua"
-
-    # Modify test_modules/ui.lua for test version
-    # Change menu text
-    sed -i 's/_("Crossbill")/_("Crossbill Test")/g' "$test_dir/test_modules/ui.lua"
-
-    # Modify test_modules/session_store.lua for test version
-    # Change database filename to avoid conflicts with production
-    sed -i 's/crossbill_sessions\.sqlite3/test_crossbill_sessions.sqlite3/g' "$test_dir/test_modules/session_store.lua"
-
-    # Modify test_modules/digest_cache.lua for test version
-    # Change database filename to avoid conflicts with production
-    sed -i 's/crossbill_digests\.sqlite3/test_crossbill_digests.sqlite3/g' "$test_dir/test_modules/digest_cache.lua"
-
-    # Modify test_modules/highlight_snapshot_store.lua for test version
-    # Change database filename to avoid conflicts with production
-    sed -i 's/crossbill_highlights\.sqlite3/test_crossbill_highlights.sqlite3/g' "$test_dir/test_modules/highlight_snapshot_store.lua"
 
     # Nothing in the test build may require a name the production plugin also
     # uses. Lua caches a module by name, so a shared name means whichever
@@ -147,6 +122,49 @@ install_test() {
         echo "Both would share one copy of each. Rename them in $0."
         exit 1
     fi
+
+    # The whole test identity now hangs off one string, so the one thing left to
+    # check is that the string actually changed. A rewrite of _meta.lua that the
+    # sed above no longer matches -- a reformatted table, a renamed plugin --
+    # would leave the test build deriving the production namespace and quietly
+    # reading and writing the reader's own settings and databases.
+    check_identity() {
+        local lua
+        for lua in luajit lua5.1 lua; do
+            if command -v "$lua" >/dev/null 2>&1; then
+                break
+            fi
+            lua=""
+        done
+
+        if [ -z "$lua" ]; then
+            echo "Warning: no Lua interpreter found; not checking the test build's identity."
+            return 0
+        fi
+
+        # _meta.lua asks for KOReader's gettext, which is not here; the plugin's
+        # name needs no translating, so a pass-through stands in for it.
+        local namespace
+        # The directory travels in the environment because an interpreter given
+        # -e reads a trailing argument as a script to run, not as an argument.
+        namespace=$(TEST_PLUGIN_DIR="$test_dir" "$lua" -e '
+            package.path = os.getenv("TEST_PLUGIN_DIR") .. "/?.lua;" .. package.path
+            package.preload["gettext"] = function()
+                return function(text) return text end
+            end
+            io.write(require("test_modules/plugin_identity").namespace)
+        ')
+
+        if [ "$namespace" = "crossbill" ]; then
+            echo "Error: the test plugin derives the production namespace '$namespace'."
+            echo "It would share the production plugin's settings and databases."
+            echo "The name in _meta.lua was not renamed; check the seds in $0."
+            exit 1
+        fi
+
+        echo "Test plugin identity: $namespace"
+    }
+    check_identity
 
     # Copy test plugin to destination
     rm -rf "$KOREADER_PLUGINS_PATH/crossbill-test.koplugin"

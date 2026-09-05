@@ -15,13 +15,16 @@ The ledger takes this store as a dependency rather than requiring it, so specs
 can stand in an in-memory store instead of the reader's SQLite binding.
 ]]
 
+local PluginIdentity = require("modules/plugin_identity")
 local SqliteStore = require("modules/sqlite_store")
 
 local HighlightSnapshotStore = {}
 HighlightSnapshotStore.__index = HighlightSnapshotStore
 
 -- Constants
-local DB_FILENAME = "crossbill_highlights.sqlite3"
+-- Named after the plugin, so the side-by-side test build writes its own
+-- database rather than the reader's (see modules/plugin_identity.lua)
+local DB_FILENAME = PluginIdentity.namespace .. "_highlights.sqlite3"
 
 -- Database schema
 -- The primary key is (client_book_id, server_id) rather than the hash: two

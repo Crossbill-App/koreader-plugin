@@ -7,11 +7,14 @@ Supports manual sync, auto-sync on suspend/exit
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Dispatcher = require("dispatcher")
-local logger = require("logger")
 local DataStorage = require("datastorage")
 local Trapper = require("ui/trapper")
+local T = require("ffi/util").template
 local _ = require("gettext")
 
+local Log = require("modules/log")
+local log = Log.forModule("Main")
+local PluginIdentity = require("modules/plugin_identity")
 local Settings = require("modules/settings")
 local Network = require("modules/network")
 local Auth = require("modules/auth")
@@ -31,8 +34,23 @@ local DocumentSupport = require("modules/document_support")
 local UpdateCheck = require("modules/update/check")
 local UpdateInstaller = require("modules/update/installer")
 
+-- The plugin's own names for the things KOReader keys by: the menu entry, the
+-- two gesture-bindable actions and the two events they dispatch. All of them
+-- come from the plugin's name, so the side-by-side test build gets its own set
+-- rather than seizing the production plugin's; see modules/plugin_identity.lua.
+local MENU_KEY = PluginIdentity.namespace .. "_sync"
+local ACTION_SYNC = PluginIdentity.namespace .. "_sync_current_book"
+-- The action name is the key KOReader stores in a user's gesture and profile
+-- settings, and Dispatcher silently skips names it no longer knows. Renaming
+-- this to ..._digest would leave existing bindings pointing at nothing, with no
+-- error to tell the user why their gesture stopped working, so the old name
+-- stays. Only the title is user-visible.
+local ACTION_DIGEST = PluginIdentity.namespace .. "_show_chapter_summary"
+local EVENT_SYNC = PluginIdentity.event_prefix .. "SyncCurrentBook"
+local EVENT_DIGEST = PluginIdentity.event_prefix .. "ShowChapterDigest"
+
 local CrossbillSync = WidgetContainer:extend({
-	name = "Crossbill",
+	name = PluginIdentity.display_name,
 	is_doc_only = true, -- Only show when document is open
 })
 
@@ -40,21 +58,16 @@ local CrossbillSync = WidgetContainer:extend({
 -- These show up in the gesture manager under "Sync current book with
 -- Crossbill" and "Crossbill chapter digest".
 function CrossbillSync:onDispatcherRegisterActions()
-	Dispatcher:registerAction("crossbill_sync_current_book", {
+	Dispatcher:registerAction(ACTION_SYNC, {
 		category = "none",
-		event = "CrossbillSyncCurrentBook",
-		title = _("Sync current book with Crossbill"),
+		event = EVENT_SYNC,
+		title = T(_("Sync current book with %1"), PluginIdentity.display_name),
 		reader = true,
 	})
-	-- The action name is the key KOReader stores in a user's gesture and
-	-- profile settings, and Dispatcher silently skips names it no longer
-	-- knows. Renaming this to ..._digest would leave existing bindings
-	-- pointing at nothing, with no error to tell the user why their gesture
-	-- stopped working, so the old name stays. Only the title is user-visible.
-	Dispatcher:registerAction("crossbill_show_chapter_summary", {
+	Dispatcher:registerAction(ACTION_DIGEST, {
 		category = "none",
-		event = "CrossbillShowChapterDigest",
-		title = _("Crossbill chapter digest"),
+		event = EVENT_DIGEST,
+		title = T(_("%1 chapter digest"), PluginIdentity.display_name),
 		reader = true,
 	})
 end
@@ -70,7 +83,7 @@ function CrossbillSync:init()
 
 	self.is_supported_document = DocumentSupport.isSupportedDocument(self.ui)
 	if not self.is_supported_document then
-		logger.info("Crossbill: Not an EPUB, plugin stays inactive for this document")
+		log.info("Not an EPUB, plugin stays inactive for this document")
 		return
 	end
 
@@ -115,7 +128,7 @@ end
 
 --- Add plugin menu items to KOReader main menu
 function CrossbillSync:addToMainMenu(menu_items)
-	menu_items.crossbill_sync = UI.buildMenuItems({
+	menu_items[MENU_KEY] = UI.buildMenuItems({
 		on_sync = function()
 			self:syncCurrentBook()
 		end,
@@ -179,7 +192,7 @@ function CrossbillSync:_updateCheck()
 	if not completed then
 		-- The reader is told one thing whatever went wrong; this is where the
 		-- difference is kept.
-		logger.err("Crossbill: Update check failed:", tostring(err))
+		log.err("Update check failed:", tostring(err))
 		UI.showUpdateCheckFailed()
 		return
 	end
@@ -223,7 +236,7 @@ function CrossbillSync:_install(result)
 		return
 	end
 
-	logger.err("Crossbill: Update install failed:", tostring(detail))
+	log.err("Update install failed:", tostring(detail))
 
 	if kind == UpdateInstaller.UNVERIFIED then
 		UI.showInstallUnverified()
@@ -253,12 +266,12 @@ end
 --- Show the current chapter's digest
 function CrossbillSync:showChapterDigest()
 	if not self.is_supported_document then
-		logger.warn("Crossbill: Cannot show digest - the open document is not an EPUB")
+		log.warn("Cannot show digest - the open document is not an EPUB")
 		return
 	end
 
 	if not self.ui.document then
-		logger.warn("Crossbill: Cannot show digest - no document available")
+		log.warn("Cannot show digest - no document available")
 		return
 	end
 
@@ -266,7 +279,7 @@ function CrossbillSync:showChapterDigest()
 		return BookMetadata:new(self.ui):extractBookData()
 	end)
 	if not ok or not book_data or not book_data.client_book_id then
-		logger.err("Crossbill: Failed to extract book metadata for the digest")
+		log.err("Failed to extract book metadata for the digest")
 		UI.showDigestError("no_cache")
 		return
 	end
@@ -301,7 +314,7 @@ end
 -- @param is_autosync boolean If true, run in silent mode (no UI feedback)
 function CrossbillSync:syncCurrentBook(is_autosync)
 	if not self.is_supported_document then
-		logger.warn("Crossbill: Cannot sync - the open document is not an EPUB")
+		log.warn("Cannot sync - the open document is not an EPUB")
 		return
 	end
 
@@ -315,7 +328,7 @@ end
 function CrossbillSync:_runSync(is_autosync)
 	-- Safety check: ensure document is available
 	if not self.ui.document then
-		logger.warn("Crossbill: Cannot sync - no document available")
+		log.warn("Cannot sync - no document available")
 		return
 	end
 
@@ -337,7 +350,7 @@ function CrossbillSync:_runSync(is_autosync)
 		self.syncing_message = nil
 
 		if not success then
-			logger.err("Crossbill: Error in sync:", err)
+			log.err("Error in sync:", err)
 			if not is_autosync then
 				UI.showSyncError(err)
 			end
@@ -414,15 +427,22 @@ function CrossbillSync:doSync(is_autosync)
 end
 
 -- Event handlers for gesture-bound actions (dispatched via Dispatcher)
+--
+-- KOReader dispatches an event by calling the method named "on" .. event, so
+-- these two are assigned under the derived names rather than written out as
+-- `function CrossbillSync:onCrossbillSyncCurrentBook()`. Spelling them out
+-- would leave the test build registering CrossbillTestSyncCurrentBook and
+-- answering only to CrossbillSyncCurrentBook -- a gesture that does nothing,
+-- with nothing anywhere to say why.
 
 --- Handle the "sync current book" gesture action
-function CrossbillSync:onCrossbillSyncCurrentBook()
+CrossbillSync["on" .. EVENT_SYNC] = function(self)
 	self:syncCurrentBook()
 	return true
 end
 
 --- Handle the "chapter digest" gesture action
-function CrossbillSync:onCrossbillShowChapterDigest()
+CrossbillSync["on" .. EVENT_DIGEST] = function(self)
 	self:showChapterDigest()
 	return true
 end
@@ -470,7 +490,7 @@ function CrossbillSync:onSuspend()
 		self.session_tracker:endSession(self.ui.document, self.ui, "suspend")
 	end
 	if self.settings:isAutosyncEnabled() then
-		logger.info("Crossbill: Auto-syncing on suspend")
+		log.info("Auto-syncing on suspend")
 		self:syncCurrentBook(true)
 	end
 	return false
@@ -485,7 +505,7 @@ function CrossbillSync:onExit()
 		self.session_tracker:endSession(self.ui.document, self.ui, "app_exit")
 	end
 	if self.settings:isAutosyncEnabled() then
-		logger.info("Crossbill: Auto-syncing on exit")
+		log.info("Auto-syncing on exit")
 		self:syncCurrentBook(true)
 	end
 	-- Close databases after sync attempts

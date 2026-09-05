@@ -12,7 +12,8 @@ the reasoning below needs the reader's SQLite binding to be exercised. The clock
 arrives the same way, because a gap and a throttle are both read off it.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("SessionTracker")
 local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
@@ -41,7 +42,7 @@ local POSITION_CAPTURE_INTERVAL_SECONDS = 60
 local function guarded(what, fn)
 	local ok, answer = pcall(fn)
 	if not ok then
-		logger.err("Crossbill SessionTracker: The store failed to", what .. ":", answer)
+		log.err("The store failed to", what .. ":", answer)
 		return nil
 	end
 	return answer
@@ -72,7 +73,7 @@ function SessionTracker:init(data_dir)
 	end
 
 	if not self.store then
-		logger.warn("Crossbill SessionTracker: No store to open")
+		log.warn("No store to open")
 		return false
 	end
 
@@ -81,12 +82,12 @@ function SessionTracker:init(data_dir)
 	end)
 
 	if not opened then
-		logger.err("Crossbill SessionTracker: The store would not open")
+		log.err("The store would not open")
 		return false
 	end
 
 	self._initialized = true
-	logger.dbg("Crossbill SessionTracker: Tracking sessions")
+	log.dbg("Tracking sessions")
 	return true
 end
 
@@ -102,13 +103,13 @@ function SessionTracker:close()
 	self.current_session = nil
 end
 
---- Get device identifier
--- @return string Stable device ID
-function SessionTracker:_getDeviceId()
-	return DeviceIdentity.getDeviceId()
-end
-
 --- Capture current reading position from document
+-- `modules/document_support` keeps the plugin inert on anything but an EPUB,
+-- but an EPUB is not always reflowable: KOReader can open one with MuPDF
+-- ("Open with..."), and then it is a paged document with no XPointer to give.
+-- Such a session records its page instead, the way the highlight importer
+-- declines to pull for the same book. The page is read before the XPointer,
+-- so a document that cannot answer the second still keeps the first.
 -- @param document The document object
 -- @param ui The UI object
 -- @return table Position data {type, position, page}
@@ -124,31 +125,27 @@ function SessionTracker:_capturePosition(document, ui)
 	}
 
 	local success, err = pcall(function()
-		-- Check if document has fixed pages (PDF, DjVu) or is reflowable (EPUB, etc.)
-		local has_pages = document.info and document.info.has_pages
-
-		if has_pages then
-			-- Fixed layout document - use page number
-			position_data.type = "page"
-			local page = ui.view and ui.view.state and ui.view.state.page or 1
-			position_data.position = tostring(page)
+		local page = ui and ui.view and ui.view.state and ui.view.state.page
+		if page then
 			position_data.page = page
-		else
-			-- Reflowable document - use XPointer
-			position_data.type = "xpointer"
-			local xpointer = document:getXPointer()
-			if xpointer then
-				position_data.position = xpointer
-			end
-			-- Also capture page for reference
-			if ui.view and ui.view.state and ui.view.state.page then
-				position_data.page = ui.view.state.page
-			end
+		end
+
+		local has_pages = document.info and document.info.has_pages
+		if has_pages then
+			position_data.position = tostring(page or 1)
+			position_data.page = page or 1
+			return
+		end
+
+		position_data.type = "xpointer"
+		local xpointer = document:getXPointer()
+		if xpointer then
+			position_data.position = xpointer
 		end
 	end)
 
 	if not success then
-		logger.warn("Crossbill SessionTracker: Error capturing position:", err)
+		log.warn("Error capturing position:", err)
 	end
 
 	return position_data
@@ -156,20 +153,13 @@ end
 
 --- Get total pages in document
 -- @param document The document object
--- @param ui The UI object
 -- @return number Total pages or 0
-function SessionTracker:_getTotalPages(document, ui)
-	local success, pages = pcall(function()
-		if ui.view and ui.view.state and ui.view.state.doc_height then
-			-- For reflowable docs, this might need adjustment
-			return ui.document:getPageCount()
-		elseif document.getPageCount then
-			return document:getPageCount()
-		end
+function SessionTracker:_getTotalPages(document)
+	if not document or not document.getPageCount then
 		return 0
-	end)
+	end
 
-	return success and pages or 0
+	return document:getPageCount() or 0
 end
 
 --- Start tracking a new reading session
@@ -177,18 +167,18 @@ end
 -- @param ui The UI object
 function SessionTracker:startSession(document, ui)
 	if not self._initialized then
-		logger.warn("Crossbill SessionTracker: Cannot start session - not initialized")
+		log.warn("Cannot start session - not initialized")
 		return
 	end
 
 	if not document then
-		logger.warn("Crossbill SessionTracker: Cannot start session - no document")
+		log.warn("Cannot start session - no document")
 		return
 	end
 
 	-- If there's already an active session, end it first
 	if self.current_session then
-		logger.dbg("Crossbill SessionTracker: Ending previous session before starting new one")
+		log.dbg("Ending previous session before starting new one")
 		self:endSession(document, ui, "new_session")
 	end
 
@@ -198,51 +188,59 @@ function SessionTracker:startSession(document, ui)
 	-- otherwise share one identity and be uploaded as a single book.
 	local book_hash = BookIdentity.fileHash(file_path)
 	if not book_hash then
-		logger.warn("Crossbill SessionTracker: Cannot start session - document has no file path")
+		log.warn("Cannot start session - document has no file path")
 		return
 	end
 
 	local position = self:_capturePosition(document, ui)
 
 	if not position then
-		logger.warn("Crossbill SessionTracker: Cannot capture start position")
+		log.warn("Cannot capture start position")
 		return
 	end
 
-	-- Get book title and author from document properties
-	local book_title = nil
-	local book_author = nil
+	-- Title and author for the session row, from the metadata extractor first
+	-- and the document's own properties second. Either reaches into a document
+	-- that may not hold what it expects -- the extractor needs doc_props, which
+	-- is missing outside normal reading -- and a session is not worth losing
+	-- over that, so each is asked under a guard and only what is still missing
+	-- is asked of the next.
+	local book_title, book_author
+	local failure
 
-	-- Extract full metadata if UI is available
-	if ui then
-		local meta_extractor = BookMetadata:new(ui)
-		local success, book_data = pcall(function()
-			return meta_extractor:extractBookData()
-		end)
-		if success and book_data then
-			book_title = book_data.title
-			book_author = book_data.author
-		else
-			logger.warn("Crossbill SessionTracker: Failed to extract book metadata")
+	--- Fill in whichever of the title and author is still missing
+	-- @param read function Answers the title and the author, or raises
+	local function fillFrom(read)
+		if book_title and book_author then
+			return
+		end
+
+		local ok, title, author = pcall(read)
+		if not ok then
+			failure = title
+			return
+		end
+		if not book_title and title and title ~= "" then
+			book_title = title
+		end
+		if not book_author and author and author ~= "" then
+			book_author = author
 		end
 	end
 
-	-- Fallback if metadata extraction failed or UI not available (shouldn't happen in normal reading)
-	if not book_title or not book_author then
-		local success, err = pcall(function()
-			local props = document:getProps()
-			if props then
-				if not book_title and props.title and props.title ~= "" then
-					book_title = props.title
-				end
-				if not book_author and props.authors and props.authors ~= "" then
-					book_author = props.authors
-				end
-			end
+	if ui then
+		fillFrom(function()
+			local book_data = BookMetadata:new(ui):extractBookData() or {}
+			return book_data.title, book_data.author
 		end)
-		if not success then
-			logger.dbg("Crossbill SessionTracker: Could not get book properties:", err)
-		end
+	end
+	fillFrom(function()
+		local props = document:getProps() or {}
+		return props.title, props.authors
+	end)
+
+	if failure and (not book_title or not book_author) then
+		log.warn("Could not read the book's title and author:", failure)
 	end
 
 	local now = self.now()
@@ -261,10 +259,10 @@ function SessionTracker:startSession(document, ui)
 		current_page = position.page,
 		last_activity_time = now,
 		last_capture_time = now,
-		total_pages = self:_getTotalPages(document, ui),
+		total_pages = self:_getTotalPages(document),
 	}
 
-	logger.dbg("Crossbill SessionTracker: Started session for", book_title or file_path)
+	log.dbg("Started session for", book_title or file_path)
 end
 
 --- Update current reading position (called on every page turn)
@@ -284,7 +282,7 @@ function SessionTracker:updatePosition(document, ui, pageno)
 	-- A long gap means this page turn belongs to a new sitting, not the old
 	-- one: close the old session where and when it actually stopped.
 	if idle_seconds > SESSION_ACTIVITY_GAP_SECONDS then
-		logger.dbg("Crossbill SessionTracker: Activity gap of", idle_seconds, "seconds - splitting session")
+		log.dbg("Activity gap of", idle_seconds, "seconds - splitting session")
 		self:_endSessionAtLastActivity("activity_gap")
 		self:startSession(document, ui)
 		session = self.current_session
@@ -324,7 +322,7 @@ end
 -- @param reason string Reason for ending
 function SessionTracker:_saveSession(session, end_time, end_position, end_page, reason)
 	if not self._initialized then
-		logger.warn("Crossbill SessionTracker: Cannot save session - store not available")
+		log.warn("Cannot save session - store not available")
 		return
 	end
 
@@ -333,7 +331,7 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 	-- Discard very short sessions
 	local min_duration = self.settings:getMinReadingSessionDuration() or 60
 	if duration < min_duration then
-		logger.dbg("Crossbill SessionTracker: Discarding short session (", duration, "seconds) - reason:", reason)
+		log.dbg("Discarding short session (", duration, "seconds) - reason:", reason)
 		return
 	end
 
@@ -352,14 +350,14 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 			start_page = session.start_page,
 			end_page = end_page,
 			total_pages = session.total_pages,
-			device_id = self:_getDeviceId(),
+			device_id = DeviceIdentity.getDeviceId(),
 		})
 	end)
 
 	if saved then
-		logger.dbg("Crossbill SessionTracker: Saved session (", duration, "seconds) - reason:", reason)
+		log.dbg("Saved session (", duration, "seconds) - reason:", reason)
 	else
-		logger.err("Crossbill SessionTracker: Failed to save session - reason:", reason)
+		log.err("Failed to save session - reason:", reason)
 	end
 end
 
@@ -387,12 +385,12 @@ end
 function SessionTracker:endSession(document, ui, reason)
 	local session = self.current_session
 	if not session then
-		logger.dbg("Crossbill SessionTracker: No active session to end")
+		log.dbg("No active session to end")
 		return
 	end
 
 	if not self._initialized then
-		logger.warn("Crossbill SessionTracker: Cannot end session - store not available")
+		log.warn("Cannot end session - store not available")
 		self.current_session = nil
 		return
 	end
@@ -402,12 +400,7 @@ function SessionTracker:endSession(document, ui, reason)
 
 	-- Reading stopped long ago; end the session there rather than now.
 	if idle_seconds > SESSION_ACTIVITY_GAP_SECONDS then
-		logger.dbg(
-			"Crossbill SessionTracker: Ending session at last activity,",
-			idle_seconds,
-			"seconds ago - reason:",
-			reason
-		)
+		log.dbg("Ending session at last activity,", idle_seconds, "seconds ago - reason:", reason)
 		self:_endSessionAtLastActivity(reason)
 		return
 	end

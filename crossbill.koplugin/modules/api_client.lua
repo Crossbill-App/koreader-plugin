@@ -21,7 +21,8 @@ never arrived is: no status, and an error saying which call it was.
 local AuthFailed = require("modules/auth_failed")
 local Network = require("modules/network")
 local UpgradeRequired = require("modules/upgrade_required")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("ApiClient")
 
 -- Handle empty array JSON serialization
 local JSON = require("json")
@@ -120,7 +121,7 @@ function ApiClient:_sendAuthorized(what, send)
 
 		local code, body, err = send(token)
 		if not code then
-			logger.err("Crossbill API: Network error for", what, err)
+			log.err("Network error for", what, err)
 		end
 		return code, body, err
 	end
@@ -130,7 +131,7 @@ function ApiClient:_sendAuthorized(what, send)
 		return code, body, err
 	end
 
-	logger.info("Crossbill API: Token refused for", what, "- logging in again")
+	log.info("Token refused for", what, "- logging in again")
 	self.auth:clearTokens()
 
 	return attempt()
@@ -151,7 +152,7 @@ function ApiClient:_authorizedGet(path, what)
 	local api_url = self.settings:getApiUrl() .. path
 
 	local code, response_data, err = self:_sendAuthorized(what, function(token)
-		logger.dbg("Crossbill API: Fetching", what, "from", api_url)
+		log.dbg("Fetching", what, "from", api_url)
 		return getJson(api_url, token)
 	end)
 
@@ -164,20 +165,20 @@ function ApiClient:_authorizedGet(path, what)
 			-- Network only reports an error alongside a status for a body it could
 			-- not decode. Nothing about that answer is usable, so it is reported
 			-- without one rather than as a 200 the caller has to disbelieve.
-			logger.warn("Crossbill API: Fetching", what, "answered 200 with a body that would not decode")
+			log.warn("Fetching", what, "answered 200 with a body that would not decode")
 			return nil, nil, what .. ": the server answered 200 with a body that would not decode"
 		end
 
-		logger.dbg("Crossbill API: Fetched", what)
+		log.dbg("Fetched", what)
 		return code, response_data, nil
 	end
 
 	if code == 404 then
-		logger.dbg("Crossbill API: Book not found (404) fetching", what)
+		log.dbg("Book not found (404) fetching", what)
 		return code, nil, nil
 	end
 
-	logger.warn("Crossbill API: Fetching", what, "failed with code:", code)
+	log.warn("Fetching", what, "failed with code:", code)
 	return code, nil, "Fetch failed: " .. tostring(code)
 end
 
@@ -198,7 +199,7 @@ function ApiClient:_authorizedPost(path, payload, what, failure)
 	local api_url = self.settings:getApiUrl() .. path
 
 	local code, response_data, err = self:_sendAuthorized(what, function(token)
-		logger.dbg("Crossbill API: Sending", what, "to", api_url)
+		log.dbg("Sending", what, "to", api_url)
 		return postJson(api_url, payload, token)
 	end)
 
@@ -210,15 +211,15 @@ function ApiClient:_authorizedPost(path, payload, what, failure)
 		if err then
 			-- As in a fetch: a body that would not decode leaves no usable answer,
 			-- so there is no status to report either.
-			logger.warn("Crossbill API: Sending", what, "answered 200 with a body that would not decode")
+			log.warn("Sending", what, "answered 200 with a body that would not decode")
 			return nil, nil, what .. ": the server answered 200 with a body that would not decode"
 		end
 
-		logger.info("Crossbill API: Uploaded", what)
+		log.info("Uploaded", what)
 		return code, response_data, nil
 	end
 
-	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
+	log.warn("Uploading", what, "failed with code:", code)
 	return code, nil, (failure or "Upload failed") .. ": " .. tostring(code)
 end
 
@@ -234,7 +235,7 @@ function ApiClient:_authorizedMultipart(path, files, what)
 	local api_url = self.settings:getApiUrl() .. path
 
 	local code, _, err = self:_sendAuthorized(what, function(token)
-		logger.dbg("Crossbill API: Uploading", what, "to", api_url)
+		log.dbg("Uploading", what, "to", api_url)
 		return postMultipart(api_url, files, token)
 	end)
 
@@ -243,11 +244,11 @@ function ApiClient:_authorizedMultipart(path, files, what)
 	end
 
 	if code == 200 then
-		logger.info("Crossbill API: Uploaded", what)
+		log.info("Uploaded", what)
 		return code, nil, nil
 	end
 
-	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
+	log.warn("Uploading", what, "failed with code:", code)
 	return code, nil, "Upload failed: " .. tostring(code)
 end
 
@@ -324,7 +325,7 @@ function ApiClient:getHighlights(client_book_id)
 		end
 	end
 
-	logger.dbg("Crossbill API: Fetched", #items, "highlights")
+	log.dbg("Fetched", #items, "highlights")
 	return code, items, nil
 end
 
@@ -399,7 +400,7 @@ function ApiClient:uploadReadingSessions(client_book_id, sessions)
 		table.insert(api_sessions, api_session)
 	end
 
-	logger.info("Crossbill API: Prepared", #api_sessions, "sessions for upload")
+	log.info("Prepared", #api_sessions, "sessions for upload")
 
 	local payload = {
 		client_book_id = client_book_id,
