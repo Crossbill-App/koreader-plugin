@@ -1,4 +1,5 @@
 local json = require("json")
+local AuthFailed = require("modules/auth_failed")
 local UpgradeRequired = require("modules/upgrade_required")
 
 -- `modules/network` is the plugin's own module, not one of KOReader's, so it
@@ -214,14 +215,14 @@ describe("ApiClient", function()
 		it("returns the counts the server reported", function()
 			NetworkFake.setPostResult(200, { highlights_created = 2, highlights_skipped = 1, highlights_removed = 3 })
 
-			local ok, response, err = clientWithToken(TOKEN):uploadHighlights(
+			local code, response, err = clientWithToken(TOKEN):uploadHighlights(
 				CLIENT_BOOK_ID,
 				{ A_HIGHLIGHT },
 				nil,
 				{ 7 }
 			)
 
-			assert.is_true(ok)
+			assert.are.equal(200, code)
 			assert.are.equal(3, response.highlights_removed)
 			assert.is_nil(err)
 		end)
@@ -229,27 +230,28 @@ describe("ApiClient", function()
 		it("reports a failed upload with its status", function()
 			NetworkFake.setPostResult(500, nil)
 
-			local ok, response, err = clientWithToken(TOKEN):uploadHighlights(
+			local code, response, err = clientWithToken(TOKEN):uploadHighlights(
 				CLIENT_BOOK_ID,
 				{ A_HIGHLIGHT },
 				nil,
 				{ 7 }
 			)
 
-			assert.is_false(ok)
+			assert.are.equal(500, code)
 			assert.is_nil(response)
 			assert.are.equal("Upload failed: 500", err)
 		end)
 
 		it("does not reach the network when authentication fails", function()
-			local ok, _, err = clientWithToken(nil, "Invalid credentials"):uploadHighlights(
+			local code, _, err = clientWithToken(nil, "Invalid credentials"):uploadHighlights(
 				CLIENT_BOOK_ID,
 				{ A_HIGHLIGHT },
 				nil,
 				{ 7 }
 			)
 
-			assert.is_false(ok)
+			-- Nothing answered, so there is no status to report.
+			assert.is_nil(code)
 			assert.are.equal("Invalid credentials", err)
 			assert.are.same({}, NetworkFake.posted)
 		end)
@@ -259,7 +261,7 @@ describe("ApiClient", function()
 		it("sends the sessions to the sync endpoint in the API's own shape", function()
 			NetworkFake.setPostResult(200, { created_count = 1, skipped_duplicate_count = 0 })
 
-			local ok = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {
+			local code = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {
 				{
 					start_time = 1700000000,
 					end_time = 1700003600,
@@ -272,7 +274,7 @@ describe("ApiClient", function()
 				},
 			})
 
-			assert.is_true(ok)
+			assert.are.equal(200, code)
 			assert.are.equal(BASE_URL .. "/api/v1/reading_sessions/sync", NetworkFake.posted[1].url)
 			local payload = NetworkFake.posted[1].data
 			assert.are.equal(CLIENT_BOOK_ID, payload.client_book_id)
@@ -403,7 +405,75 @@ describe("ApiClient", function()
 		it("names an authentication failure that came with no message", function()
 			local _, _, err = clientWithToken(nil, nil):getHighlights(CLIENT_BOOK_ID)
 
-			assert.are.equal("Authentication failed", err)
+			-- Still typed, so a caller can still tell what kind of failure it was.
+			assert.is_true(AuthFailed.is(err))
+			assert.are.equal("Authentication failed", AuthFailed.message(err))
+		end)
+	end)
+
+	describe("uploadEpub", function()
+		it("reports a successful upload with the status and nothing else", function()
+			-- These endpoints answer with no body at all, so the status is the
+			-- whole answer.
+			NetworkFake.setMultipartResult(200, "")
+
+			local code, response, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+
+			assert.are.equal(200, code)
+			assert.is_nil(response)
+			assert.is_nil(err)
+			assert.are.equal(
+				BASE_URL .. "/api/v1/ereader/books/" .. CLIENT_BOOK_ID .. "/epub",
+				NetworkFake.uploaded[1].url
+			)
+		end)
+
+		it("reports a rejected upload with its status", function()
+			NetworkFake.setMultipartResult(500, "")
+
+			local code, response, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+
+			assert.are.equal(500, code)
+			assert.is_nil(response)
+			assert.are.equal("Upload failed: 500", err)
+		end)
+	end)
+
+	describe("an authentication failure on the way out", function()
+		-- The plugin picks the dialog a reader sees by the error's type, so the
+		-- one Auth built has to reach the caller as itself rather than as its
+		-- text; matching on the wording is exactly what used to be broken.
+
+		--- Build a client whose auth fails with a typed error
+		-- @return table The ApiClient instance
+		local function clientRefusedByAuth()
+			return clientWithToken(nil, AuthFailed.new("Login failed: 401"))
+		end
+
+		it("reaches the caller of a fetch intact", function()
+			local code, data, err = clientRefusedByAuth():getBookMetadata(CLIENT_BOOK_ID)
+
+			assert.is_nil(code)
+			assert.is_nil(data)
+			assert.is_true(AuthFailed.is(err))
+			assert.are.equal("Login failed: 401", AuthFailed.message(err))
+		end)
+
+		it("reaches the caller of an upload intact", function()
+			local code, data, err = clientRefusedByAuth():uploadHighlights(CLIENT_BOOK_ID, {}, nil, nil)
+
+			assert.is_nil(code)
+			assert.is_nil(data)
+			assert.is_true(AuthFailed.is(err))
+			assert.are.equal("Login failed: 401", AuthFailed.message(err))
+		end)
+
+		it("reaches the caller of an EPUB upload intact", function()
+			local code, _, err = clientRefusedByAuth():uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+
+			assert.is_nil(code)
+			assert.is_true(AuthFailed.is(err))
+			assert.are.same({}, NetworkFake.uploaded)
 		end)
 	end)
 
@@ -440,27 +510,27 @@ describe("ApiClient", function()
 		it("reports a refused highlight upload the same way", function()
 			NetworkFake.setPostResult(426, REFUSAL)
 
-			local ok, _, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+			local code, _, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
 
-			assert.is_false(ok)
+			assert.are.equal(426, code)
 			assertRefusal(err)
 		end)
 
 		it("reports a refused session upload the same way", function()
 			NetworkFake.setPostResult(426, REFUSAL)
 
-			local ok, _, err = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {})
+			local code, _, err = clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {})
 
-			assert.is_false(ok)
+			assert.are.equal(426, code)
 			assertRefusal(err)
 		end)
 
 		it("reports a refused book creation the same way", function()
 			NetworkFake.setPostResult(426, REFUSAL)
 
-			local ok, _, err = clientWithToken(TOKEN):createBook({ client_book_id = CLIENT_BOOK_ID })
+			local code, _, err = clientWithToken(TOKEN):createBook({ client_book_id = CLIENT_BOOK_ID })
 
-			assert.is_false(ok)
+			assert.are.equal(426, code)
 			assertRefusal(err)
 		end)
 
@@ -470,10 +540,10 @@ describe("ApiClient", function()
 			NetworkFake.setMultipartResult(426, '{"detail": {}}')
 			stub(json, "decode", REFUSAL)
 
-			local ok, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local code, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
 
 			json.decode:revert()
-			assert.is_false(ok)
+			assert.are.equal(426, code)
 			assertRefusal(err)
 		end)
 
@@ -491,9 +561,9 @@ describe("ApiClient", function()
 		it("still reports an EPUB refusal whose body could not be read", function()
 			NetworkFake.setMultipartResult(426, "<html>Upgrade required</html>")
 
-			local ok, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local code, _, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
 
-			assert.is_false(ok)
+			assert.are.equal(426, code)
 			assert.is_true(UpgradeRequired.is(err))
 			assert.is_nil(err.min_supported_version)
 		end)
@@ -530,9 +600,9 @@ describe("ApiClient", function()
 			local auth = authWithTokens({ "revoked", "fresh" })
 			NetworkFake.setPostResults({ 401 }, { 200, { highlights_created = 1 } })
 
-			local ok, response, err = clientWithAuth(auth):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+			local code, response, err = clientWithAuth(auth):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
 
-			assert.is_true(ok)
+			assert.are.equal(200, code)
 			assert.are.equal(1, response.highlights_created)
 			assert.is_nil(err)
 			assert.are.equal(1, auth.cleared)
@@ -545,9 +615,9 @@ describe("ApiClient", function()
 			local auth = authWithTokens({ "revoked", "fresh" })
 			NetworkFake.setMultipartResults({ 401 }, { 200 })
 
-			local ok, _, err = clientWithAuth(auth):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local code, _, err = clientWithAuth(auth):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
 
-			assert.is_true(ok)
+			assert.are.equal(200, code)
 			assert.is_nil(err)
 			assert.are.equal(1, auth.cleared)
 			assert.are.equal(2, #NetworkFake.uploaded)
@@ -585,9 +655,9 @@ describe("ApiClient", function()
 			local auth = authWithTokens({ "revoked", "also-revoked" })
 			NetworkFake.setPostResult(401)
 
-			local ok, _, err = clientWithAuth(auth):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
+			local code, _, err = clientWithAuth(auth):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
 
-			assert.is_false(ok)
+			assert.are.equal(401, code)
 			assert.are.equal("Upload failed: 401", err)
 			assert.are.equal(2, #NetworkFake.posted)
 		end)

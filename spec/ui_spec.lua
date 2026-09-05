@@ -1,5 +1,6 @@
 local UI = require("modules/ui")
 local UIManager = require("ui/uimanager")
+local AuthFailed = require("modules/auth_failed")
 local Trapper = require("ui/trapper")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
@@ -94,6 +95,36 @@ describe("UI", function()
 			UI.showSyncSuccess({ highlights_created = 1, highlights_removed = 0 })
 
 			assert.are.equal("Uploaded 1 new highlights.", shownText())
+		end)
+	end)
+
+	describe("showAuthError", function()
+		it("names what the server said about the credentials", function()
+			UI.showAuthError(AuthFailed.new("Login failed: 401"))
+
+			assert.are.equal("Authentication failed: Login failed: 401", shownText())
+		end)
+
+		it("still says something when there is no error to go on", function()
+			UI.showAuthError(nil)
+
+			assert.are.equal("Authentication failed: unknown error", shownText())
+		end)
+	end)
+
+	describe("showSyncFailed", function()
+		it("prints a typed error as its own message rather than as a table", function()
+			-- Errors reach here as strings and as tables alike, and a reader must
+			-- never be shown "table: 0x...".
+			UI.showSyncFailed(AuthFailed.new("Refresh failed: 401"))
+
+			assert.are.equal("Sync failed: Refresh failed: 401", shownText())
+		end)
+
+		it("still says something when there is nothing to name", function()
+			UI.showSyncFailed(nil)
+
+			assert.are.equal("Sync failed: unknown error", shownText())
 		end)
 	end)
 

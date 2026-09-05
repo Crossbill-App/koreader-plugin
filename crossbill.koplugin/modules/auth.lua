@@ -5,8 +5,16 @@ Handles user authentication with the Crossbill server including:
 - Initial login with username/password
 - Token refresh using refresh tokens
 - Token validation and caching
+
+A failure the reader could do something about -- credentials that are missing or
+that the server rejected -- comes back as an AuthFailed, so the sync path can
+tell it from every other error without reading its wording. A network error on
+the way to the login endpoint stays a plain string: nothing is wrong with the
+reader's credentials, and dressing it up as an authentication failure would send
+them to change a password that works.
 ]]
 
+local AuthFailed = require("modules/auth_failed")
 local Network = require("modules/network")
 local logger = require("logger")
 
@@ -27,14 +35,15 @@ end
 
 --- Authenticate with username and password
 -- @return string|nil Access token on success
--- @return string|nil Error message on failure
+-- @return any Error on failure: an AuthFailed when the credentials are the
+--   problem, a plain message when the network is
 function Auth:login()
 	local username = self.settings:getUsername()
 	local password = self.settings:getPassword()
 
 	if username == "" or password == "" then
 		logger.warn("Crossbill Auth: Username or password not configured")
-		return nil, "Username or password not configured"
+		return nil, AuthFailed.new("Username or password not configured")
 	end
 
 	local api_url = self.settings:getApiUrl() .. "/auth/login"
@@ -56,18 +65,19 @@ function Auth:login()
 		return response_data.access_token
 	else
 		logger.err("Crossbill Auth: Login failed with code:", code)
-		return nil, "Login failed: " .. tostring(code)
+		return nil, AuthFailed.new("Login failed: " .. tostring(code))
 	end
 end
 
 --- Refresh the access token using stored refresh token
 -- @return string|nil New access token on success
--- @return string|nil Error message on failure
+-- @return any Error on failure: an AuthFailed when the stored tokens are the
+--   problem, a plain message when the network is
 function Auth:refreshToken()
 	local refresh_token = self.settings:getRefreshToken()
 	if not refresh_token then
 		logger.dbg("Crossbill Auth: No refresh token available")
-		return nil, "No refresh token"
+		return nil, AuthFailed.new("No refresh token")
 	end
 
 	local api_url = self.settings:getApiUrl() .. "/auth/refresh"
@@ -90,7 +100,7 @@ function Auth:refreshToken()
 		logger.err("Crossbill Auth: Token refresh failed with code:", code)
 		-- Clear stored tokens on refresh failure
 		self.settings:clearTokens()
-		return nil, "Refresh failed: " .. tostring(code)
+		return nil, AuthFailed.new("Refresh failed: " .. tostring(code))
 	end
 end
 
@@ -103,8 +113,11 @@ function Auth:clearTokens()
 end
 
 --- Get a valid access token, refreshing or logging in as needed
+-- A failed refresh is not reported: it falls through to a full login, and it is
+-- that login's answer -- an AuthFailed, or a plain network message -- the caller
+-- is handed.
 -- @return string|nil Access token on success
--- @return string|nil Error message on failure
+-- @return any Error on failure, as `login` reports it
 function Auth:getValidToken()
 	local current_time = os.time()
 	local expires_at = self.settings:getTokenExpiresAt()

@@ -13,6 +13,7 @@ local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Trapper = require("ui/trapper")
+local AuthFailed = require("modules/auth_failed")
 local DigestFormat = require("modules/digest_format")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
@@ -143,9 +144,10 @@ function UI.showUpgradeRequired(err)
 end
 
 --- Show authentication error message
--- @param error_msg string The error message
-function UI.showAuthError(error_msg)
-	UI.showMessage(_("Authentication failed: ") .. (error_msg or "unknown error"), 5)
+-- @param err table|string|nil The AuthFailed the sync came back with, or any
+--   other error worth naming as an authentication failure
+function UI.showAuthError(err)
+	UI.showMessage(_("Authentication failed: ") .. AuthFailed.message(err), 5)
 end
 
 --- Show settings saved message

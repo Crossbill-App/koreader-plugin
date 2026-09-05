@@ -1,4 +1,5 @@
 local SyncService = require("modules/sync_service")
+local AuthFailed = require("modules/auth_failed")
 local HighlightSnapshot = require("modules/highlight_snapshot")
 local UpgradeRequired = require("modules/upgrade_required")
 local FakeSnapshotStore = require("fake_snapshot_store")
@@ -493,7 +494,7 @@ describe("SyncService", function()
 				end,
 				uploadHighlights = function(self, _, highlights, device_id, removed_ids)
 					self.uploaded = { highlights = highlights, device_id = device_id, removed_ids = removed_ids }
-					return true,
+					return 200,
 						{
 							highlights_created = #highlights,
 							highlights_skipped = 0,
@@ -505,11 +506,11 @@ describe("SyncService", function()
 				end,
 				uploadEpub = function(self, _, data, filename)
 					self.uploaded_epub = { data = data, filename = filename }
-					return true, {}
+					return 200, {}
 				end,
 				uploadReadingSessions = function(self, _, sessions)
 					self.sessions_uploaded = sessions
-					return true, {}
+					return 200, {}
 				end,
 			}
 			for name, fn in pairs(overrides or {}) do
@@ -642,7 +643,8 @@ describe("SyncService", function()
 						return 404
 					end,
 					createBook = function()
-						return true, nil
+						-- Created, but with nothing said back about the book.
+						return 200, nil
 					end,
 				})
 				local service = serviceFor(api, {})
@@ -685,7 +687,7 @@ describe("SyncService", function()
 			it("hands back the upload's own error without failing the sync", function()
 				local api = apiForSyncBook({
 					uploadEpub = function()
-						return false, nil, "server exploded"
+						return 500, nil, "server exploded"
 					end,
 				})
 				local service = serviceFor(api, {})
@@ -878,7 +880,7 @@ describe("SyncService", function()
 				-- next sync diffs the same removals out again.
 				local api = apiForSyncBook({
 					uploadHighlights = function()
-						return false, nil, "Connection refused"
+						return nil, nil, "Connection refused"
 					end,
 				})
 
@@ -1087,6 +1089,29 @@ describe("SyncService", function()
 				assert.are.equal(0, asked)
 			end)
 		end)
+		describe("a reader the server would not authenticate", function()
+			it("ends the sync with the failure still recognisable as one", function()
+				-- main.lua picks the dialog by the error's type, so the sync must
+				-- carry it through rather than flatten it into its own wording.
+				local refused = AuthFailed.new("Login failed: 401")
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return nil, nil, refused
+					end,
+					createBook = function()
+						return nil, nil, refused
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+				assert.is_false(result.success)
+				assert.is_true(AuthFailed.is(result.error))
+				assert.are.equal("Login failed: 401", AuthFailed.message(result.error))
+			end)
+		end)
+
 		describe("a server that turns this plugin away as too old", function()
 			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
 			local REFUSAL = UpgradeRequired.fromResponse(426, {
@@ -1125,16 +1150,16 @@ describe("SyncService", function()
 					return refuse(self, "getBookMetadata", 426, nil, REFUSAL)
 				end
 				api.createBook = function(self)
-					return refuse(self, "createBook", false, nil, REFUSAL)
+					return refuse(self, "createBook", 426, nil, REFUSAL)
 				end
 				api.uploadHighlights = function(self)
-					return refuse(self, "uploadHighlights", false, nil, REFUSAL)
+					return refuse(self, "uploadHighlights", 426, nil, REFUSAL)
 				end
 				api.getHighlights = function(self)
 					return refuse(self, "getHighlights", 426, nil, REFUSAL)
 				end
 				api.uploadReadingSessions = function(self)
-					return refuse(self, "uploadReadingSessions", false, nil, REFUSAL)
+					return refuse(self, "uploadReadingSessions", 426, nil, REFUSAL)
 				end
 				return api
 			end
@@ -1210,7 +1235,7 @@ describe("SyncService", function()
 				-- removals and the sessions alike.
 				local api = apiForSyncBook({
 					uploadHighlights = function()
-						return false, nil, REFUSAL
+						return 426, nil, REFUSAL
 					end,
 					getHighlights = function(self)
 						self.pulled = true
@@ -1218,7 +1243,7 @@ describe("SyncService", function()
 					end,
 					uploadReadingSessions = function(self)
 						self.sessions_uploaded = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local session_tracker = {
@@ -1248,11 +1273,11 @@ describe("SyncService", function()
 				-- is about the plugin rather than about the file.
 				local api = apiForSyncBook({
 					uploadEpub = function()
-						return false, nil, REFUSAL
+						return 426, nil, REFUSAL
 					end,
 					uploadHighlights = function(self)
 						self.pushed = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local service = serviceFor(api, {})
@@ -1272,11 +1297,11 @@ describe("SyncService", function()
 						return 404
 					end,
 					createBook = function()
-						return false, nil, REFUSAL
+						return 426, nil, REFUSAL
 					end,
 					uploadHighlights = function(self)
 						self.pushed = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local service = serviceFor(api, {})
@@ -1316,7 +1341,7 @@ describe("SyncService", function()
 					end,
 					uploadReadingSessions = function(self)
 						self.sessions_uploaded = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local service = serviceFor(api, {

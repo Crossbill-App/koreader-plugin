@@ -15,6 +15,7 @@ local _ = require("gettext")
 local Settings = require("modules/settings")
 local Network = require("modules/network")
 local Auth = require("modules/auth")
+local AuthFailed = require("modules/auth_failed")
 local ApiClient = require("modules/api_client")
 local SessionTracker = require("modules/sessiontracker")
 local SessionStore = require("modules/session_store")
@@ -395,7 +396,10 @@ function CrossbillSync:doSync(is_autosync)
 	end
 
 	if not result.success and not is_autosync then
-		if result.error and result.error:match("^Authentication") then
+		-- Which dialog this is depends on the kind of failure, not on how the
+		-- message reads: the reader whose password is wrong needs sending to the
+		-- settings, and everyone else does not.
+		if AuthFailed.is(result.error) then
 			UI.showAuthError(result.error)
 		else
 			UI.showSyncFailed(result.error)

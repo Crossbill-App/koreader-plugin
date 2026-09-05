@@ -3,8 +3,15 @@ API Client Module for Crossbill Sync
 
 Provides a clean interface for communicating with the Crossbill server API.
 Handles highlight uploads, and other API operations.
+
+Every public method answers the same way: `code, data, error`, where `code` is
+the HTTP status the server replied with, nil when nothing answered at all, and
+success is `code == 200`. The GETs and the POSTs used to disagree about that --
+the POSTs handed back a boolean -- which left every caller remembering which
+kind of call it was making.
 ]]
 
+local AuthFailed = require("modules/auth_failed")
 local Network = require("modules/network")
 local UpgradeRequired = require("modules/upgrade_required")
 local logger = require("logger")
@@ -101,7 +108,11 @@ function ApiClient:_sendAuthorized(what, send)
 	local function attempt()
 		local token, auth_err = self.auth:getValidToken()
 		if not token then
-			return nil, nil, auth_err or "Authentication failed"
+			-- No request goes out, so there is no status to report: this arrives
+			-- at the wrappers below on their `not code` path, which hands the
+			-- error on as it is. An auth failure that came with nothing to say is
+			-- still typed, so the caller can still tell what kind it was.
+			return nil, nil, auth_err or AuthFailed.new("Authentication failed")
 		end
 
 		local code, body, err = send(token)
@@ -130,7 +141,7 @@ end
 -- @param what string What is being fetched, for the log lines
 -- @return number|nil HTTP status code
 -- @return table|nil Response data, nil for anything but a 200 with a body
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:_authorizedGet(path, what)
 	local api_url = self.settings:getApiUrl() .. path
 
@@ -164,9 +175,9 @@ end
 -- @param payload table The data to send
 -- @param what string What is being sent, for the log lines
 -- @param failure string|nil What to call a failure, "Upload failed" by default
--- @return boolean Success status
+-- @return number|nil HTTP status code
 -- @return table|nil Response data, nil for anything but a 200 with a body
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:_authorizedPost(path, payload, what, failure)
 	local api_url = self.settings:getApiUrl() .. path
 
@@ -176,16 +187,16 @@ function ApiClient:_authorizedPost(path, payload, what, failure)
 	end)
 
 	if not code then
-		return false, nil, err or "Network error"
+		return nil, nil, err or "Network error"
 	end
 
 	if code == 200 and response_data then
 		logger.info("Crossbill API: Uploaded", what)
-		return true, response_data, nil
+		return code, response_data, nil
 	end
 
 	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
-	return false, nil, failureError(err, (failure or "Upload failed") .. ": " .. tostring(code))
+	return code, nil, failureError(err, (failure or "Upload failed") .. ": " .. tostring(code))
 end
 
 --- Post a multipart body with the caller's bearer token
@@ -193,9 +204,9 @@ end
 -- @param path string Path below the API root, starting with a slash
 -- @param files table Array of file objects
 -- @param what string What is being sent, for the log lines
--- @return boolean Success status
+-- @return number|nil HTTP status code
 -- @return nil Response data, never carried by these endpoints
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:_authorizedMultipart(path, files, what)
 	local api_url = self.settings:getApiUrl() .. path
 
@@ -205,16 +216,16 @@ function ApiClient:_authorizedMultipart(path, files, what)
 	end)
 
 	if not code then
-		return false, nil, err or "Network error"
+		return nil, nil, err or "Network error"
 	end
 
 	if code == 200 then
 		logger.info("Crossbill API: Uploaded", what)
-		return true, nil, nil
+		return code, nil, nil
 	end
 
 	logger.warn("Crossbill API: Uploading", what, "failed with code:", code)
-	return false, nil, failureError(err, "Upload failed: " .. tostring(code))
+	return code, nil, failureError(err, "Upload failed: " .. tostring(code))
 end
 
 --- Upload highlights to the server
@@ -228,10 +239,10 @@ end
 --   removed or deleted under the same text
 -- @param device_id string|nil Identifier of the device the highlights came from
 -- @param removed_ids table|nil Server ids of highlights deleted on this device
--- @return boolean Success status
+-- @return number|nil HTTP status code, 200 on success
 -- @return table|nil Response data containing book_id, highlights_created,
 --   highlights_skipped, highlights_removed
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:uploadHighlights(client_book_id, highlights, device_id, removed_ids)
 	local payload = {
 		client_book_id = client_book_id,
@@ -250,7 +261,7 @@ end
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @return number|nil HTTP status code
 -- @return table|nil Response data containing book_id, bookname, author, has_ebook
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:getBookMetadata(client_book_id)
 	return self:_authorizedGet("/ereader/books/" .. client_book_id, "book metadata")
 end
@@ -259,7 +270,7 @@ end
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @return number|nil HTTP status code
 -- @return table|nil Response data containing an "items" array of chapter digests
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:getBookDigest(client_book_id)
 	return self:_authorizedGet("/ereader/books/" .. client_book_id .. "/digest", "book digests")
 end
@@ -270,7 +281,7 @@ end
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @return number|nil HTTP status code
 -- @return table|nil Array of highlight items, empty when the book has none
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:getHighlights(client_book_id)
 	local code, response_data, err =
 		self:_authorizedGet("/ereader/books/" .. client_book_id .. "/highlights", "highlights")
@@ -293,9 +304,9 @@ end
 
 --- Create a new book on the server
 -- @param book_data table Book metadata (title, author, isbn, description, language, page_count, client_book_id, keywords)
--- @return boolean Success status
+-- @return number|nil HTTP status code, 200 on success
 -- @return table|nil Response data containing book metadata (same as getBookMetadata)
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:createBook(book_data)
 	return self:_authorizedPost("/ereader/books", book_data, "the new book", "Create book failed")
 end
@@ -304,9 +315,9 @@ end
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @param epub_data string The EPUB file binary data
 -- @param filename string The original EPUB filename
--- @return boolean Success status
+-- @return number|nil HTTP status code, 200 on success
 -- @return nil Response data (always nil for this endpoint)
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:uploadEpub(client_book_id, epub_data, filename)
 	local files = {
 		{
@@ -335,9 +346,9 @@ end
 --- Upload reading sessions to the server for a single book
 -- @param client_book_id string The client-side book ID (hash of title|author)
 -- @param sessions table Array of session records from SessionTracker
--- @return boolean Success status
+-- @return number|nil HTTP status code, 200 on success
 -- @return table|nil Response data (success, message, created_count, skipped_duplicate_count)
--- @return string|nil Error message
+-- @return any Error message, nil on success
 function ApiClient:uploadReadingSessions(client_book_id, sessions)
 	-- Transform sessions to API format
 	local api_sessions = {}

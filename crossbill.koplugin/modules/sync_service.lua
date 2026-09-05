@@ -155,8 +155,8 @@ function SyncService:syncBook(ui, opts)
 	if not server_metadata then
 		-- Book doesn't exist on server, create it
 		logger.info("Crossbill SyncService: Book not found on server, creating it")
-		local create_success, created_metadata, create_err = self.api_client:createBook(book_data)
-		if not create_success then
+		local create_code, created_metadata, create_err = self.api_client:createBook(book_data)
+		if create_code ~= 200 then
 			if self:_abortIfTooOld(result, create_err, opts) then
 				return result
 			end
@@ -371,10 +371,10 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 	self:_flagNewHighlights(client_book_id, highlights, book_file_hash)
 
 	-- Upload highlights to server
-	local upload_success, response, err =
+	local upload_code, response, err =
 		self.api_client:uploadHighlights(client_book_id, highlights, DeviceIdentity.getDeviceId(), removed_ids)
 
-	if not upload_success then
+	if upload_code ~= 200 then
 		-- The removals stay unsent, and the snapshot only moves on after a
 		-- successful pull, so the next sync diffs them out again.
 		result.success = false
@@ -512,8 +512,8 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 
 	logger.info("Crossbill SyncService: Found", #sessions, "unsynced reading sessions")
 
-	local success, response, err = self.api_client:uploadReadingSessions(client_book_id, sessions)
-	if success and response then
+	local code, response, err = self.api_client:uploadReadingSessions(client_book_id, sessions)
+	if code == 200 and response then
 		-- Mark all sessions as synced (all-or-nothing API)
 		local session_ids = {}
 		for _, session in ipairs(sessions) do
@@ -570,8 +570,8 @@ function SyncService:_syncFiles(client_book_id, book_metadata, server_metadata)
 	local filename = BookMetadata.getFilename(doc_path)
 	logger.dbg("Crossbill SyncService: Uploading EPUB file:", filename, "size:", #epub_data, "bytes")
 
-	local upload_ok, _, upload_err = self.api_client:uploadEpub(client_book_id, epub_data, filename)
-	if not upload_ok then
+	local upload_code, _, upload_err = self.api_client:uploadEpub(client_book_id, epub_data, filename)
+	if upload_code ~= 200 then
 		logger.warn("Crossbill SyncService: EPUB upload issue:", upload_err)
 		return upload_err
 	end

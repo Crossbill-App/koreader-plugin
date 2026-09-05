@@ -1,4 +1,5 @@
 local UIManager = require("ui/uimanager")
+local AuthFailed = require("modules/auth_failed")
 local UpgradeRequired = require("modules/upgrade_required")
 
 -- Requiring main.lua loads `modules/network`, which reaches for a socket. It is
@@ -72,7 +73,7 @@ describe("CrossbillSync", function()
 	end
 
 	--- Build a sync service whose sync fails the ordinary way
-	-- @param err string What went wrong
+	-- @param err any What went wrong, as a message or as a typed error
 	-- @return table The sync service stand-in
 	local function syncServiceFailing(err)
 		return {
@@ -133,6 +134,27 @@ describe("CrossbillSync", function()
 			plugin:doSync(false)
 
 			assert.are.same({ "Sync failed: Upload failed: 500" }, shownTexts())
+		end)
+
+		it("sends a reader the server would not authenticate to the auth message", function()
+			local plugin = pluginWith({
+				ui = {},
+				sync_service = syncServiceFailing(AuthFailed.new("Login failed: 401")),
+			})
+
+			plugin:doSync(false)
+
+			assert.are.same({ "Authentication failed: Login failed: 401" }, shownTexts())
+		end)
+
+		it("leaves the same words as a plain string to the ordinary failure message", function()
+			-- What decides is the type, not the wording: the old code matched on
+			-- the text, which meant it matched nothing Auth ever said.
+			local plugin = pluginWith({ ui = {}, sync_service = syncServiceFailing("Login failed: 401") })
+
+			plugin:doSync(false)
+
+			assert.are.same({ "Sync failed: Login failed: 401" }, shownTexts())
 		end)
 	end)
 
