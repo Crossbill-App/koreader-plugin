@@ -34,10 +34,10 @@ main.lua (CrossbillSync)
     ├── Settings        - Configuration persistence via KOReader's G_reader_settings
     ├── Auth            - OAuth token management (login, refresh, caching)
     ├── ApiClient       - HTTP API communication (highlights, sessions, files)
-    ├── FileUploader    - EPUB uploads (uses ApiClient)
     ├── SessionTracker  - Reading session tracking (over SessionStore)
-    ├── SyncService     - Orchestrates sync workflow (uses ApiClient, FileUploader, SessionTracker)
+    ├── SyncService     - Orchestrates sync workflow (uses ApiClient, SessionTracker)
     ├── UI              - KOReader dialogs and menu building
+    ├── DigestFormat    - A digest item as title, HTML and plain text; no widgets
     ├── SqliteStore     - One database file: WAL, schema, migrations, statements
     │   ├── SessionStore           - Finished reading sessions
     │   ├── DigestCache            - Chapter digests, kept for offline reading
@@ -53,8 +53,9 @@ main.lua (CrossbillSync)
 
 - `main.lua` is the entry point, extending KOReader's `WidgetContainer`
 - All modules use constructor injection: `Module:new(dependencies)`
-- API methods return consistent 3-tuples: `success/code, data, error`
-- Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out.
+- API methods return `code, data, error`; success is `code == 200`, and a `code` of nil means nothing answered at all. The data is whatever the server sent, nil when it sent nothing, and a caller that needs a body checks for one. A 200 whose body would not decode is no usable answer either, so it comes back with a nil code and a message saying which call it was
+- A failure a caller acts on rather than merely reports travels as a typed error, never as prose to match on: `modules/upgrade_required.lua` for the server refusing this plugin version, `modules/auth_failed.lua` for credentials the server would not accept. Both carry `__tostring` and `__concat`, so a path that logs or appends the error still works. A plain network error stays a plain string.
+- Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out. The server's 426 refusal is raised as an `UpgradeRequired` error from the three wrappers those helpers send through, caught once in `SyncService:syncBook` and once in `DigestService:getForCurrentChapter`, so no call site has to check for it.
 - Network module handles WiFi lifecycle (enable before sync, disable after if we enabled it)
 - The SQLite-backed stores -- `session_store`, `digest_cache`,
   `highlight_snapshot_store` -- are each a schema and its queries over a

@@ -100,6 +100,23 @@ function UpgradeRequired.fromResponse(code, body)
 	return UpgradeRequired.new(body)
 end
 
+--- Raise the refusal when the answer is one, and do nothing when it is not
+-- The raising lives here rather than at each call site because every route the
+-- plugin calls can be answered with a 426 -- the login and the token refresh
+-- included, which is where a plugin the server will not serve meets it first,
+-- having no token yet to be turned away over. One helper is what keeps a caller
+-- from having to remember the recognise-then-raise sequence, and a caller that
+-- forgets it reports the refusal as whatever that route calls a failure.
+-- @param code number|nil The HTTP status the server answered with
+-- @param body table|nil The decoded response body, if there was one
+-- @raise The refusal, when the server turned this plugin version away
+function UpgradeRequired.raiseIfRefused(code, body)
+	local refusal = UpgradeRequired.fromResponse(code, body)
+	if refusal then
+		error(refusal, 0)
+	end
+end
+
 --- Tell this failure apart from the error strings everything else reports
 -- @param err any The error to test
 -- @return boolean True when the server refused this plugin version

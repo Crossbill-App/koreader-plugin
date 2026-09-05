@@ -100,36 +100,60 @@ describe("Settings", function()
 		end)
 	end)
 
-	describe("shared namespace access", function()
-		it("reads a value an instance stored", function()
-			Settings:new():load():set("device_uuid", "abc-123"):save()
-
-			assert.are.equal("abc-123", Settings.readShared("device_uuid"))
+	describe("device uuid", function()
+		it("is nil until one has been generated", function()
+			assert.is_nil(Settings:new():load():getDeviceUuid())
 		end)
 
-		it("is nil for a key nothing has stored", function()
-			assert.is_nil(Settings.readShared("device_uuid"))
+		it("survives a round trip through a fresh instance", function()
+			-- DeviceIdentity stores the UUID from its own instance and reads it
+			-- back on a later run, so the value has to outlive the instance that
+			-- wrote it.
+			Settings:new():load():setDeviceUuid("abc-123")
+
+			assert.are.equal("abc-123", Settings:new():load():getDeviceUuid())
 		end)
 
-		it("persists a value an instance then loads", function()
-			Settings.saveShared("device_uuid", "abc-123")
+		it("leaves the settings another instance already loaded intact", function()
+			local settings = Settings:new():load():setUsername("ada")
 
-			assert.are.equal("abc-123", Settings:new():load():get("device_uuid"))
+			Settings:new():load():setDeviceUuid("abc-123")
+
+			assert.are.equal("ada", settings:getUsername())
+			assert.are.equal("abc-123", settings:getDeviceUuid())
+		end)
+	end)
+
+	describe("typed setters", function()
+		-- Every typed setter persists, so no caller has to remember to save.
+		it("persists the base URL", function()
+			Settings:new():load():setBaseUrl("https://crossbill.example")
+
+			assert.are.equal("https://crossbill.example", Settings:new():load():getBaseUrl())
 		end)
 
-		it("registers the namespace when nothing was persisted", function()
-			Settings.saveShared("device_uuid", "abc-123")
+		it("persists the username", function()
+			Settings:new():load():setUsername("ada")
+
+			assert.are.equal("ada", Settings:new():load():getUsername())
+		end)
+
+		it("persists the password", function()
+			Settings:new():load():setPassword("hunter2")
+
+			assert.are.equal("hunter2", Settings:new():load():getPassword())
+		end)
+
+		it("persists the device UUID", function()
+			Settings:new():load():setDeviceUuid("abc-123")
 
 			assert.are.equal("abc-123", written().device_uuid)
 		end)
 
-		it("leaves the settings an instance already loaded intact", function()
-			local settings = Settings:new():load():setUsername("ada")
+		it("persists the minimum session duration", function()
+			Settings:new():load():setMinReadingSessionDuration(120)
 
-			Settings.saveShared("device_uuid", "abc-123")
-
-			assert.are.equal("ada", settings:getUsername())
-			assert.are.equal("abc-123", settings:get("device_uuid"))
+			assert.are.equal(120, Settings:new():load():getMinReadingSessionDuration())
 		end)
 	end)
 
@@ -160,26 +184,6 @@ describe("Settings", function()
 			local settings = Settings:new():load():setBaseUrl("https://crossbill.example")
 
 			assert.are.equal("https://crossbill.example/api/v1", settings:getApiUrl())
-		end)
-	end)
-
-	describe("hasCredentials", function()
-		it("is false before anything is configured", function()
-			assert.is_false(Settings:new():load():hasCredentials())
-		end)
-
-		it("is false with a username but no password", function()
-			assert.is_false(Settings:new():load():setUsername("ada"):hasCredentials())
-		end)
-
-		it("is false with a password but no username", function()
-			assert.is_false(Settings:new():load():setPassword("hunter2"):hasCredentials())
-		end)
-
-		it("is true once both are set", function()
-			local settings = Settings:new():load():setUsername("ada"):setPassword("hunter2")
-
-			assert.is_true(settings:hasCredentials())
 		end)
 	end)
 
@@ -268,7 +272,8 @@ describe("Settings", function()
 			local reloaded = Settings:new():load()
 
 			assert.are.equal("https://crossbill.example", reloaded:getBaseUrl())
-			assert.is_true(reloaded:hasCredentials())
+			assert.are.equal("ada", reloaded:getUsername())
+			assert.are.equal("hunter2", reloaded:getPassword())
 		end)
 	end)
 end)

@@ -1,5 +1,6 @@
 local UI = require("modules/ui")
 local UIManager = require("ui/uimanager")
+local AuthFailed = require("modules/auth_failed")
 local Trapper = require("ui/trapper")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
@@ -97,6 +98,36 @@ describe("UI", function()
 		end)
 	end)
 
+	describe("showAuthError", function()
+		it("names what the server said about the credentials", function()
+			UI.showAuthError(AuthFailed.new("Login failed: 401"))
+
+			assert.are.equal("Authentication failed: Login failed: 401", shownText())
+		end)
+
+		it("still says something when there is no error to go on", function()
+			UI.showAuthError(nil)
+
+			assert.are.equal("Authentication failed: unknown error", shownText())
+		end)
+	end)
+
+	describe("showSyncFailed", function()
+		it("prints a typed error as its own message rather than as a table", function()
+			-- Errors reach here as strings and as tables alike, and a reader must
+			-- never be shown "table: 0x...".
+			UI.showSyncFailed(AuthFailed.new("Refresh failed: 401"))
+
+			assert.are.equal("Sync failed: Refresh failed: 401", shownText())
+		end)
+
+		it("still says something when there is nothing to name", function()
+			UI.showSyncFailed(nil)
+
+			assert.are.equal("Sync failed: unknown error", shownText())
+		end)
+	end)
+
 	describe("showUpgradeRequired", function()
 		local REFUSAL = UpgradeRequired.fromResponse(426, {
 			detail = {
@@ -135,6 +166,42 @@ describe("UI", function()
 			UI.showUpgradeRequired(nil)
 
 			assert.is_string(shownText())
+		end)
+	end)
+
+	describe("showDigestError", function()
+		local REFUSAL = UpgradeRequired.fromResponse(426, {
+			detail = {
+				min_supported_version = "0.13.0",
+				received_version = "0.12.0",
+				update_url = "https://github.com/Crossbill-App/koreader-plugin",
+			},
+		})
+
+		it("names the reason the digest service gave", function()
+			UI.showDigestError("chapter_not_matched")
+
+			assert.are.equal("Couldn't match the current chapter to Crossbill's chapter list.", shownText())
+		end)
+
+		it("shows the refusal itself when the server turned the plugin away", function()
+			UI.showDigestError(UpgradeRequired.KIND, REFUSAL)
+
+			assert.are.equal(UpgradeRequired.message(REFUSAL), shownText())
+		end)
+
+		it("falls back to the missing-cache message for a kind it does not know", function()
+			-- The one a reader can act on, and the kinds are the digest
+			-- service's to add to.
+			UI.showDigestError("something_new")
+
+			assert.are.equal("No digest cached yet. Sync this book while online.", shownText())
+		end)
+
+		it("falls back the same way when there is no kind at all", function()
+			UI.showDigestError(nil)
+
+			assert.are.equal("No digest cached yet. Sync this book while online.", shownText())
 		end)
 	end)
 

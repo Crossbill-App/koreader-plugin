@@ -13,6 +13,8 @@ local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Trapper = require("ui/trapper")
+local AuthFailed = require("modules/auth_failed")
+local DigestFormat = require("modules/digest_format")
 local UpgradeRequired = require("modules/upgrade_required")
 local meta = require("_meta")
 local logger = require("logger")
@@ -142,9 +144,10 @@ function UI.showUpgradeRequired(err)
 end
 
 --- Show authentication error message
--- @param error_msg string The error message
-function UI.showAuthError(error_msg)
-	UI.showMessage(_("Authentication failed: ") .. (error_msg or "unknown error"), 5)
+-- @param err table|string|nil The AuthFailed the sync came back with, or any
+--   other error worth naming as an authentication failure
+function UI.showAuthError(err)
+	UI.showMessage(_("Authentication failed: ") .. AuthFailed.message(err), 5)
 end
 
 --- Show settings saved message
@@ -164,143 +167,6 @@ function UI.showSessionTrackingToggled(enabled)
 	UI.showMessage(enabled and _("Session tracking enabled") or _("Session tracking disabled"))
 end
 
---- Build the display title for a digest item
--- @param item table Digest item with chapter_name and parent_chapter_name
--- @return string Title, prefixed with the parent chapter name when present
-local function buildDigestTitle(item)
-	local chapter_name = item.chapter_name or _("Chapter")
-	if item.parent_chapter_name and item.parent_chapter_name ~= "" then
-		return item.parent_chapter_name .. " › " .. chapter_name
-	end
-	return chapter_name
-end
-
---- Strip markdown inline markers from a text for plain-text display
--- The server's digest content contains markdown (e.g. **bold**), which
--- older TextViewers render as literal asterisks. Order matters: bold before
--- italics so ** is consumed first.
--- @param text any The raw text (non-strings pass through tostring)
--- @return string The text without markdown markers
-local function stripMarkdown(text)
-	local result = tostring(text)
-	result = result:gsub("%*%*(.-)%*%*", "%1")
-	result = result:gsub("__(.-)__", "%1")
-	result = result:gsub("%*(.-)%*", "%1")
-	result = result:gsub("`(.-)`", "%1")
-	-- Leading heading markers at the start of any line
-	result = result:gsub("^#+%s*", ""):gsub("\n#+%s*", "\n")
-	return result
-end
-
---- Escape HTML-special characters so raw content can't break the markup
--- Ampersand MUST be escaped first, otherwise the entities we introduce for
--- < and > would themselves get double-escaped.
--- @param text any The raw text (non-strings pass through tostring)
--- @return string HTML-safe text
-local function escapeHtml(text)
-	local result = tostring(text)
-	result = result:gsub("&", "&amp;")
-	result = result:gsub("<", "&lt;")
-	result = result:gsub(">", "&gt;")
-	return result
-end
-
---- Convert a single line of inline markdown to HTML
--- HTML-escapes first (so content is safe), then converts markdown markers to
--- tags. Bold (**/__) is handled before italics (*) so the double markers are
--- consumed first.
--- @param text any The raw text (non-strings pass through tostring)
--- @return string HTML with inline markup applied
-local function inlineMarkdownToHtml(text)
-	local result = escapeHtml(text)
-	result = result:gsub("%*%*(.-)%*%*", "<strong>%1</strong>")
-	result = result:gsub("__(.-)__", "<strong>%1</strong>")
-	result = result:gsub("%*(.-)%*", "<em>%1</em>")
-	result = result:gsub("`(.-)`", "<code>%1</code>")
-	return result
-end
-
---- Build the popup body as HTML, with inline markdown rendered as tags
--- Summary paragraphs (separated by blank lines) become <p> blocks; key points
--- become a <ul>, questions an <ol>. All content flows through
--- inlineMarkdownToHtml so bold/italics/code render properly.
--- @param item table Digest item with summary, keypoints, questions
--- @return string HTML body
-local function buildDigestHtml(item)
-	local parts = {}
-
-	if item.summary and item.summary ~= "" then
-		-- Split the summary on blank lines into separate <p> blocks. Appending
-		-- a trailing blank line lets the final paragraph match too.
-		for paragraph in (tostring(item.summary) .. "\n\n"):gmatch("(.-)\n%s*\n") do
-			local trimmed = paragraph:gsub("^%s+", ""):gsub("%s+$", "")
-			if trimmed ~= "" then
-				table.insert(parts, "<p>" .. inlineMarkdownToHtml(trimmed) .. "</p>")
-			end
-		end
-	end
-
-	if item.keypoints and #item.keypoints > 0 then
-		table.insert(parts, "<h2>" .. escapeHtml(_("Key points")) .. "</h2>")
-		local list = { "<ul>" }
-		for _idx, point in ipairs(item.keypoints) do
-			table.insert(list, "<li>" .. inlineMarkdownToHtml(point) .. "</li>")
-		end
-		table.insert(list, "</ul>")
-		table.insert(parts, table.concat(list))
-	end
-
-	if item.questions and #item.questions > 0 then
-		table.insert(parts, "<h2>" .. escapeHtml(_("Questions to think about")) .. "</h2>")
-		local list = { "<ol>" }
-		for _idx, question in ipairs(item.questions) do
-			table.insert(list, "<li>" .. inlineMarkdownToHtml(question) .. "</li>")
-		end
-		table.insert(list, "</ol>")
-		table.insert(parts, table.concat(list))
-	end
-
-	if #parts == 0 then
-		return "<p>" .. escapeHtml(_("No digest available for this chapter.")) .. "</p>"
-	end
-
-	return table.concat(parts, "\n")
-end
-
---- Build the popup body as plain text, with markdown markers stripped
--- Fallback for older TextViewers without markdown rendering.
--- @param item table Digest item with summary, keypoints, questions
--- @return string Multi-section plain text body
-local function buildDigestBody(item)
-	local sections = {}
-
-	if item.summary and item.summary ~= "" then
-		table.insert(sections, stripMarkdown(item.summary))
-	end
-
-	if item.keypoints and #item.keypoints > 0 then
-		local lines = { _("Key points") }
-		for _idx, point in ipairs(item.keypoints) do
-			table.insert(lines, "• " .. stripMarkdown(point))
-		end
-		table.insert(sections, table.concat(lines, "\n"))
-	end
-
-	if item.questions and #item.questions > 0 then
-		local lines = { _("Questions to think about") }
-		for i, question in ipairs(item.questions) do
-			table.insert(lines, tostring(i) .. ". " .. stripMarkdown(question))
-		end
-		table.insert(sections, table.concat(lines, "\n"))
-	end
-
-	if #sections == 0 then
-		return _("No digest available for this chapter.")
-	end
-
-	return table.concat(sections, "\n\n")
-end
-
 --- Show the digest popup for a matched chapter item
 -- Renders the body as rich HTML (bold, headings, lists) via our own
 -- ScrollHtmlWidget-based viewer. If that viewer is unavailable or fails to
@@ -311,8 +177,8 @@ function UI.showDigestPopup(item)
 	if DigestViewer then
 		local ok, err = pcall(function()
 			UIManager:show(DigestViewer:new({
-				title = buildDigestTitle(item),
-				html = buildDigestHtml(item),
+				title = DigestFormat.title(item),
+				html = DigestFormat.html(item),
 			}))
 		end)
 		if ok then
@@ -322,29 +188,39 @@ function UI.showDigestPopup(item)
 	end
 
 	UIManager:show(TextViewer:new({
-		title = buildDigestTitle(item),
-		text = buildDigestBody(item),
+		title = DigestFormat.title(item),
+		text = DigestFormat.plainText(item),
 	}))
 end
 
---- Show a message when no digest is cached and we are offline
-function UI.showDigestNoCache()
-	UI.showMessage(_("No digest cached yet. Sync this book while online."), 4)
-end
+-- What each digest error kind is told to the reader. The kinds are the ones
+-- modules/digest_service.lua documents; the refusal needs the error itself, so
+-- it is a function where the rest are plain strings.
+local DIGEST_ERROR_MESSAGES = {
+	no_cache = _("No digest cached yet. Sync this book while online."),
+	book_unknown = _("Book not found on Crossbill. Sync this book first."),
+	no_digest_for_book = _("No digest generated for this book yet. Generate it in the Crossbill web app."),
+	chapter_not_matched = _("Couldn't match the current chapter to Crossbill's chapter list."),
+	[UpgradeRequired.KIND] = function(err)
+		-- The digest is beside the point: nothing is served to this plugin
+		-- until it is updated.
+		UI.showUpgradeRequired(err)
+	end,
+}
 
---- Show a message when the book is unknown to the server
-function UI.showDigestBookUnknown()
-	UI.showMessage(_("Book not found on Crossbill. Sync this book first."), 4)
-end
+--- Tell the reader why there is no digest to show
+-- An unrecognised kind, or none at all, is reported as a missing cache: that is
+-- the one a reader can act on, and the others are all rarer.
+-- @param err_kind string|nil The error kind returned by the digest service
+-- @param err table|nil The refusal, when that is the error kind
+function UI.showDigestError(err_kind, err)
+	local message = DIGEST_ERROR_MESSAGES[err_kind]
+	if type(message) == "function" then
+		message(err)
+		return
+	end
 
---- Show a message when the book is known but has no digest generated
-function UI.showDigestEmptyBook()
-	UI.showMessage(_("No digest generated for this book yet. Generate it in the Crossbill web app."), 4)
-end
-
---- Show a message when the current chapter could not be matched
-function UI.showDigestChapterNotMatched()
-	UI.showMessage(_("Couldn't match the current chapter to Crossbill's chapter list."), 4)
+	UI.showMessage(message or DIGEST_ERROR_MESSAGES.no_cache, 4)
 end
 
 --- Show server configuration dialog
@@ -427,8 +303,7 @@ function UI.showMinSessionDurationDialog(settings)
 						local duration = tonumber(fields[1])
 
 						if duration and duration > 0 then
-							settings:set("min_reading_session_duration", duration)
-							settings:save()
+							settings:setMinReadingSessionDuration(duration)
 							UIManager:close(dialog)
 							UI.showSettingsSaved()
 						else

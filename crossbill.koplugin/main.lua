@@ -15,12 +15,12 @@ local _ = require("gettext")
 local Settings = require("modules/settings")
 local Network = require("modules/network")
 local Auth = require("modules/auth")
+local AuthFailed = require("modules/auth_failed")
 local ApiClient = require("modules/api_client")
 local SessionTracker = require("modules/sessiontracker")
 local SessionStore = require("modules/session_store")
 local DigestCache = require("modules/digest_cache")
 local DigestService = require("modules/digest_service")
-local FileUploader = require("modules/file_uploader")
 local HighlightImporter = require("modules/highlight_importer")
 local HighlightSnapshot = require("modules/highlight_snapshot")
 local HighlightSnapshotStore = require("modules/highlight_snapshot_store")
@@ -28,7 +28,6 @@ local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
 local BookMetadata = require("modules/book_metadata")
 local DocumentSupport = require("modules/document_support")
-local UpgradeRequired = require("modules/upgrade_required")
 local UpdateCheck = require("modules/update/check")
 local UpdateInstaller = require("modules/update/installer")
 
@@ -84,15 +83,12 @@ function CrossbillSync:init()
 	-- Initialize API client with settings and auth
 	self.api_client = ApiClient:new(self.settings, self.auth)
 
-	-- Initialize file uploader with API client
-	self.file_uploader = FileUploader:new(self.api_client)
-
 	-- Initialize the session tracker over its own SQLite store
 	self.session_tracker = SessionTracker:new({ settings = self.settings, store = SessionStore:new() })
 	self.session_tracker:init(DataStorage:getSettingsDir())
 
 	-- Initialize digest cache (SQLite) and service
-	self.digest_cache = DigestCache:new(self.settings)
+	self.digest_cache = DigestCache:new()
 	self.digest_cache:init(DataStorage:getSettingsDir())
 	self.digest_service = DigestService:new(self.api_client, self.digest_cache)
 
@@ -106,7 +102,6 @@ function CrossbillSync:init()
 	-- Initialize sync service with all dependencies
 	self.sync_service = SyncService:new({
 		api_client = self.api_client,
-		file_uploader = self.file_uploader,
 		session_tracker = self.session_tracker,
 		settings = self.settings,
 		digest_service = self.digest_service,
@@ -249,20 +244,10 @@ end
 function CrossbillSync:_showDigestResult(item, err_kind, err)
 	if item then
 		UI.showDigestPopup(item)
-	elseif err_kind == UpgradeRequired.KIND then
-		-- The digest is beside the point: nothing is served to this plugin
-		-- until it is updated.
-		UI.showUpgradeRequired(err)
-	elseif err_kind == "book_unknown" then
-		UI.showDigestBookUnknown()
-	elseif err_kind == "no_digest_for_book" then
-		UI.showDigestEmptyBook()
-	elseif err_kind == "chapter_not_matched" then
-		UI.showDigestChapterNotMatched()
-	else
-		-- err_kind == "no_cache" (or any unexpected value)
-		UI.showDigestNoCache()
+		return
 	end
+
+	UI.showDigestError(err_kind, err)
 end
 
 --- Show the current chapter's digest
@@ -282,7 +267,7 @@ function CrossbillSync:showChapterDigest()
 	end)
 	if not ok or not book_data or not book_data.client_book_id then
 		logger.err("Crossbill: Failed to extract book metadata for the digest")
-		UI.showDigestNoCache()
+		UI.showDigestError("no_cache")
 		return
 	end
 
@@ -411,7 +396,10 @@ function CrossbillSync:doSync(is_autosync)
 	end
 
 	if not result.success and not is_autosync then
-		if result.error and result.error:match("^Authentication") then
+		-- Which dialog this is depends on the kind of failure, not on how the
+		-- message reads: the reader whose password is wrong needs sending to the
+		-- settings, and everyone else does not.
+		if AuthFailed.is(result.error) then
 			UI.showAuthError(result.error)
 		else
 			UI.showSyncFailed(result.error)

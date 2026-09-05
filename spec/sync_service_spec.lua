@@ -1,4 +1,5 @@
 local SyncService = require("modules/sync_service")
+local AuthFailed = require("modules/auth_failed")
 local HighlightSnapshot = require("modules/highlight_snapshot")
 local UpgradeRequired = require("modules/upgrade_required")
 local FakeSnapshotStore = require("fake_snapshot_store")
@@ -189,6 +190,24 @@ describe("SyncService", function()
 
 			assert.are.equal("Book not found on Crossbill", result.pull_error)
 			assert.is_nil(result.pull)
+		end)
+
+		it("pulls a book the server holds no highlights for without reporting a failure", function()
+			-- An empty list is an answer, not a failed fetch: the api client makes
+			-- one of a 200 that carried no body, and the importer is asked to apply
+			-- it, which is what clears out highlights removed elsewhere.
+			local importer = importerReturning({ inserted = 0, placed = {} })
+			local service = syncServiceWith({
+				api_client = apiReturning(200, {}),
+				highlight_importer = importer,
+			})
+			local result = {}
+
+			service:_applyPull(result, readerFor(), CLIENT_BOOK_ID)
+
+			assert.are.equal(1, importer.calls)
+			assert.are.same({}, importer.received)
+			assert.is_nil(result.pull_error)
 		end)
 
 		it("reports the network's error when the fetch never reached the server", function()
@@ -493,7 +512,7 @@ describe("SyncService", function()
 				end,
 				uploadHighlights = function(self, _, highlights, device_id, removed_ids)
 					self.uploaded = { highlights = highlights, device_id = device_id, removed_ids = removed_ids }
-					return true,
+					return 200,
 						{
 							highlights_created = #highlights,
 							highlights_skipped = 0,
@@ -503,9 +522,13 @@ describe("SyncService", function()
 				getHighlights = function()
 					return 200, {}
 				end,
+				uploadEpub = function(self, _, data, filename)
+					self.uploaded_epub = { data = data, filename = filename }
+					return 200, {}
+				end,
 				uploadReadingSessions = function(self, _, sessions)
 					self.sessions_uploaded = sessions
-					return true, {}
+					return 200, {}
 				end,
 			}
 			for name, fn in pairs(overrides or {}) do
@@ -534,14 +557,11 @@ describe("SyncService", function()
 					return opts.session_tracker ~= nil
 				end,
 			}
-			local file_uploader = opts.file_uploader or {
-				uploadEpub = function()
-					return true
-				end,
-			}
 			return SyncService:new({
 				api_client = api,
-				file_uploader = file_uploader,
+				read_file = opts.read_file or function()
+					return "epub-bytes"
+				end,
 				session_tracker = opts.session_tracker,
 				settings = settings,
 				digest_service = opts.digest_service,
@@ -600,6 +620,112 @@ describe("SyncService", function()
 			assert.is_truthy(result.pull_error)
 			assert.are.equal(1, result.sessions_synced)
 			assert.are.same({ 7 }, session_tracker.marked)
+		end)
+
+		describe("the EPUB it sends up with the book", function()
+			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
+
+			it("uploads the file under its own name", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.same({ data = "epub-bytes", filename = "dune.epub" }, api.uploaded_epub)
+			end)
+
+			it("uploads a book whose extension is upper case", function()
+				-- A reader's library is full of Book.EPUB, and a case-sensitive
+				-- check used to sync its highlights while never sending the file.
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {})
+
+				service:syncBook(bookFor({ A_HIGHLIGHT }, "/books/DUNE.EPUB"))
+
+				assert.are.same({ data = "epub-bytes", filename = "DUNE.EPUB" }, api.uploaded_epub)
+			end)
+
+			it("skips a document that is not an EPUB", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }, "/books/dune.pdf"))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+			end)
+
+			it("ends the sync when the created book came back with no metadata", function()
+				-- Without the book the server made there is nothing to upload the
+				-- EPUB against, and a sync that quietly sends no file is worse than
+				-- one that says what it could not do.
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 404
+					end,
+					createBook = function()
+						-- Created, but with nothing said back about the book.
+						return 200, nil
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_false(result.success)
+				assert.are.equal("Create book failed: the server sent no book back", result.error)
+				assert.is_nil(api.uploaded_epub)
+			end)
+
+			it("carries on with the sync when the file cannot be read", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					read_file = function()
+						return nil, "No such file"
+					end,
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+				assert.are.equal(1, #api.uploaded.highlights)
+			end)
+
+			it("carries on with the sync when the file is empty", function()
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					read_file = function()
+						return ""
+					end,
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+			end)
+
+			it("hands back the upload's own error without failing the sync", function()
+				local api = apiForSyncBook({
+					uploadEpub = function()
+						return 500, nil, "server exploded"
+					end,
+				})
+				local service = serviceFor(api, {})
+				local book_metadata = {
+					getDocPath = function()
+						return BOOK_PATH
+					end,
+				}
+
+				local err = service:_syncFiles(CLIENT_BOOK_ID, book_metadata, { book_id = 1 })
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.equal("server exploded", err)
+				assert.is_true(result.success)
+				assert.are.equal(1, #api.uploaded.highlights)
+			end)
 		end)
 
 		describe("the removals it sends with the push", function()
@@ -776,7 +902,7 @@ describe("SyncService", function()
 				-- next sync diffs the same removals out again.
 				local api = apiForSyncBook({
 					uploadHighlights = function()
-						return false, nil, "Connection refused"
+						return nil, nil, "Connection refused"
 					end,
 				})
 
@@ -985,6 +1111,79 @@ describe("SyncService", function()
 				assert.are.equal(0, asked)
 			end)
 		end)
+		describe("a reader the server would not authenticate", function()
+			it("ends the sync with the failure still recognisable as one", function()
+				-- main.lua picks the dialog by the error's type, so the sync must
+				-- carry it through rather than flatten it into its own wording.
+				local refused = AuthFailed.new("Login failed: 401")
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return nil, nil, refused
+					end,
+					createBook = function(self)
+						self.created = true
+						return 200, {}
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+				assert.is_false(result.success)
+				assert.is_true(AuthFailed.is(result.error))
+				assert.are.equal("Login failed: 401", AuthFailed.message(result.error))
+				-- And the book is not created blind on the way: a fetch that
+				-- failed on the reader's credentials says nothing about whether
+				-- the server has the book.
+				assert.is_nil(api.created)
+			end)
+
+			it("ends the sync on any other failed metadata fetch too", function()
+				-- Only a 404 means "no such book"; anything else that goes wrong
+				-- would meet the same failure again a step later, and report it
+				-- from further away.
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 500, nil, "Fetch failed: 500"
+					end,
+					createBook = function(self)
+						self.created = true
+						return 200, {}
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+				assert.is_false(result.success)
+				assert.are.equal("Fetch failed: 500", result.error)
+				assert.is_nil(api.created)
+			end)
+		end)
+
+		describe("a metadata fetch the server answered with no book", function()
+			it("ends the sync saying so, rather than creating the book again", function()
+				-- A 200 with no body is a successful call that told the sync
+				-- nothing, and only a 404 means the server does not have the book.
+				local api = apiForSyncBook({
+					getBookMetadata = function()
+						return 200, nil
+					end,
+					createBook = function(self)
+						self.created = true
+						return 200, {}
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local result = service:syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
+				assert.is_false(result.success)
+				assert.are.equal("The server sent no book metadata back", result.error)
+				assert.is_nil(api.created)
+			end)
+		end)
+
 		describe("a server that turns this plugin away as too old", function()
 			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
 			local REFUSAL = UpgradeRequired.fromResponse(426, {
@@ -1012,27 +1211,29 @@ describe("SyncService", function()
 			end)
 
 			--- Build an api client the server refuses every call of
+			-- Refused the way the real client refuses: by raising, so a step that
+			-- says nothing about the refusal cannot swallow it.
 			-- @return table The api client, recording the calls it took
 			local function apiRefusingEverything()
-				local function refuse(api, name, ...)
+				local function refuse(api, name)
 					table.insert(api.calls, name)
-					return ...
+					error(REFUSAL, 0)
 				end
 				local api = { calls = {} }
 				api.getBookMetadata = function(self)
-					return refuse(self, "getBookMetadata", 426, nil, REFUSAL)
+					return refuse(self, "getBookMetadata")
 				end
 				api.createBook = function(self)
-					return refuse(self, "createBook", false, nil, REFUSAL)
+					return refuse(self, "createBook")
 				end
 				api.uploadHighlights = function(self)
-					return refuse(self, "uploadHighlights", false, nil, REFUSAL)
+					return refuse(self, "uploadHighlights")
 				end
 				api.getHighlights = function(self)
-					return refuse(self, "getHighlights", 426, nil, REFUSAL)
+					return refuse(self, "getHighlights")
 				end
 				api.uploadReadingSessions = function(self)
-					return refuse(self, "uploadReadingSessions", false, nil, REFUSAL)
+					return refuse(self, "uploadReadingSessions")
 				end
 				return api
 			end
@@ -1108,7 +1309,7 @@ describe("SyncService", function()
 				-- removals and the sessions alike.
 				local api = apiForSyncBook({
 					uploadHighlights = function()
-						return false, nil, REFUSAL
+						error(REFUSAL, 0)
 					end,
 					getHighlights = function(self)
 						self.pulled = true
@@ -1116,7 +1317,7 @@ describe("SyncService", function()
 					end,
 					uploadReadingSessions = function(self)
 						self.sessions_uploaded = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local session_tracker = {
@@ -1145,18 +1346,15 @@ describe("SyncService", function()
 				-- An EPUB upload that fails is otherwise only logged, but a refusal
 				-- is about the plugin rather than about the file.
 				local api = apiForSyncBook({
+					uploadEpub = function()
+						error(REFUSAL, 0)
+					end,
 					uploadHighlights = function(self)
 						self.pushed = true
-						return true, {}
+						return 200, {}
 					end,
 				})
-				local service = serviceFor(api, {
-					file_uploader = {
-						uploadEpub = function()
-							return false, REFUSAL
-						end,
-					},
-				})
+				local service = serviceFor(api, {})
 
 				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
 
@@ -1173,11 +1371,11 @@ describe("SyncService", function()
 						return 404
 					end,
 					createBook = function()
-						return false, nil, REFUSAL
+						error(REFUSAL, 0)
 					end,
 					uploadHighlights = function(self)
 						self.pushed = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local service = serviceFor(api, {})
@@ -1191,14 +1389,15 @@ describe("SyncService", function()
 			end)
 
 			it("stops when the digest refresh at the end is the call that is refused", function()
-				-- The sync is over bar the bookkeeping by then, but a refused
-				-- refresh still means the reader has to update.
+				-- The sync is over bar the bookkeeping by then, and bookkeeping
+				-- that blows up is otherwise swallowed -- but a refused refresh
+				-- still means the reader has to update.
 				local api = apiForSyncBook()
 				local service = serviceFor(api, {
 					highlight_importer = importerReturning({ inserted = 0 }),
 					digest_service = {
 						refreshBook = function()
-							return false, UpgradeRequired.KIND, REFUSAL
+							error(REFUSAL, 0)
 						end,
 					},
 				})
@@ -1211,13 +1410,15 @@ describe("SyncService", function()
 			end)
 
 			it("stops when the refusal only comes back from the pull", function()
+				-- The pull is bookkeeping too, and swallows what it catches; the
+				-- refusal is what it has to hand on instead.
 				local api = apiForSyncBook({
 					getHighlights = function()
-						return 426, nil, REFUSAL
+						error(REFUSAL, 0)
 					end,
 					uploadReadingSessions = function(self)
 						self.sessions_uploaded = true
-						return true, {}
+						return 200, {}
 					end,
 				})
 				local service = serviceFor(api, {
@@ -1250,6 +1451,44 @@ describe("SyncService", function()
 
 				assert.is_true(result.success)
 				assert.is_nil(result.upgrade_required)
+				assert.are.same({}, told)
+			end)
+
+			it("still swallows a bookkeeping failure that is not the refusal", function()
+				-- The whole of the rule: bookkeeping never fails a sync, except
+				-- the server's refusal, which ends it.
+				local api = apiForSyncBook()
+				local service = serviceFor(api, {
+					highlight_importer = importerReturning({
+						inserted = 1,
+						placed = { { server_id = 1, text = A_HIGHLIGHT.text } },
+					}),
+					highlight_snapshot = ledgerRecording({ throws = true }),
+				})
+
+				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+
+				assert.is_true(result.success)
+				assert.is_nil(result.upgrade_required)
+				assert.are.same({}, told)
+			end)
+
+			it("lets an error that is not the refusal out of the sync as it was", function()
+				-- main.lua wraps the sync in a pcall of its own, and the one catch
+				-- this service keeps must not stand in for that one.
+				local api = apiForSyncBook({
+					uploadHighlights = function()
+						error("socket closed", 0)
+					end,
+				})
+				local service = serviceFor(api, {})
+
+				local ok, err = pcall(function()
+					return service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
+				end)
+
+				assert.is_false(ok)
+				assert.are.equal("socket closed", err)
 				assert.are.same({}, told)
 			end)
 		end)

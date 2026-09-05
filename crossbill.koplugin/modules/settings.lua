@@ -3,6 +3,13 @@ Settings Module for Crossbill Sync
 
 Manages plugin configuration including server URL, credentials, and tokens.
 Provides a clean API for loading, saving, and accessing settings.
+
+One rule about persistence, so no caller has to work out which half of the API
+it is holding: every public typed setter persists. `set` is the raw,
+non-persisting primitive they are built from -- `load` and the setters use it --
+and callers outside this module reach for the typed setter instead. Saving once
+per setter is cheap: `G_reader_settings:saveSetting` writes an in-memory table,
+and KOReader flushes that to disk on its own schedule.
 ]]
 
 local logger = require("logger")
@@ -11,7 +18,8 @@ local Settings = {}
 Settings.__index = Settings
 
 -- Default settings values. Keys that default to nil are simply absent: the
--- tokens are written by Auth once a login succeeds.
+-- tokens are written by Auth once a login succeeds, and the device UUID by
+-- DeviceIdentity the first time this device needs one.
 local DEFAULTS = {
 	base_url = "http://localhost:8000",
 	username = "",
@@ -33,22 +41,6 @@ local function sharedData()
 		G_reader_settings:saveSetting(SETTINGS_KEY, data)
 	end
 	return data
-end
-
---- Read a value from the plugin settings namespace without an instance
--- @param key string The setting key
--- @return mixed The setting value, or nil
-function Settings.readShared(key)
-	return sharedData()[key]
-end
-
---- Store a value in the plugin settings namespace without an instance
--- @param key string The setting key
--- @param value mixed The setting value
-function Settings.saveShared(key, value)
-	local data = sharedData()
-	data[key] = value
-	G_reader_settings:saveSetting(SETTINGS_KEY, data)
 end
 
 --- Create a new Settings instance
@@ -91,7 +83,9 @@ function Settings:get(key)
 	return self._data[key]
 end
 
---- Set a setting value
+--- Set a setting value without persisting it
+-- The primitive the typed setters are built from; a caller outside this module
+-- wants one of those instead, so the value survives the run.
 -- @param key string The setting key
 -- @param value mixed The setting value
 -- @return self for chaining
@@ -123,7 +117,8 @@ end
 function Settings:setBaseUrl(url)
 	-- Remove trailing slash if present
 	local normalized = url:gsub("/$", "")
-	return self:set("base_url", normalized)
+	self:set("base_url", normalized)
+	return self:save()
 end
 
 --- Get the username
@@ -136,7 +131,8 @@ end
 -- @param username string The username
 -- @return self for chaining
 function Settings:setUsername(username)
-	return self:set("username", username)
+	self:set("username", username)
+	return self:save()
 end
 
 --- Get the password
@@ -149,7 +145,23 @@ end
 -- @param password string The password
 -- @return self for chaining
 function Settings:setPassword(password)
-	return self:set("password", password)
+	self:set("password", password)
+	return self:save()
+end
+
+--- Get the UUID this device was given
+-- DeviceIdentity keeps it here so the device id stays the same across runs.
+-- @return string|nil The stored UUID, or nil when none has been generated
+function Settings:getDeviceUuid()
+	return self:get("device_uuid")
+end
+
+--- Store the UUID this device was given
+-- @param uuid string The UUID to keep
+-- @return self for chaining
+function Settings:setDeviceUuid(uuid)
+	self:set("device_uuid", uuid)
+	return self:save()
 end
 
 --- Check if autosync is enabled
@@ -177,6 +189,14 @@ end
 -- @return integer for reading session minimum duration
 function Settings:getMinReadingSessionDuration()
 	return self:get("min_reading_session_duration")
+end
+
+--- Set the shortest reading session worth recording
+-- @param seconds number The minimum duration in seconds
+-- @return self for chaining
+function Settings:setMinReadingSessionDuration(seconds)
+	self:set("min_reading_session_duration", seconds)
+	return self:save()
 end
 
 --- Toggle session tracking setting
@@ -231,14 +251,6 @@ function Settings:clearTokens()
 	return self:save()
 end
 
---- Check if credentials are configured
--- @return boolean True if username and password are set
-function Settings:hasCredentials()
-	local username = self:getUsername()
-	local password = self:getPassword()
-	return username ~= "" and password ~= ""
-end
-
 --- Update server configuration
 -- @param base_url string The server URL
 -- @param username string The username
@@ -247,8 +259,7 @@ end
 function Settings:updateServerConfig(base_url, username, password)
 	self:setBaseUrl(base_url)
 	self:setUsername(username)
-	self:setPassword(password)
-	return self:save()
+	return self:setPassword(password)
 end
 
 return Settings
