@@ -112,9 +112,25 @@ function SqliteStore:ensureSchema(schema, migrations)
 
 	-- The schema only creates what is not there yet, so a column added to it
 	-- later never reaches a database that already has the table. Migrations are
-	-- how such a column arrives, and each is guarded on its own: on a database
-	-- that already has it the statement fails, and that is the ordinary case
-	-- rather than a reason to refuse the whole schema.
+	-- how such a column arrives.
+	self:migrate(migrations)
+
+	return true
+end
+
+--- Run guarded migrations, each on its own
+-- A migration adds a column an older database lacks, so on a database that
+-- already has it the statement fails, and that is the ordinary case rather
+-- than an error worth a stack trace in the log: it is noted at debug level
+-- and the next one runs. Used for the plugin's own tables and for an old
+-- database attached alongside them.
+-- @param migrations table|nil SQL statements, each expected to fail once it
+--   has been applied
+function SqliteStore:migrate(migrations)
+	if not self:isOpen() then
+		return
+	end
+
 	for _, migration in ipairs(migrations or {}) do
 		local applied, migration_err = pcall(function()
 			self.db:exec(migration)
@@ -123,8 +139,6 @@ function SqliteStore:ensureSchema(schema, migrations)
 			self.log.dbg("Migration left alone (already applied?):", migration_err)
 		end
 	end
-
-	return true
 end
 
 --- Check whether there is a database to talk to

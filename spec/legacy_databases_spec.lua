@@ -42,6 +42,12 @@ describe("LegacyDatabases", function()
 			return ok
 		end
 
+		function store:migrate(statements)
+			for _, sql in ipairs(statements or {}) do
+				self:record(sql)
+			end
+		end
+
 		function store:scalar(sql)
 			self:record(sql)
 			local name = sql:match("FROM%s+(%S+)")

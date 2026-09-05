@@ -205,11 +205,10 @@ local function absorbFile(store, path, copies, alters)
 	end
 
 	local ok, copied = pcall(function()
-		for _, alter in ipairs(alters or {}) do
-			-- Expected to fail on anything but the oldest files, and reported
-			-- by the store either way.
-			store:exec(alter)
-		end
+		-- Guarded the way the stores' own migrations are: on anything but the
+		-- oldest files the column is already there and the statement fails,
+		-- which is noted at debug level rather than logged as an error.
+		store:migrate(alters)
 		return copyTables(store, copies)
 	end)
 
