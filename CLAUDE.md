@@ -12,7 +12,7 @@ This is a KOReader plugin (Lua) that syncs book highlights and reading sessions 
 
 **Linting and formatting**: `make lint` runs luacheck (config in `.luacheckrc`), `make format` runs StyLua (config in `.stylua.toml`).
 
-**Unit tests**: `make test` runs busted over `spec/` (config in `.busted`). Specs are named `<module>_spec.lua` and target Lua 5.1, matching the LuaJIT KOReader runs plugins on. Because the plugin's modules `require` KOReader internals that do not exist outside the reader, `spec/support/koreader/` holds thin stand-ins (`logger`, `docsettings`, `ffi/sha2`, `ffi/util`, `ffi/archiver`, `device`, `random`, `json`, `gettext`, the `ui/*` widgets, and — for `main.lua` — `dispatcher`, `datastorage` and the `lua-ljsqlite3` binding). `libs/libkoreader-lfs` hands over the real LuaFileSystem rather than a fake, and the `ffi/util` stand-in does real path and directory work, so the installer's staging and swap are tested against real directories — a swap with its arguments the wrong way round passes a mock and destroys a reader's plugin that `.busted` puts on `package.path` — so plugin sources never need test-only branches. `G_reader_settings` is a global rather than a module; `spec/support/global_settings_fake.lua` installs and restores it around a test. When one test needs different behaviour, prefer busted's `stub`/`spy` over growing a stub module.
+**Unit tests**: `make test` runs busted over `spec/` (config in `.busted`). Specs are named `<module>_spec.lua` and target Lua 5.1, matching the LuaJIT KOReader runs plugins on. Because the plugin's modules `require` KOReader internals that do not exist outside the reader, `spec/support/koreader/` holds thin stand-ins (`logger`, `docsettings`, `ffi/sha2`, `ffi/util`, `ffi/archiver`, `device`, `random`, `json`, `gettext`, the `ui/*` widgets, and — for `main.lua` — `dispatcher`, `datastorage` and the `lua-ljsqlite3` binding). `libs/libkoreader-lfs` hands over the real LuaFileSystem rather than a fake, and the `ffi/util` stand-in does real path and directory work, so the installer's staging and swap are tested against real directories — a swap with its arguments the wrong way round passes a mock and destroys a reader's plugin that `.busted` puts on `package.path` — so plugin sources never need test-only branches. `G_reader_settings` is a global rather than a module; `spec/support/global_settings_fake.lua` installs and restores it around a test. The SQLite binding is deliberately not stubbed into a working database: the modules over a store take it as a dependency, so `spec/support/fake_session_store.lua` and `spec/support/fake_snapshot_store.lua` stand in for the real one, and `SessionTracker` takes its clock the same way so a spec can move it past a gap. When one test needs different behaviour, prefer busted's `stub`/`spy` over growing a stub module.
 
 `make check` runs lint, the formatting check and the tests. Keep `make check` green.
 
@@ -35,9 +35,13 @@ main.lua (CrossbillSync)
     ├── Auth            - OAuth token management (login, refresh, caching)
     ├── ApiClient       - HTTP API communication (highlights, sessions, files)
     ├── FileUploader    - EPUB uploads (uses ApiClient)
-    ├── SessionTracker  - SQLite-based reading session tracking
+    ├── SessionTracker  - Reading session tracking (over SessionStore)
     ├── SyncService     - Orchestrates sync workflow (uses ApiClient, FileUploader, SessionTracker)
     ├── UI              - KOReader dialogs and menu building
+    ├── SqliteStore     - One database file: WAL, schema, migrations, statements
+    │   ├── SessionStore           - Finished reading sessions
+    │   ├── DigestCache            - Chapter digests, kept for offline reading
+    │   └── HighlightSnapshotStore - The server highlights a book last applied
     └── update/         - Checking for, verifying and installing a newer plugin
         ├── check.lua       - Asks the release service what the newest version is
         ├── installer.lua   - Downloads, verifies and swaps in a new version
@@ -52,13 +56,23 @@ main.lua (CrossbillSync)
 - API methods return consistent 3-tuples: `success/code, data, error`
 - Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out.
 - Network module handles WiFi lifecycle (enable before sync, disable after if we enabled it)
+- The SQLite-backed stores -- `session_store`, `digest_cache`,
+  `highlight_snapshot_store` -- are each a schema and its queries over a
+  `SqliteStore`, which owns the connection, WAL mode, migrations, the
+  not-open guard and the logging of anything that fails. Nothing there raises:
+  every caller is a KOReader event handler. A bind list that can hold a nil is
+  built with `SqliteStore.binds`, because `#` stops at the first one.
+- `SessionTracker` and `HighlightSnapshot` take their store as a dependency, so
+  their specs run against an in-memory fake rather than the reader's SQLite
+  binding
 
 **Data flow:**
 
 1. `BookMetadata` extracts title, author and ISBN from document
 2. `HighlightExtractor` reads annotations from memory (preferred) or disk
 3. `SyncService` coordinates upload of highlights, sessions, and files
-4. `SessionTracker` stores reading sessions in SQLite (`crossbill_sessions.sqlite3`)
+4. `SessionTracker` decides what a session is; `SessionStore` keeps them in
+   SQLite (`crossbill_sessions.sqlite3`)
 
 **Book identification:**
 

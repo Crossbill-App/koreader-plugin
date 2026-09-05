@@ -1,15 +1,15 @@
 --[[
 Digest Cache Module for Crossbill Sync
 
-Caches per-chapter digests (summary, key points, questions) in a
-local SQLite3 database so it can be viewed offline. Mirrors the connection,
-WAL and lifecycle patterns used by SessionTracker, but stores its data in its
-own database file.
+Caches per-chapter digests (summary, key points, questions) so they can be
+viewed offline. The connection, its WAL and its lifecycle belong to
+`modules/sqlite_store`; what is left here is the schema, the queries and the
+JSON columns the API's arrays are folded into.
 ]]
 
 local logger = require("logger")
-local SQ3 = require("lua-ljsqlite3/init")
 local JSON = require("json")
+local SqliteStore = require("modules/sqlite_store")
 
 local DigestCache = {}
 DigestCache.__index = DigestCache
@@ -41,14 +41,41 @@ CREATE TABLE IF NOT EXISTS digest_fetch_meta (
 );
 ]]
 
+local DELETE_BOOK = "DELETE FROM digest WHERE client_book_id = ?"
+
+-- INSERT OR REPLACE: two items can share a chapter_number, which would
+-- otherwise break the primary key and abort the whole fetch.
+local INSERT_ITEM = [[
+INSERT OR REPLACE INTO digest (
+    client_book_id, chapter_number, chapter_name, parent_chapter_name,
+    summary, keypoints, questions, generated_at, fetched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+]]
+
+local INSERT_FETCH_META = [[
+INSERT OR REPLACE INTO digest_fetch_meta (
+    client_book_id, fetched_at, item_count
+) VALUES (?, ?, ?)
+]]
+
+local SELECT_BOOK = [[
+SELECT chapter_number, chapter_name, parent_chapter_name,
+       summary, keypoints, questions, generated_at
+FROM digest
+WHERE client_book_id = ?
+ORDER BY chapter_number ASC
+]]
+
+local SELECT_HAS_BOOK = "SELECT 1 FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1"
+
+local SELECT_FETCHED_AT = "SELECT fetched_at FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1"
+
 --- Create a new DigestCache instance
 -- @param settings Settings instance for accessing configuration
 -- @return DigestCache instance
 function DigestCache:new(settings)
 	local instance = setmetatable({}, DigestCache)
-	instance.db = nil
-	instance.db_path = nil
-	instance._initialized = false
+	instance.store = SqliteStore:new("DigestCache")
 	instance.settings = settings
 	return instance
 end
@@ -57,47 +84,12 @@ end
 -- @param data_dir string Path to KOReader settings directory
 -- @return boolean Success status
 function DigestCache:init(data_dir)
-	if self._initialized then
-		return true
-	end
-
-	self.db_path = data_dir .. "/" .. DB_FILENAME
-	logger.dbg("Crossbill DigestCache: Initializing database at", self.db_path)
-
-	local success, err = pcall(function()
-		self.db = SQ3.open(self.db_path)
-		-- Enable WAL mode for better performance
-		self.db:exec("PRAGMA journal_mode=WAL;")
-		-- Create schema
-		self.db:exec(SCHEMA)
-	end)
-
-	if not success then
-		logger.err("Crossbill DigestCache: Failed to initialize database:", err)
-		self.db = nil
-		return false
-	end
-
-	self._initialized = true
-	logger.dbg("Crossbill DigestCache: Database initialized successfully")
-	return true
+	return self.store:open(data_dir .. "/" .. DB_FILENAME, SCHEMA)
 end
 
 --- Close the database connection
 function DigestCache:close()
-	if self.db then
-		logger.dbg("Crossbill DigestCache: Closing database")
-		local success, err = pcall(function()
-			-- Checkpoint WAL to ensure all data is written to main file
-			self.db:exec("PRAGMA wal_checkpoint(TRUNCATE);")
-			self.db:close()
-		end)
-		if not success then
-			logger.warn("Crossbill DigestCache: Error closing database:", err)
-		end
-		self.db = nil
-	end
-	self._initialized = false
+	self.store:close()
 end
 
 --- Coerce a decoded JSON value to a string, treating anything else as nil.
@@ -156,17 +148,13 @@ end
 -- Deletes existing rows and inserts the new ones in a single transaction.
 -- Individual items are inserted defensively: the server can return two items
 -- with the same chapter_number, and a single failing item must not roll back
--- the whole book and leave the cache permanently stale. Items are upserted and
--- each one is guarded on its own; only a transaction-level failure rolls back.
+-- the whole book and leave the cache permanently stale. Only a failure of the
+-- delete or of the fetch-meta row -- which the whole book's freshness rests on
+-- -- rolls the transaction back.
 -- @param client_book_id string The client book ID
 -- @param items table Array of digest items from the API
 -- @return boolean Success status
 function DigestCache:replaceBook(client_book_id, items)
-	if not self._initialized or not self.db then
-		logger.warn("Crossbill DigestCache: Cannot replace book - not initialized")
-		return false
-	end
-
 	if not client_book_id then
 		logger.warn("Crossbill DigestCache: Cannot replace book - missing client_book_id")
 		return false
@@ -177,22 +165,10 @@ function DigestCache:replaceBook(client_book_id, items)
 	local inserted_count = 0
 	local failed_count = 0
 
-	local success, err = pcall(function()
-		self.db:exec("BEGIN TRANSACTION;")
-
-		local del_stmt = self.db:prepare("DELETE FROM digest WHERE client_book_id = ?")
-		del_stmt:bind(client_book_id)
-		del_stmt:step()
-		del_stmt:close()
-
-		-- INSERT OR REPLACE: two items can share a chapter_number, which would
-		-- otherwise break the primary key and abort the whole fetch.
-		local ins_stmt = self.db:prepare([[
-            INSERT OR REPLACE INTO digest (
-                client_book_id, chapter_number, chapter_name, parent_chapter_name,
-                summary, keypoints, questions, generated_at, fetched_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ]])
+	local success = self.store:transaction(function(db)
+		if not db:exec(DELETE_BOOK, SqliteStore.binds(client_book_id)) then
+			return false
+		end
 
 		for _, item in ipairs(items) do
 			local chapter_number = tonumber(item.chapter_number)
@@ -204,9 +180,9 @@ function DigestCache:replaceBook(client_book_id, items)
 				)
 				failed_count = failed_count + 1
 			else
-				local item_ok, item_err = pcall(function()
-					ins_stmt:reset()
-					ins_stmt:bind(
+				local inserted = db:exec(
+					INSERT_ITEM,
+					SqliteStore.binds(
 						client_book_id,
 						chapter_number,
 						asText(item.chapter_name) or "",
@@ -217,10 +193,9 @@ function DigestCache:replaceBook(client_book_id, items)
 						asText(item.generated_at),
 						fetched_at
 					)
-					ins_stmt:step()
-				end)
+				)
 
-				if item_ok then
+				if inserted then
 					inserted_count = inserted_count + 1
 				else
 					failed_count = failed_count + 1
@@ -229,41 +204,21 @@ function DigestCache:replaceBook(client_book_id, items)
 						tostring(client_book_id),
 						"chapter",
 						tostring(chapter_number),
-						tostring(item.chapter_name),
-						item_err
+						tostring(item.chapter_name)
 					)
-					-- Leave the statement usable for the remaining items.
-					pcall(function()
-						ins_stmt:reset()
-					end)
 				end
 			end
 		end
-
-		ins_stmt:close()
 
 		-- Record this fetch so a "fetched and empty" book is distinguishable from
 		-- a "never fetched" one. hasBook checks this meta table, so a book with an
 		-- empty server digest list still counts as present and does not trigger
 		-- a re-fetch on every popup open. An empty fetch is refreshed by sync
 		-- (refreshBook) or, once it is old enough, by a popup open (getFetchedAt).
-		local meta_stmt = self.db:prepare([[
-            INSERT OR REPLACE INTO digest_fetch_meta (
-                client_book_id, fetched_at, item_count
-            ) VALUES (?, ?, ?)
-        ]])
-		meta_stmt:bind(client_book_id, fetched_at, inserted_count)
-		meta_stmt:step()
-		meta_stmt:close()
-
-		self.db:exec("COMMIT;")
+		return db:exec(INSERT_FETCH_META, SqliteStore.binds(client_book_id, fetched_at, inserted_count))
 	end)
 
 	if not success then
-		logger.err("Crossbill DigestCache: Failed to replace book, rolling back:", err)
-		pcall(function()
-			self.db:exec("ROLLBACK;")
-		end)
 		return false
 	end
 
@@ -288,45 +243,23 @@ end
 -- @param client_book_id string The client book ID
 -- @return table Array of decoded digest items
 function DigestCache:getBook(client_book_id)
-	if not self._initialized or not self.db then
-		return {}
-	end
-
 	if not client_book_id then
 		return {}
 	end
 
-	local items = {}
-	local success, err = pcall(function()
-		local stmt = self.db:prepare([[
-            SELECT chapter_number, chapter_name, parent_chapter_name,
-                   summary, keypoints, questions, generated_at
-            FROM digest
-            WHERE client_book_id = ?
-            ORDER BY chapter_number ASC
-        ]])
-
-		stmt:bind(client_book_id)
-
-		for row in stmt:rows() do
-			table.insert(items, {
-				chapter_number = tonumber(row[1]),
-				chapter_name = row[2],
-				parent_chapter_name = row[3],
-				summary = row[4],
-				keypoints = decodeArray(row[5]),
-				questions = decodeArray(row[6]),
-				generated_at = row[7],
-			})
-		end
-		stmt:close()
+	local items = self.store:query(SELECT_BOOK, SqliteStore.binds(client_book_id), function(row)
+		return {
+			chapter_number = tonumber(row[1]),
+			chapter_name = row[2],
+			parent_chapter_name = row[3],
+			summary = row[4],
+			keypoints = decodeArray(row[5]),
+			questions = decodeArray(row[6]),
+			generated_at = row[7],
+		}
 	end)
 
-	if not success then
-		logger.err("Crossbill DigestCache: Error fetching book digests:", err)
-	end
-
-	return items
+	return items or {}
 end
 
 --- Check whether a book has ever been fetched (even if it had no digests)
@@ -337,60 +270,30 @@ end
 -- @param client_book_id string The client book ID
 -- @return boolean True if the book has been fetched at least once
 function DigestCache:hasBook(client_book_id)
-	if not self._initialized or not self.db then
-		return false
-	end
-
 	if not client_book_id then
 		return false
 	end
 
-	local has = false
-	local success, err = pcall(function()
-		local stmt = self.db:prepare("SELECT 1 FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1")
-		stmt:bind(client_book_id)
-		for _ in stmt:rows() do
-			has = true
-		end
-		stmt:close()
+	local rows = self.store:query(SELECT_HAS_BOOK, SqliteStore.binds(client_book_id), function()
+		return true
 	end)
 
-	if not success then
-		logger.err("Crossbill DigestCache: Error checking book presence:", err)
-		return false
-	end
-
-	return has
+	return rows ~= nil and #rows > 0
 end
 
 --- Get the time of a book's last digest fetch
 -- @param client_book_id string The client book ID
 -- @return number|nil Unix time of the last fetch, or nil if never fetched
 function DigestCache:getFetchedAt(client_book_id)
-	if not self._initialized or not self.db then
-		return nil
-	end
-
 	if not client_book_id then
 		return nil
 	end
 
-	local fetched_at = nil
-	local success, err = pcall(function()
-		local stmt = self.db:prepare("SELECT fetched_at FROM digest_fetch_meta WHERE client_book_id = ? LIMIT 1")
-		stmt:bind(client_book_id)
-		for row in stmt:rows() do
-			fetched_at = tonumber(row[1])
-		end
-		stmt:close()
+	local rows = self.store:query(SELECT_FETCHED_AT, SqliteStore.binds(client_book_id), function(row)
+		return tonumber(row[1])
 	end)
 
-	if not success then
-		logger.err("Crossbill DigestCache: Error reading fetch time:", err)
-		return nil
-	end
-
-	return fetched_at
+	return rows and rows[1] or nil
 end
 
 return DigestCache

@@ -116,9 +116,9 @@ install_test() {
     # Change menu text
     sed -i 's/_("Crossbill")/_("Crossbill Test")/g' "$test_dir/test_modules/ui.lua"
 
-    # Modify test_modules/sessiontracker.lua for test version
+    # Modify test_modules/session_store.lua for test version
     # Change database filename to avoid conflicts with production
-    sed -i 's/crossbill_sessions\.sqlite3/test_crossbill_sessions.sqlite3/g' "$test_dir/test_modules/sessiontracker.lua"
+    sed -i 's/crossbill_sessions\.sqlite3/test_crossbill_sessions.sqlite3/g' "$test_dir/test_modules/session_store.lua"
 
     # Modify test_modules/digest_cache.lua for test version
     # Change database filename to avoid conflicts with production
