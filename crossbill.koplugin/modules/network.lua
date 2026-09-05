@@ -318,21 +318,22 @@ function Network.postMultipart(url, files, token)
 	})
 end
 
---- Ensure WiFi is enabled, calling callback when ready
--- @param callback function Function to call when network is available
--- @return boolean True if already online, false if waiting for connection
-function Network.ensureWifiEnabled(callback)
-	if NetworkMgr:willRerunWhenOnline(callback) then
-		-- Network is off, NetworkMgr will call callback when online
+--- Run something once the device is online, turning WiFi on if it is off
+-- Whether it ran now or after the reader connected is not the caller's
+-- business: the work is the same either way, and every call site that had to
+-- tell the two apart wrote the same two-branch dance around the answer.
+-- @param fn function What to run once there is a connection
+function Network.whenOnline(fn)
+	if NetworkMgr:willRerunWhenOnline(fn) then
+		-- Network is off; NetworkMgr runs `fn` once it is on.
 		logger.info("Crossbill Network: WiFi is off, prompting to enable...")
 		wifi_enabled_by_us = true
-		return false
-	else
-		-- Network is already on
-		logger.info("Crossbill Network: WiFi already enabled")
-		wifi_enabled_by_us = false
-		return true
+		return
 	end
+
+	logger.info("Crossbill Network: WiFi already enabled")
+	wifi_enabled_by_us = false
+	fn()
 end
 
 --- Disable WiFi if we enabled it for the sync

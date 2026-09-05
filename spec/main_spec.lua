@@ -7,8 +7,8 @@ local UpgradeRequired = require("modules/upgrade_required")
 -- keeps the wire out of the run (see spec/api_client_spec.lua). The fake leaves
 -- the sync paths below already online, with nothing to clean up.
 local NetworkFake = {
-	ensureWifiEnabled = function()
-		return true
+	whenOnline = function(fn)
+		fn()
 	end,
 	disableWifiIfNeeded = function() end,
 	isConnected = function()
@@ -221,7 +221,7 @@ describe("CrossbillSync", function()
 		after_each(function()
 			NetworkFake.disableWifiIfNeeded:revert()
 			revertIfStubbed(UpdateCheck, "check")
-			revertIfStubbed(NetworkFake, "ensureWifiEnabled")
+			revertIfStubbed(NetworkFake, "whenOnline")
 		end)
 
 		--- Answer every check with the same outcome
@@ -232,11 +232,10 @@ describe("CrossbillSync", function()
 			stub(UpdateCheck, "check").returns(completed, result, err)
 		end
 
-		--- Leave the device offline, keeping the callback WiFi would run
+		--- Leave the device offline, keeping the work WiFi would run
 		local function wifiOff()
-			stub(NetworkFake, "ensureWifiEnabled").invokes(function(callback)
-				waiting_callback = callback
-				return false
+			stub(NetworkFake, "whenOnline").invokes(function(fn)
+				waiting_callback = fn
 			end)
 		end
 
@@ -331,8 +330,8 @@ describe("CrossbillSync", function()
 			if type(UpdateInstaller.install) == "table" then
 				UpdateInstaller.install:revert()
 			end
-			if type(NetworkFake.ensureWifiEnabled) == "table" then
-				NetworkFake.ensureWifiEnabled:revert()
+			if type(NetworkFake.whenOnline) == "table" then
+				NetworkFake.whenOnline:revert()
 			end
 		end)
 
@@ -399,9 +398,8 @@ describe("CrossbillSync", function()
 
 		it("waits for WiFi rather than installing while offline", function()
 			local waiting
-			stub(NetworkFake, "ensureWifiEnabled").invokes(function(callback)
-				waiting = callback
-				return false
+			stub(NetworkFake, "whenOnline").invokes(function(fn)
+				waiting = fn
 			end)
 			installReturning(true, nil)
 
