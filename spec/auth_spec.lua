@@ -1,46 +1,16 @@
 local AuthFailed = require("modules/auth_failed")
 local UpgradeRequired = require("modules/upgrade_required")
+local FakeNetwork = require("fake_network")
 
 -- `modules/network` is the plugin's own module rather than one of KOReader's,
 -- so it cannot be shadowed from spec/support, and it is the one module that must
 -- not run under test. Seeding the package cache before requiring auth binds it
 -- to this fake for the whole run; the real module is put back afterwards (see
 -- spec/api_client_spec.lua).
-local NetworkFake = {
-	form_result = {},
-	json_result = {},
-	posted_forms = {},
-	posted_json = {},
-}
-
---- Answer `postForm` with whatever the current test has queued
--- @param url string The URL being posted to
--- @param data table The credentials the module sent
--- @return number|nil, table|nil, string|nil The queued status, body and error
-function NetworkFake.postForm(url, data)
-	table.insert(NetworkFake.posted_forms, { url = url, data = data })
-	return NetworkFake.form_result[1], NetworkFake.form_result[2], NetworkFake.form_result[3]
-end
-
---- Answer `postJson` with whatever the current test has queued
--- @param url string The URL being posted to
--- @param data table The payload the module sent
--- @return number|nil, table|nil, string|nil The queued status, body and error
-function NetworkFake.postJson(url, data)
-	table.insert(NetworkFake.posted_json, { url = url, data = data })
-	return NetworkFake.json_result[1], NetworkFake.json_result[2], NetworkFake.json_result[3]
-end
-
---- Forget the requests made and the queued answers
-function NetworkFake.reset()
-	NetworkFake.form_result = {}
-	NetworkFake.json_result = {}
-	NetworkFake.posted_forms = {}
-	NetworkFake.posted_json = {}
-end
+local network = FakeNetwork:new()
 
 local real_network = package.loaded["modules/network"]
-package.loaded["modules/network"] = NetworkFake
+package.loaded["modules/network"] = network
 local Auth = require("modules/auth")
 package.loaded["modules/network"] = real_network
 
@@ -91,7 +61,7 @@ local REFUSAL_BODY = {
 
 describe("Auth", function()
 	before_each(function()
-		NetworkFake.reset()
+		network.reset()
 	end)
 
 	describe("login", function()
@@ -102,11 +72,11 @@ describe("Auth", function()
 
 			assert.is_true(AuthFailed.is(err))
 			assert.are.equal("Username or password not configured", AuthFailed.message(err))
-			assert.are.same({}, NetworkFake.posted_forms)
+			assert.are.same({}, network.posted_forms)
 		end)
 
 		it("reports credentials the server rejected as an authentication failure", function()
-			NetworkFake.form_result = { 401, nil }
+			network.setFormResult(401, nil)
 
 			local _, err = Auth:new(settingsWith({ username = "ada", password = "wrong" })):login()
 
@@ -117,7 +87,7 @@ describe("Auth", function()
 		it("leaves a network failure as the plain message it was", function()
 			-- Nothing is wrong with the reader's password, so telling them their
 			-- authentication failed would send them to change one that works.
-			NetworkFake.form_result = { nil, nil, "Connection refused" }
+			network.setFormResult(nil, nil, "Connection refused")
 
 			local _, err = Auth:new(settingsWith({ username = "ada", password = "secret" })):login()
 
@@ -130,7 +100,7 @@ describe("Auth", function()
 			-- stopped serving is refused at the login endpoint, before it has a
 			-- token to be turned away over. Read as an authentication failure it
 			-- would put the credentials dialog in front of a working password.
-			NetworkFake.form_result = { 426, REFUSAL_BODY }
+			network.setFormResult(426, REFUSAL_BODY)
 
 			local ok, err = pcall(function()
 				return Auth:new(settingsWith({ username = "ada", password = "secret" })):login()
@@ -142,7 +112,7 @@ describe("Auth", function()
 		end)
 
 		it("raises it carrying the versions the server named", function()
-			NetworkFake.form_result = { 426, REFUSAL_BODY }
+			network.setFormResult(426, REFUSAL_BODY)
 
 			local _, err = pcall(function()
 				return Auth:new(settingsWith({ username = "ada", password = "secret" })):login()
@@ -153,7 +123,7 @@ describe("Auth", function()
 		end)
 
 		it("hands back the token the server issued", function()
-			NetworkFake.form_result = { 200, { access_token = "fresh", refresh_token = "r", expires_in = 3600 } }
+			network.setFormResult(200, { access_token = "fresh", refresh_token = "r", expires_in = 3600 })
 			local settings = settingsWith({ username = "ada", password = "secret" })
 
 			local token, err = Auth:new(settings):login()
@@ -166,8 +136,8 @@ describe("Auth", function()
 
 	describe("getValidToken", function()
 		it("forgets the stored tokens when the refresh is refused, and logs in instead", function()
-			NetworkFake.json_result = { 401, nil }
-			NetworkFake.form_result = { 200, { access_token = "fresh", expires_in = 3600 } }
+			network.setPostResult(401, nil)
+			network.setFormResult(200, { access_token = "fresh", expires_in = 3600 })
 			local settings = settingsWith({ refresh_token = "stale", username = "ada", password = "secret" })
 
 			local token, err = Auth:new(settings):getValidToken()
@@ -175,14 +145,14 @@ describe("Auth", function()
 			assert.are.equal("fresh", token)
 			assert.is_nil(err)
 			assert.are.equal(1, settings.cleared)
-			assert.are.equal(1, #NetworkFake.posted_json)
-			assert.are.equal(1, #NetworkFake.posted_forms)
+			assert.are.equal(1, #network.posted_json)
+			assert.are.equal(1, #network.posted_forms)
 		end)
 
 		it("raises a refusal met by the refresh instead of trying the login", function()
 			-- The login would only be told the same thing, and the stored tokens
 			-- are not what the server objected to.
-			NetworkFake.json_result = { 426, REFUSAL_BODY }
+			network.setPostResult(426, REFUSAL_BODY)
 			local settings = settingsWith({ refresh_token = "stale", username = "ada", password = "secret" })
 
 			local ok, err = pcall(function()
@@ -193,14 +163,14 @@ describe("Auth", function()
 			assert.is_true(UpgradeRequired.is(err))
 			assert.are.equal("0.12.0", err.received_version)
 			assert.are.equal("0.13.0", err.min_supported_version)
-			assert.are.same({}, NetworkFake.posted_forms)
+			assert.are.same({}, network.posted_forms)
 			assert.are.equal(0, settings.cleared)
 		end)
 
 		it("reports the login's failure, not the refresh's", function()
 			-- The refresh is an optimisation; what the reader is told about is
 			-- the login that was tried after it.
-			NetworkFake.json_result = { 401, nil }
+			network.setPostResult(401, nil)
 			local settings = settingsWith({ refresh_token = "stale" })
 
 			local _, err = Auth:new(settings):getValidToken()

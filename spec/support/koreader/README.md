@@ -25,18 +25,19 @@ prefer busted's `stub`/`spy` over growing the stub.
 
 `modules/network` is the plugin's own module rather than KOReader's, so it cannot
 be shadowed from here: `crossbill.koplugin` comes first on the path. A spec that
-must keep it off the wire seeds `package.loaded` with a fake before requiring the
-module under test -- see `spec/api_client_spec.lua` and `spec/main_spec.lua`.
-`spec/network_spec.lua` needs the real module, so it seeds fakes for the layer
-underneath it instead (LuaSocket, `json` and `ui/network/manager`) and puts them
-all back afterwards.
+must keep it off the wire seeds `package.loaded` with an instance of
+`spec/support/fake_network.lua` before requiring the module under test, and puts
+the real module back afterwards. `spec/network_spec.lua` needs the real module,
+so it seeds fakes for the layer underneath it instead (LuaSocket, `json` and
+`ui/network/manager`) and puts them all back afterwards.
 
 `G_reader_settings` is a global rather than a module, so its fake lives one
-level up in `spec/support/global_settings_fake.lua`. The SQLite stores are not
-stubbed here at all: the modules above them -- the session tracker and the
-highlight snapshot ledger -- take a store as a dependency, and their specs hand
-over `spec/support/fake_session_store.lua` or
-`spec/support/fake_snapshot_store.lua`, which keep their rows in a table.
+level up in `spec/support/global_settings_fake.lua`, next to the network fake
+and the two stores. The SQLite stores are not stubbed here at all: the modules
+above them -- the session tracker and the highlight snapshot ledger -- take a
+store as a dependency, and their specs hand over
+`spec/support/fake_session_store.lua` or `spec/support/fake_snapshot_store.lua`,
+which keep their rows in a table.
 
 Adding a stub: create the file under the path KOReader's own `require` string
 implies (`require("ffi/sha2")` -> `ffi/sha2.lua`) and keep it to the API the

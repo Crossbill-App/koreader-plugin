@@ -17,6 +17,12 @@ Close button, by tapping outside the frame, or with the Back key.
 Constructor options:
   title  string  Chapter title shown in the title bar
   html   string  Full body HTML to render
+
+It has no spec by design: every line here is widget composition, geometry read
+off the screen and KOReader event plumbing, none of which busted can see. What
+is worth asserting about a digest -- its title, its HTML and its plain text --
+is decided in `modules/digest_format.lua`, which holds no widgets and is
+tested on its own.
 ]]
 
 local Blitbuffer = require("ffi/blitbuffer")

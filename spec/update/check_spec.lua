@@ -5,28 +5,12 @@ the package cache before requiring the update check binds it to this fake for
 the whole run; the real module is put back so nothing else sees the fake.
 ]]
 
-local NetworkFake = { result = {}, requests = {} }
+local FakeNetwork = require("fake_network")
 
---- Answer `getJson` with whatever the current test has queued
--- @param url string The URL being fetched
--- @param token string|nil The bearer token
--- @param extra_headers table|nil The headers the caller added
--- @return number|nil, table|nil, string|nil The queued status, body and error
-function NetworkFake.getJson(url, token, extra_headers)
-	table.insert(NetworkFake.requests, { url = url, token = token, headers = extra_headers })
-	return NetworkFake.result[1], NetworkFake.result[2], NetworkFake.result[3]
-end
-
---- Queue the tuple the next `getJson` should return
--- @param code number|nil The HTTP status
--- @param body table|nil The decoded response body
--- @param err string|nil The error message
-local function answerWith(code, body, err)
-	NetworkFake.result = { code, body, err }
-end
+local network = FakeNetwork:new()
 
 local real_network = package.loaded["modules/network"]
-package.loaded["modules/network"] = NetworkFake
+package.loaded["modules/network"] = network
 local UpdateCheck = require("modules/update/check")
 package.loaded["modules/network"] = real_network
 
@@ -95,23 +79,23 @@ end)
 
 describe("UpdateCheck.check", function()
 	before_each(function()
-		NetworkFake.requests = {}
-		answerWith(nil, nil, nil)
+		network.reset()
+		network.setGetResult(nil, nil, nil)
 	end)
 
 	it("names the plugin to the release service", function()
-		answerWith(200, release())
+		network.setGetResult(200, release())
 
 		UpdateCheck.check()
 
-		local request = NetworkFake.requests[1]
+		local request = network.requested[1]
 		assert.are.equal(meta.update_check_url, request.url)
 		assert.is_nil(request.token)
 		assert.are.equal("koreader-plugin/" .. meta.version, request.headers["User-Agent"])
 	end)
 
 	it("reports a newer release as an update", function()
-		answerWith(200, release({ tag_name = "v9.9.9" }))
+		network.setGetResult(200, release({ tag_name = "v9.9.9" }))
 
 		local completed, result = UpdateCheck.check()
 
@@ -123,7 +107,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("reports the running version as the latest when they match", function()
-		answerWith(200, release({ tag_name = "v" .. meta.version }))
+		network.setGetResult(200, release({ tag_name = "v" .. meta.version }))
 
 		local completed, result = UpdateCheck.check()
 
@@ -133,7 +117,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("says the plugin is ahead rather than up to date", function()
-		answerWith(200, release({ tag_name = "v0.0.1" }))
+		network.setGetResult(200, release({ tag_name = "v0.0.1" }))
 
 		local completed, result = UpdateCheck.check()
 
@@ -144,7 +128,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("finds the archive and the signature the release workflow publishes", function()
-		answerWith(200, release())
+		network.setGetResult(200, release())
 
 		local completed, result = UpdateCheck.check()
 
@@ -156,7 +140,7 @@ describe("UpdateCheck.check", function()
 	it("reports a release that carries an archive but no signature", function()
 		-- Nothing can be installed from it, but the reader still deserves to
 		-- know a newer version exists.
-		answerWith(
+		network.setGetResult(
 			200,
 			release({
 				assets = { { name = "crossbill.koplugin.zip", browser_download_url = "https://example.test/a.zip" } },
@@ -172,7 +156,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("still reports the release when no archive matches", function()
-		answerWith(
+		network.setGetResult(
 			200,
 			release({ assets = { { name = "notes.txt", browser_download_url = "https://example.test/x" } } })
 		)
@@ -186,7 +170,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("still reports the release when it carries no assets at all", function()
-		answerWith(200, release({ assets = ABSENT }))
+		network.setGetResult(200, release({ assets = ABSENT }))
 
 		local completed, result = UpdateCheck.check()
 
@@ -196,7 +180,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("falls back to the homepage when the release names no page of its own", function()
-		answerWith(200, release({ html_url = ABSENT }))
+		network.setGetResult(200, release({ html_url = ABSENT }))
 
 		local completed, result = UpdateCheck.check()
 
@@ -205,7 +189,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("fails when the request never reached the service", function()
-		answerWith(nil, nil, "connection refused")
+		network.setGetResult(nil, nil, "connection refused")
 
 		local completed, result, err = UpdateCheck.check()
 
@@ -215,7 +199,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("fails on any status other than 200, naming it", function()
-		answerWith(403, {})
+		network.setGetResult(403, {})
 
 		local completed, result, err = UpdateCheck.check()
 
@@ -225,7 +209,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("fails when the answer was not a release", function()
-		answerWith(200, nil)
+		network.setGetResult(200, nil)
 
 		local completed, result, err = UpdateCheck.check()
 
@@ -235,7 +219,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("fails when the release carries no tag", function()
-		answerWith(200, release({ tag_name = ABSENT }))
+		network.setGetResult(200, release({ tag_name = ABSENT }))
 
 		local completed, result, err = UpdateCheck.check()
 
@@ -245,7 +229,7 @@ describe("UpdateCheck.check", function()
 	end)
 
 	it("names the tag it could not read", function()
-		answerWith(200, release({ tag_name = "release-2" }))
+		network.setGetResult(200, release({ tag_name = "release-2" }))
 
 		local completed, result, err = UpdateCheck.check()
 
@@ -265,6 +249,6 @@ describe("UpdateCheck.check", function()
 		assert.is_false(completed)
 		assert.is_nil(result)
 		assert.is_truthy(err)
-		assert.are.equal(0, #NetworkFake.requests)
+		assert.are.equal(0, #network.requested)
 	end)
 end)
