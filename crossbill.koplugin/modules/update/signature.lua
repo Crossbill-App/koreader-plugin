@@ -16,7 +16,8 @@ signature of the wrong length. `isAvailable` tells those apart from a signature
 that simply did not match, which is worth saying differently to a reader.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("UpdateSignature")
 
 local Signature = {}
 
@@ -58,7 +59,7 @@ int ED25519_verify(const unsigned char *message, size_t message_len,
 	end)
 
 	if not ok then
-		logger.warn("Crossbill: Ed25519 verification unavailable:", tostring(lib))
+		log.warn("Ed25519 verification unavailable:", tostring(lib))
 		libcrypto = false
 		return nil
 	end
@@ -100,7 +101,7 @@ function Signature.verify(data, signature, trusted_keys)
 	end
 
 	if #signature ~= Signature.SIGNATURE_BYTES then
-		logger.warn("Crossbill: signature is", #signature, "bytes, expected", Signature.SIGNATURE_BYTES)
+		log.warn("signature is", #signature, "bytes, expected", Signature.SIGNATURE_BYTES)
 		return false
 	end
 
@@ -112,12 +113,12 @@ function Signature.verify(data, signature, trusted_keys)
 		if key then
 			table.insert(keys, key)
 		else
-			logger.warn("Crossbill: ignoring a trusted key that is not", Signature.KEY_BYTES, "bytes of hex")
+			log.warn("ignoring a trusted key that is not", Signature.KEY_BYTES, "bytes of hex")
 		end
 	end
 
 	if #keys == 0 then
-		logger.warn("Crossbill: no usable trusted key to verify against")
+		log.warn("no usable trusted key to verify against")
 		return false
 	end
 

@@ -12,7 +12,8 @@ the reasoning below needs the reader's SQLite binding to be exercised. The clock
 arrives the same way, because a gap and a throttle are both read off it.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("SessionTracker")
 local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
@@ -41,7 +42,7 @@ local POSITION_CAPTURE_INTERVAL_SECONDS = 60
 local function guarded(what, fn)
 	local ok, answer = pcall(fn)
 	if not ok then
-		logger.err("Crossbill SessionTracker: The store failed to", what .. ":", answer)
+		log.err("The store failed to", what .. ":", answer)
 		return nil
 	end
 	return answer
@@ -72,7 +73,7 @@ function SessionTracker:init(data_dir)
 	end
 
 	if not self.store then
-		logger.warn("Crossbill SessionTracker: No store to open")
+		log.warn("No store to open")
 		return false
 	end
 
@@ -81,12 +82,12 @@ function SessionTracker:init(data_dir)
 	end)
 
 	if not opened then
-		logger.err("Crossbill SessionTracker: The store would not open")
+		log.err("The store would not open")
 		return false
 	end
 
 	self._initialized = true
-	logger.dbg("Crossbill SessionTracker: Tracking sessions")
+	log.dbg("Tracking sessions")
 	return true
 end
 
@@ -133,7 +134,7 @@ function SessionTracker:_capturePosition(document, ui)
 	end)
 
 	if not success then
-		logger.warn("Crossbill SessionTracker: Error capturing position:", err)
+		log.warn("Error capturing position:", err)
 	end
 
 	return position_data
@@ -155,18 +156,18 @@ end
 -- @param ui The UI object
 function SessionTracker:startSession(document, ui)
 	if not self._initialized then
-		logger.warn("Crossbill SessionTracker: Cannot start session - not initialized")
+		log.warn("Cannot start session - not initialized")
 		return
 	end
 
 	if not document then
-		logger.warn("Crossbill SessionTracker: Cannot start session - no document")
+		log.warn("Cannot start session - no document")
 		return
 	end
 
 	-- If there's already an active session, end it first
 	if self.current_session then
-		logger.dbg("Crossbill SessionTracker: Ending previous session before starting new one")
+		log.dbg("Ending previous session before starting new one")
 		self:endSession(document, ui, "new_session")
 	end
 
@@ -176,14 +177,14 @@ function SessionTracker:startSession(document, ui)
 	-- otherwise share one identity and be uploaded as a single book.
 	local book_hash = BookIdentity.fileHash(file_path)
 	if not book_hash then
-		logger.warn("Crossbill SessionTracker: Cannot start session - document has no file path")
+		log.warn("Cannot start session - document has no file path")
 		return
 	end
 
 	local position = self:_capturePosition(document, ui)
 
 	if not position then
-		logger.warn("Crossbill SessionTracker: Cannot capture start position")
+		log.warn("Cannot capture start position")
 		return
 	end
 
@@ -228,7 +229,7 @@ function SessionTracker:startSession(document, ui)
 	end)
 
 	if failure and (not book_title or not book_author) then
-		logger.warn("Crossbill SessionTracker: Could not read the book's title and author:", failure)
+		log.warn("Could not read the book's title and author:", failure)
 	end
 
 	local now = self.now()
@@ -250,7 +251,7 @@ function SessionTracker:startSession(document, ui)
 		total_pages = self:_getTotalPages(document),
 	}
 
-	logger.dbg("Crossbill SessionTracker: Started session for", book_title or file_path)
+	log.dbg("Started session for", book_title or file_path)
 end
 
 --- Update current reading position (called on every page turn)
@@ -270,7 +271,7 @@ function SessionTracker:updatePosition(document, ui, pageno)
 	-- A long gap means this page turn belongs to a new sitting, not the old
 	-- one: close the old session where and when it actually stopped.
 	if idle_seconds > SESSION_ACTIVITY_GAP_SECONDS then
-		logger.dbg("Crossbill SessionTracker: Activity gap of", idle_seconds, "seconds - splitting session")
+		log.dbg("Activity gap of", idle_seconds, "seconds - splitting session")
 		self:_endSessionAtLastActivity("activity_gap")
 		self:startSession(document, ui)
 		session = self.current_session
@@ -310,7 +311,7 @@ end
 -- @param reason string Reason for ending
 function SessionTracker:_saveSession(session, end_time, end_position, end_page, reason)
 	if not self._initialized then
-		logger.warn("Crossbill SessionTracker: Cannot save session - store not available")
+		log.warn("Cannot save session - store not available")
 		return
 	end
 
@@ -319,7 +320,7 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 	-- Discard very short sessions
 	local min_duration = self.settings:getMinReadingSessionDuration() or 60
 	if duration < min_duration then
-		logger.dbg("Crossbill SessionTracker: Discarding short session (", duration, "seconds) - reason:", reason)
+		log.dbg("Discarding short session (", duration, "seconds) - reason:", reason)
 		return
 	end
 
@@ -343,9 +344,9 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 	end)
 
 	if saved then
-		logger.dbg("Crossbill SessionTracker: Saved session (", duration, "seconds) - reason:", reason)
+		log.dbg("Saved session (", duration, "seconds) - reason:", reason)
 	else
-		logger.err("Crossbill SessionTracker: Failed to save session - reason:", reason)
+		log.err("Failed to save session - reason:", reason)
 	end
 end
 
@@ -373,12 +374,12 @@ end
 function SessionTracker:endSession(document, ui, reason)
 	local session = self.current_session
 	if not session then
-		logger.dbg("Crossbill SessionTracker: No active session to end")
+		log.dbg("No active session to end")
 		return
 	end
 
 	if not self._initialized then
-		logger.warn("Crossbill SessionTracker: Cannot end session - store not available")
+		log.warn("Cannot end session - store not available")
 		self.current_session = nil
 		return
 	end
@@ -388,12 +389,7 @@ function SessionTracker:endSession(document, ui, reason)
 
 	-- Reading stopped long ago; end the session there rather than now.
 	if idle_seconds > SESSION_ACTIVITY_GAP_SECONDS then
-		logger.dbg(
-			"Crossbill SessionTracker: Ending session at last activity,",
-			idle_seconds,
-			"seconds ago - reason:",
-			reason
-		)
+		log.dbg("Ending session at last activity,", idle_seconds, "seconds ago - reason:", reason)
 		self:_endSessionAtLastActivity(reason)
 		return
 	end

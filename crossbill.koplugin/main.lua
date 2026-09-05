@@ -7,12 +7,13 @@ Supports manual sync, auto-sync on suspend/exit
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Dispatcher = require("dispatcher")
-local logger = require("logger")
 local DataStorage = require("datastorage")
 local Trapper = require("ui/trapper")
 local T = require("ffi/util").template
 local _ = require("gettext")
 
+local Log = require("modules/log")
+local log = Log.forModule("Main")
 local PluginIdentity = require("modules/plugin_identity")
 local Settings = require("modules/settings")
 local Network = require("modules/network")
@@ -82,7 +83,7 @@ function CrossbillSync:init()
 
 	self.is_supported_document = DocumentSupport.isSupportedDocument(self.ui)
 	if not self.is_supported_document then
-		logger.info("Crossbill: Not an EPUB, plugin stays inactive for this document")
+		log.info("Not an EPUB, plugin stays inactive for this document")
 		return
 	end
 
@@ -191,7 +192,7 @@ function CrossbillSync:_updateCheck()
 	if not completed then
 		-- The reader is told one thing whatever went wrong; this is where the
 		-- difference is kept.
-		logger.err("Crossbill: Update check failed:", tostring(err))
+		log.err("Update check failed:", tostring(err))
 		UI.showUpdateCheckFailed()
 		return
 	end
@@ -235,7 +236,7 @@ function CrossbillSync:_install(result)
 		return
 	end
 
-	logger.err("Crossbill: Update install failed:", tostring(detail))
+	log.err("Update install failed:", tostring(detail))
 
 	if kind == UpdateInstaller.UNVERIFIED then
 		UI.showInstallUnverified()
@@ -265,12 +266,12 @@ end
 --- Show the current chapter's digest
 function CrossbillSync:showChapterDigest()
 	if not self.is_supported_document then
-		logger.warn("Crossbill: Cannot show digest - the open document is not an EPUB")
+		log.warn("Cannot show digest - the open document is not an EPUB")
 		return
 	end
 
 	if not self.ui.document then
-		logger.warn("Crossbill: Cannot show digest - no document available")
+		log.warn("Cannot show digest - no document available")
 		return
 	end
 
@@ -278,7 +279,7 @@ function CrossbillSync:showChapterDigest()
 		return BookMetadata:new(self.ui):extractBookData()
 	end)
 	if not ok or not book_data or not book_data.client_book_id then
-		logger.err("Crossbill: Failed to extract book metadata for the digest")
+		log.err("Failed to extract book metadata for the digest")
 		UI.showDigestError("no_cache")
 		return
 	end
@@ -313,7 +314,7 @@ end
 -- @param is_autosync boolean If true, run in silent mode (no UI feedback)
 function CrossbillSync:syncCurrentBook(is_autosync)
 	if not self.is_supported_document then
-		logger.warn("Crossbill: Cannot sync - the open document is not an EPUB")
+		log.warn("Cannot sync - the open document is not an EPUB")
 		return
 	end
 
@@ -327,7 +328,7 @@ end
 function CrossbillSync:_runSync(is_autosync)
 	-- Safety check: ensure document is available
 	if not self.ui.document then
-		logger.warn("Crossbill: Cannot sync - no document available")
+		log.warn("Cannot sync - no document available")
 		return
 	end
 
@@ -349,7 +350,7 @@ function CrossbillSync:_runSync(is_autosync)
 		self.syncing_message = nil
 
 		if not success then
-			logger.err("Crossbill: Error in sync:", err)
+			log.err("Error in sync:", err)
 			if not is_autosync then
 				UI.showSyncError(err)
 			end
@@ -489,7 +490,7 @@ function CrossbillSync:onSuspend()
 		self.session_tracker:endSession(self.ui.document, self.ui, "suspend")
 	end
 	if self.settings:isAutosyncEnabled() then
-		logger.info("Crossbill: Auto-syncing on suspend")
+		log.info("Auto-syncing on suspend")
 		self:syncCurrentBook(true)
 	end
 	return false
@@ -504,7 +505,7 @@ function CrossbillSync:onExit()
 		self.session_tracker:endSession(self.ui.document, self.ui, "app_exit")
 	end
 	if self.settings:isAutosyncEnabled() then
-		logger.info("Crossbill: Auto-syncing on exit")
+		log.info("Auto-syncing on exit")
 		self:syncCurrentBook(true)
 	end
 	-- Close databases after sync attempts

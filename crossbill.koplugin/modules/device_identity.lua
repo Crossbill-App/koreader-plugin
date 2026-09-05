@@ -9,7 +9,8 @@ it exists, otherwise one generated once and kept in the plugin settings.
 
 local Device = require("device")
 local Settings = require("modules/settings")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("DeviceIdentity")
 local random = require("random")
 
 local DeviceIdentity = {}
@@ -42,7 +43,7 @@ local function getUuid()
 
 	local uuid = random.uuid()
 	settings:setDeviceUuid(uuid)
-	logger.dbg("Crossbill DeviceIdentity: Generated a device UUID")
+	log.dbg("Generated a device UUID")
 	return uuid
 end
 

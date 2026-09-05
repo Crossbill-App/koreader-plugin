@@ -7,7 +7,8 @@ Also handles chapter number mapping from table of contents.
 ]]
 
 local DocSettings = require("docsettings")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("HighlightExtractor")
 local TitleMatch = require("modules/title_match")
 
 -- Chapter titles are matched the same way everywhere; see modules/title_match.
@@ -69,17 +70,17 @@ end
 -- @return table|nil Array of highlights, or nil when ReaderAnnotation is absent
 function HighlightExtractor:getHighlightsFromMemory()
 	if not self.ui.annotation then
-		logger.dbg("Crossbill Extractor: ReaderAnnotation module not available")
+		log.dbg("ReaderAnnotation module not available")
 		return nil
 	end
 
 	local annotations = self.ui.annotation.annotations
 	if not annotations then
-		logger.dbg("Crossbill Extractor: No annotations in memory")
+		log.dbg("No annotations in memory")
 		return nil
 	end
 
-	logger.dbg("Crossbill Extractor: Found", #annotations, "annotations in memory")
+	log.dbg("Found", #annotations, "annotations in memory")
 	local results = {}
 
 	for _, annotation in ipairs(annotations) do
@@ -88,7 +89,7 @@ function HighlightExtractor:getHighlightsFromMemory()
 		end
 	end
 
-	logger.dbg("Crossbill Extractor: Converted", #results, "annotations to highlights")
+	log.dbg("Converted", #results, "annotations to highlights")
 	return results
 end
 
@@ -103,7 +104,7 @@ function HighlightExtractor:getHighlightsFromDisk(doc_path)
 	local doc_settings = DocSettings:open(doc_path)
 	local annotations = doc_settings:readSetting("annotations")
 	if not annotations then
-		logger.dbg("Crossbill Extractor: No highlights found in settings")
+		log.dbg("No highlights found in settings")
 		return nil
 	end
 
@@ -114,7 +115,7 @@ function HighlightExtractor:getHighlightsFromDisk(doc_path)
 		end
 	end
 
-	logger.dbg("Crossbill Extractor: Found", #results, "highlights on disk")
+	log.dbg("Found", #results, "highlights on disk")
 	return results
 end
 
@@ -243,7 +244,7 @@ end
 function HighlightExtractor:addChapterNumbers(highlights)
 	local toc = self.ui.toc and self.ui.toc.toc
 	if not toc or #toc == 0 then
-		logger.dbg("Crossbill Extractor: No TOC available; leaving chapter numbers unset")
+		log.dbg("No TOC available; leaving chapter numbers unset")
 		return highlights
 	end
 

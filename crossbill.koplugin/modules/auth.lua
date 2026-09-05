@@ -25,7 +25,8 @@ this module having already decided what the answer meant.
 local AuthFailed = require("modules/auth_failed")
 local Network = require("modules/network")
 local UpgradeRequired = require("modules/upgrade_required")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("Auth")
 
 local Auth = {}
 Auth.__index = Auth
@@ -53,12 +54,12 @@ function Auth:login()
 	local password = self.settings:getPassword()
 
 	if username == "" or password == "" then
-		logger.warn("Crossbill Auth: Username or password not configured")
+		log.warn("Username or password not configured")
 		return nil, AuthFailed.new("Username or password not configured")
 	end
 
 	local api_url = self.settings:getApiUrl() .. "/auth/login"
-	logger.dbg("Crossbill Auth: Logging in to", api_url)
+	log.dbg("Logging in to", api_url)
 
 	local code, response_data, err = Network.postForm(api_url, {
 		username = username,
@@ -71,16 +72,16 @@ function Auth:login()
 	UpgradeRequired.raiseIfRefused(code, response_data)
 
 	if not code then
-		logger.err("Crossbill Auth: Network error during login:", err)
+		log.err("Network error during login:", err)
 		return nil, err or "Network error"
 	end
 
 	if code == 200 and response_data and response_data.access_token then
-		logger.dbg("Crossbill Auth: Login successful")
+		log.dbg("Login successful")
 		self.settings:setTokens(response_data.access_token, response_data.refresh_token, response_data.expires_in)
 		return response_data.access_token
 	else
-		logger.err("Crossbill Auth: Login failed with code:", code)
+		log.err("Login failed with code:", code)
 		return nil, AuthFailed.new("Login failed: " .. tostring(code))
 	end
 end
@@ -93,12 +94,12 @@ end
 function Auth:refreshToken()
 	local refresh_token = self.settings:getRefreshToken()
 	if not refresh_token then
-		logger.dbg("Crossbill Auth: No refresh token available")
+		log.dbg("No refresh token available")
 		return nil, AuthFailed.new("No refresh token")
 	end
 
 	local api_url = self.settings:getApiUrl() .. "/auth/refresh"
-	logger.dbg("Crossbill Auth: Refreshing token at", api_url)
+	log.dbg("Refreshing token at", api_url)
 
 	local code, response_data, err = Network.postJson(api_url, {
 		refresh_token = refresh_token,
@@ -110,16 +111,16 @@ function Auth:refreshToken()
 	UpgradeRequired.raiseIfRefused(code, response_data)
 
 	if not code then
-		logger.err("Crossbill Auth: Network error during refresh:", err)
+		log.err("Network error during refresh:", err)
 		return nil, err or "Network error"
 	end
 
 	if code == 200 and response_data and response_data.access_token then
-		logger.dbg("Crossbill Auth: Token refresh successful")
+		log.dbg("Token refresh successful")
 		self.settings:setTokens(response_data.access_token, response_data.refresh_token, response_data.expires_in)
 		return response_data.access_token
 	else
-		logger.err("Crossbill Auth: Token refresh failed with code:", code)
+		log.err("Token refresh failed with code:", code)
 		-- Clear stored tokens on refresh failure
 		self.settings:clearTokens()
 		return nil, AuthFailed.new("Refresh failed: " .. tostring(code))
@@ -130,7 +131,7 @@ end
 -- The server can revoke a token before the expiry the plugin recorded; a caller
 -- turned away with a 401 says so here, and the next `getValidToken` logs in.
 function Auth:clearTokens()
-	logger.dbg("Crossbill Auth: Clearing stored tokens")
+	log.dbg("Clearing stored tokens")
 	self.settings:clearTokens()
 end
 
@@ -150,23 +151,23 @@ function Auth:getValidToken()
 
 	-- Check if we have a cached token that's still valid (with buffer)
 	if access_token and expires_at and (expires_at - TOKEN_EXPIRY_BUFFER) > current_time then
-		logger.dbg("Crossbill Auth: Using cached access token")
+		log.dbg("Using cached access token")
 		return access_token
 	end
 
 	-- Try to refresh the token if we have a refresh token
 	local refresh_token = self.settings:getRefreshToken()
 	if refresh_token then
-		logger.dbg("Crossbill Auth: Access token expired or missing, trying refresh")
+		log.dbg("Access token expired or missing, trying refresh")
 		local token, err = self:refreshToken()
 		if token then
 			return token
 		end
-		logger.dbg("Crossbill Auth: Refresh failed:", err)
+		log.dbg("Refresh failed:", err)
 	end
 
 	-- Fall back to full login
-	logger.dbg("Crossbill Auth: Falling back to full login")
+	log.dbg("Falling back to full login")
 	return self:login()
 end
 

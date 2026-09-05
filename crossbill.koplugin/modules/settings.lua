@@ -12,7 +12,8 @@ per setter is cheap: `G_reader_settings:saveSetting` writes an in-memory table,
 and KOReader flushes that to disk on its own schedule.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("Settings")
 local PluginIdentity = require("modules/plugin_identity")
 
 local Settings = {}
@@ -65,7 +66,7 @@ function Settings:load()
 			self._data[key] = value
 		end
 	end
-	logger.dbg("Crossbill Settings: Loaded settings")
+	log.dbg("Loaded settings")
 	return self
 end
 
@@ -73,7 +74,7 @@ end
 -- @return self for chaining
 function Settings:save()
 	G_reader_settings:saveSetting(SETTINGS_KEY, self._data)
-	logger.dbg("Crossbill Settings: Saved settings")
+	log.dbg("Saved settings")
 	return self
 end
 

@@ -14,7 +14,8 @@ by comparing file hashes -- and a comment promising two functions match is not
 something anything can enforce.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("BookIdentity")
 local md5 = require("ffi/sha2").md5
 
 local BookIdentity = {}
@@ -38,7 +39,7 @@ function BookIdentity.fileHash(path)
 	if type(path) ~= "string" or path == "" then
 		-- Without an identity nothing may be diffed or flagged against the
 		-- ledger, and a pull records the book as owned by no file.
-		logger.warn("Crossbill BookIdentity: No document path to identify the book's file by")
+		log.warn("No document path to identify the book's file by")
 		return nil
 	end
 

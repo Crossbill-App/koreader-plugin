@@ -11,7 +11,8 @@ xpointers, which mean nothing to a fixed-layout document.
 
 local Event = require("ui/event")
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("HighlightImporter")
 local NoteEdits = require("modules/note_edits")
 
 local HighlightImporter = {}
@@ -309,7 +310,7 @@ function HighlightImporter:replaceHighlights(ui, items)
 	if sameHighlightSet(ui.annotation.annotations, built) then
 		result.unchanged = true
 		result.kept_bookmarks = countBookmarks(ui.annotation.annotations)
-		logger.dbg("Crossbill Importer: Highlights already match the server's copy")
+		log.dbg("Highlights already match the server's copy")
 		return result, nil
 	end
 
@@ -332,7 +333,7 @@ function HighlightImporter:replaceHighlights(ui, items)
 	end)
 
 	if not ok then
-		logger.err("Crossbill Importer: Failed to replace highlights:", err)
+		log.err("Failed to replace highlights:", err)
 		pcall(restoreAnnotations, ui.annotation.annotations, previous)
 		-- The removals that did go through shifted the view's cached highlight
 		-- boxes, so drop the cache wholesale rather than leave it half shifted.
@@ -351,7 +352,7 @@ function HighlightImporter:replaceHighlights(ui, items)
 	ui:handleEvent(Event:new("FlushSettings"))
 	UIManager:setDirty(ui.dialog, "ui")
 
-	logger.info("Crossbill Importer: Replaced highlights with", result.inserted, "from the server")
+	log.info("Replaced highlights with", result.inserted, "from the server")
 	return result, nil
 end
 

@@ -12,7 +12,8 @@ The main plugin handles lifecycle events and UI, while this
 module handles the sync business logic.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("SyncService")
 local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
@@ -88,13 +89,13 @@ end
 function SyncService:_reportRefusal(err, opts)
 	local report = opts and opts.on_upgrade_required
 	if not report then
-		logger.dbg("Crossbill SyncService: Nobody to tell that the server refuses this plugin version")
+		log.dbg("Nobody to tell that the server refuses this plugin version")
 		return
 	end
 
 	local ok, report_err = pcall(report, err)
 	if not ok then
-		logger.warn("Crossbill SyncService: Reporting the refusal failed:", report_err)
+		log.warn("Reporting the refusal failed:", report_err)
 	end
 end
 
@@ -137,7 +138,7 @@ function SyncService:syncBook(ui, opts)
 		error(err, 0)
 	end
 
-	logger.warn("Crossbill SyncService: The server refuses this plugin version, abandoning the sync")
+	log.warn("The server refuses this plugin version, abandoning the sync")
 	self:_reportRefusal(err, opts)
 	result.success = false
 	result.upgrade_required = err
@@ -170,7 +171,7 @@ function SyncService:_runSyncSteps(result, ui, opts)
 
 	if not server_metadata then
 		-- Book doesn't exist on server, create it
-		logger.info("Crossbill SyncService: Book not found on server, creating it")
+		log.info("Book not found on server, creating it")
 		local create_code, created_metadata, create_err = self.api_client:createBook(book_data)
 		if create_code ~= 200 or not created_metadata then
 			-- A create that answered 200 and said nothing about the book leaves the
@@ -236,7 +237,7 @@ function SyncService:_bookkeeping(label, fn, default)
 		error(value, 0)
 	end
 
-	logger.warn("Crossbill SyncService: " .. label .. ":", value)
+	log.warn(label .. ":", value)
 	return default, tostring(value)
 end
 
@@ -251,7 +252,7 @@ function SyncService:_stampNoteEdits(ui)
 
 	local stamped = NoteEdits.stamp(ui.annotation.annotations)
 	if stamped > 0 then
-		logger.info("Crossbill SyncService: Stamped", stamped, "edited notes")
+		log.info("Stamped", stamped, "edited notes")
 	end
 end
 
@@ -288,7 +289,7 @@ function SyncService:_applyPull(result, ui, client_book_id, doc_path)
 	if not HighlightImporter.isSupportedBook(ui) then
 		-- A book the importer cannot place highlights into is not a failure, so
 		-- it is not worth reporting to the user.
-		logger.dbg("Crossbill SyncService: No highlight pull for a fixed-layout book")
+		log.dbg("No highlight pull for a fixed-layout book")
 		return
 	end
 
@@ -344,11 +345,11 @@ function SyncService:_refreshDigest(client_book_id)
 	self:_bookkeeping("Error refreshing digests", function()
 		local refreshed, err_kind = self.digest_service:refreshBook(client_book_id)
 		if not refreshed then
-			logger.warn("Crossbill SyncService: Digest refresh skipped:", err_kind or "unknown")
+			log.warn("Digest refresh skipped:", err_kind or "unknown")
 			return
 		end
 
-		logger.dbg("Crossbill SyncService: Digest refreshed for", client_book_id)
+		log.dbg("Digest refreshed for", client_book_id)
 	end)
 end
 
@@ -365,7 +366,7 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 	local highlight_extractor = HighlightExtractor:new(ui)
 	local highlights = highlight_extractor:getHighlights(doc_path) or {}
 
-	logger.dbg("Crossbill SyncService: Found", #highlights, "highlights")
+	log.dbg("Found", #highlights, "highlights")
 
 	if #highlights > 0 then
 		-- Add chapter numbers to highlights
@@ -380,7 +381,7 @@ function SyncService:_syncHighlights(ui, client_book_id, doc_path, opts)
 	local removed_ids = self:_removedHighlightIds(client_book_id, highlights, book_file_hash, opts)
 
 	if #highlights == 0 and #removed_ids == 0 then
-		logger.dbg("Crossbill SyncService: Nothing to push")
+		log.dbg("Nothing to push")
 		return result
 	end
 
@@ -429,7 +430,7 @@ function SyncService:_flagNewHighlights(client_book_id, highlights, book_file_ha
 	end, 0)
 
 	if flagged > 0 then
-		logger.info("Crossbill SyncService: Flagging", flagged, "highlights as new on this device")
+		log.info("Flagging", flagged, "highlights as new on this device")
 	end
 end
 
@@ -459,11 +460,11 @@ function SyncService:_removedHighlightIds(client_book_id, highlights, book_file_
 	end
 
 	if removed.mass_removal and not self:_confirmMassRemoval(#removed.ids, opts) then
-		logger.info("Crossbill SyncService: Keeping", #removed.ids, "highlights the device no longer has")
+		log.info("Keeping", #removed.ids, "highlights the device no longer has")
 		return {}
 	end
 
-	logger.info("Crossbill SyncService: Removing", #removed.ids, "highlights deleted on this device")
+	log.info("Removing", #removed.ids, "highlights deleted on this device")
 	return removed.ids
 end
 
@@ -479,13 +480,13 @@ end
 function SyncService:_confirmMassRemoval(count, opts)
 	local confirm = opts and opts.confirm_removal
 	if not confirm then
-		logger.info("Crossbill SyncService: No way to confirm a mass removal, skipping it")
+		log.info("No way to confirm a mass removal, skipping it")
 		return false
 	end
 
 	local ok, confirmed = pcall(confirm, count)
 	if not ok then
-		logger.warn("Crossbill SyncService: Removal confirmation failed:", confirmed)
+		log.warn("Removal confirmation failed:", confirmed)
 		return false
 	end
 
@@ -501,12 +502,12 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 	local result = { success = true, synced = 0, error = nil }
 
 	if not self.session_tracker or not self.settings:isSessionTrackingEnabled() then
-		logger.dbg("Crossbill SyncService: Session tracking not enabled")
+		log.dbg("Session tracking not enabled")
 		return result
 	end
 
 	if not doc_path then
-		logger.warn("Crossbill SyncService: Cannot get document path for session sync")
+		log.warn("Cannot get document path for session sync")
 		return result
 	end
 
@@ -515,11 +516,11 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 	-- Get unsynced sessions for this book only
 	local sessions = self.session_tracker:getUnsyncedSessionsForBook(book_file_hash)
 	if #sessions == 0 then
-		logger.dbg("Crossbill SyncService: No reading sessions to sync for current book")
+		log.dbg("No reading sessions to sync for current book")
 		return result
 	end
 
-	logger.info("Crossbill SyncService: Found", #sessions, "unsynced reading sessions")
+	log.info("Found", #sessions, "unsynced reading sessions")
 
 	local code, response, err = self.api_client:uploadReadingSessions(client_book_id, sessions)
 	-- The endpoint is all-or-nothing, and its answer is what says how it went, so
@@ -534,11 +535,11 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 		end
 		self.session_tracker:markSessionsSynced(session_ids)
 
-		logger.info("Crossbill SyncService: Synced", #sessions, "reading sessions")
+		log.info("Synced", #sessions, "reading sessions")
 		result.synced = #sessions
 	else
 		-- On failure, sessions remain unsynced for retry
-		logger.warn("Crossbill SyncService: Failed to sync reading sessions:", err)
+		log.warn("Failed to sync reading sessions:", err)
 		result.success = false
 		result.error = err
 	end
@@ -565,28 +566,28 @@ end
 -- @return any|nil The error the upload failed with
 function SyncService:_syncFiles(client_book_id, book_metadata, server_metadata)
 	if not server_metadata then
-		logger.dbg("Crossbill SyncService: No server metadata, skipping EPUB upload")
+		log.dbg("No server metadata, skipping EPUB upload")
 		return nil
 	end
 
 	local doc_path = book_metadata:getDocPath()
 	if not DocumentSupport.isEpubPath(doc_path) then
-		logger.dbg("Crossbill SyncService: Document is not an EPUB file, skipping upload")
+		log.dbg("Document is not an EPUB file, skipping upload")
 		return nil
 	end
 
 	local epub_data, read_err = self.read_file(doc_path)
 	if not epub_data or epub_data == "" then
-		logger.err("Crossbill SyncService: Failed to read EPUB data:", read_err)
+		log.err("Failed to read EPUB data:", read_err)
 		return read_err or "Failed to read EPUB data"
 	end
 
 	local filename = BookMetadata.getFilename(doc_path)
-	logger.dbg("Crossbill SyncService: Uploading EPUB file:", filename, "size:", #epub_data, "bytes")
+	log.dbg("Uploading EPUB file:", filename, "size:", #epub_data, "bytes")
 
 	local upload_code, _, upload_err = self.api_client:uploadEpub(client_book_id, epub_data, filename)
 	if upload_code ~= 200 then
-		logger.warn("Crossbill SyncService: EPUB upload issue:", upload_err)
+		log.warn("EPUB upload issue:", upload_err)
 		return upload_err
 	end
 
@@ -605,12 +606,12 @@ function SyncService:_getServerBookMetadata(client_book_id)
 	local code, metadata, err = self.api_client:getBookMetadata(client_book_id)
 
 	if code == 404 then
-		logger.dbg("Crossbill SyncService: Book not found on server")
+		log.dbg("Book not found on server")
 		return nil, nil
 	end
 
 	if not metadata then
-		logger.warn("Crossbill SyncService: No usable book metadata from server:", err)
+		log.warn("No usable book metadata from server:", err)
 		-- Never a bare nil: that is how a book the server does not have is
 		-- reported, and a failure read as one would create the book again. The
 		-- fallback covers the one answer that is not a failure but is still no

@@ -28,7 +28,8 @@ no such catch, so it is the one place here that turns the refusal back into a
 kind of its own.
 ]]
 
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("DigestService")
 local Network = require("modules/network")
 local TitleMatch = require("modules/title_match")
 local UpgradeRequired = require("modules/upgrade_required")
@@ -218,7 +219,7 @@ end
 local function matchCurrentChapter(ui, items)
 	local current_index, current_entry = findCurrentTocEntry(ui)
 	if not current_entry then
-		logger.dbg("Crossbill DigestService: No current ToC entry could be resolved")
+		log.dbg("No current ToC entry could be resolved")
 		return nil
 	end
 
@@ -229,7 +230,7 @@ local function matchCurrentChapter(ui, items)
 	-- Stage 1: match by chapter title.
 	local stage1 = matchByTitle(items, toc_title_norm)
 	if #stage1 == 0 then
-		logger.dbg("Crossbill DigestService: No digest item matches the current chapter title")
+		log.dbg("No digest item matches the current chapter title")
 		return nil
 	end
 	if #stage1 == 1 then
@@ -263,12 +264,12 @@ function DigestService:refreshBook(client_book_id)
 	local code, data, err = self.api_client:getBookDigest(client_book_id)
 
 	if code == 404 then
-		logger.dbg("Crossbill DigestService: Book unknown to server (404)")
+		log.dbg("Book unknown to server (404)")
 		return false, "book_unknown"
 	end
 
 	if code ~= 200 or not data then
-		logger.warn("Crossbill DigestService: Failed to fetch digests:", err or tostring(code))
+		log.warn("Failed to fetch digests:", err or tostring(code))
 		return false, "fetch_failed"
 	end
 
@@ -278,7 +279,7 @@ function DigestService:refreshBook(client_book_id)
 		return false, "fetch_failed"
 	end
 
-	logger.dbg("Crossbill DigestService: Cached", #items, "digest items for", client_book_id)
+	log.dbg("Cached", #items, "digest items for", client_book_id)
 	return true, nil
 end
 
@@ -300,11 +301,11 @@ function DigestService:_refetchStaleEmptyBook(client_book_id)
 	end
 
 	if not Network.isConnected() then
-		logger.dbg("Crossbill DigestService: Empty digest cache is stale but the device is offline")
+		log.dbg("Empty digest cache is stale but the device is offline")
 		return {}
 	end
 
-	logger.dbg("Crossbill DigestService: Re-fetching empty digest cache, last fetched", age, "seconds ago")
+	log.dbg("Re-fetching empty digest cache, last fetched", age, "seconds ago")
 	local ok = self:refreshBook(client_book_id)
 	if not ok then
 		-- A re-fetch that found nothing leaves the book as empty as it was. The
@@ -343,7 +344,7 @@ function DigestService:getForCurrentChapter(ui, client_book_id)
 		error(result, 0)
 	end
 
-	logger.warn("Crossbill DigestService: The server refuses this plugin version")
+	log.warn("The server refuses this plugin version")
 	return nil, UpgradeRequired.KIND, result
 end
 

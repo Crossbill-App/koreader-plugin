@@ -11,7 +11,8 @@ local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local NetworkMgr = require("ui/network/manager")
 local JSON = require("json")
-local logger = require("logger")
+local Log = require("modules/log")
+local log = Log.forModule("Network")
 local meta = require("_meta")
 
 local Network = {}
@@ -148,10 +149,10 @@ function Network.request(options)
 	-- Use HTTP or HTTPS based on URL scheme
 	local result, code_or_err
 	if url:match("^https://") then
-		logger.dbg("Crossbill Network: Using HTTPS for", url)
+		log.dbg("Using HTTPS for", url)
 		result, code_or_err = https.request(request)
 	else
-		logger.dbg("Crossbill Network: Using HTTP for", url)
+		log.dbg("Using HTTP for", url)
 		result, code_or_err = http.request(request)
 	end
 
@@ -164,11 +165,11 @@ function Network.request(options)
 	-- timeout as though it were an HTTP status.
 	if not result then
 		local err = code_or_err or "Unknown network error"
-		logger.dbg("Crossbill Network: Request failed:", tostring(err))
+		log.dbg("Request failed:", tostring(err))
 		return nil, "", tostring(err)
 	end
 
-	logger.dbg("Crossbill Network: Response code:", code_or_err)
+	log.dbg("Response code:", code_or_err)
 
 	return code_or_err, table.concat(response_body), nil
 end
@@ -326,12 +327,12 @@ end
 function Network.whenOnline(fn)
 	if NetworkMgr:willRerunWhenOnline(fn) then
 		-- Network is off; NetworkMgr runs `fn` once it is on.
-		logger.info("Crossbill Network: WiFi is off, prompting to enable...")
+		log.info("WiFi is off, prompting to enable...")
 		wifi_enabled_by_us = true
 		return
 	end
 
-	logger.info("Crossbill Network: WiFi already enabled")
+	log.info("WiFi already enabled")
 	wifi_enabled_by_us = false
 	fn()
 end
@@ -339,11 +340,11 @@ end
 --- Disable WiFi if we enabled it for the sync
 function Network.disableWifiIfNeeded()
 	if wifi_enabled_by_us then
-		logger.info("Crossbill Network: Disabling WiFi after sync")
+		log.info("Disabling WiFi after sync")
 		NetworkMgr:turnOffWifi()
 		wifi_enabled_by_us = false
 	else
-		logger.info("Crossbill Network: WiFi was already on, leaving it enabled")
+		log.info("WiFi was already on, leaving it enabled")
 	end
 end
 
@@ -358,7 +359,7 @@ function Network.isConnected()
 	end)
 
 	if not success then
-		logger.dbg("Crossbill Network: Could not query connectivity:", connected)
+		log.dbg("Could not query connectivity:", connected)
 		return false
 	end
 
