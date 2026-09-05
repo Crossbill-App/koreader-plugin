@@ -27,6 +27,7 @@ local DigestService = require("modules/digest_service")
 local HighlightImporter = require("modules/highlight_importer")
 local HighlightSnapshot = require("modules/highlight_snapshot")
 local HighlightSnapshotStore = require("modules/highlight_snapshot_store")
+local LegacyDatabases = require("modules/legacy_databases")
 local SqliteStore = require("modules/sqlite_store")
 local SyncService = require("modules/sync_service")
 local UI = require("modules/ui")
@@ -102,8 +103,9 @@ function CrossbillSync:init()
 	-- file that will not open leaves those stores unprepared, which is how they
 	-- already answer a database that is not there: nothing is written, nothing
 	-- is read, and the sync carries on without them.
+	local settings_dir = DataStorage:getSettingsDir()
 	self.database = SqliteStore:new()
-	self.database:open(DataStorage:getSettingsDir() .. "/" .. PluginIdentity.database_filename)
+	self.database:open(settings_dir .. "/" .. PluginIdentity.database_filename)
 
 	-- Initialize the session tracker over its tables in that database
 	self.session_tracker = SessionTracker:new({ settings = self.settings, store = SessionStore:new(self.database) })
@@ -120,6 +122,10 @@ function CrossbillSync:init()
 	-- Initialize the ledger of the server highlights last applied
 	self.highlight_snapshot = HighlightSnapshot:new({ store = HighlightSnapshotStore:new(self.database) })
 	self.highlight_snapshot:init()
+
+	-- With every table now made, carry over whatever a reader still has in the
+	-- three databases the plugin kept before this one, and remove them.
+	LegacyDatabases.absorb(self.database, settings_dir)
 
 	-- Initialize sync service with all dependencies
 	self.sync_service = SyncService:new({

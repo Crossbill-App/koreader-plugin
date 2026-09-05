@@ -247,6 +247,48 @@ function SqliteStore:query(sql, binds, mapRow)
 	return mapped
 end
 
+--- Read one value: the first column of a query's first row
+-- `query` could answer this, but only through a mapping function and a table
+-- the caller then unwraps, which is three lines of ceremony around a COUNT.
+-- @param sql string A single SELECT, with ? placeholders
+-- @param binds table|nil Values for the placeholders; build it with
+--   SqliteStore.binds when any of them can be nil
+-- @return any|nil The value, nil when the query failed, returned no row, or the
+--   column was NULL. A COUNT always answers with a row, so nil there is a
+--   failure and callers read it that way.
+function SqliteStore:scalar(sql, binds)
+	if not self:isOpen() then
+		return nil
+	end
+
+	local value
+	local stmt
+	local success, err = pcall(function()
+		stmt = self.db:prepare(sql)
+		local count = bindCount(binds)
+		if count > 0 then
+			stmt:bind(unpack(binds, 1, count))
+		end
+		local row = stmt:step()
+		if row then
+			value = row[1]
+		end
+	end)
+
+	if stmt then
+		pcall(function()
+			stmt:close()
+		end)
+	end
+
+	if not success then
+		self.log.err("Query failed:", err, sql)
+		return nil
+	end
+
+	return value
+end
+
 --- Run a series of statements as one transaction
 -- @param fn function Called with this store; raising or returning false rolls
 --   the transaction back. A statement the store merely reports as failed does

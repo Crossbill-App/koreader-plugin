@@ -18,6 +18,8 @@ Two things cannot be derived and the script still does them by hand: the `module
 
 `make check` runs lint, the formatting check and the tests. Keep `make check` green.
 
+**Verifying the database migration**: `make verify-migration LJSQLITE3_DIR=<dir>` runs `scripts/verify_database_migration.lua`, which does the one thing busted cannot. `modules/legacy_databases` moves a reader's reading history and highlight ledger out of the three databases the plugin used to keep and then deletes those files, and the SQLite binding is deliberately not stubbed, so `spec/legacy_databases_spec.lua` checks the statements and the decisions rather than what SQLite makes of them. The script builds both the oldest schemas and the last three-file ones with real rows in WAL mode, migrates them for real and checks what landed. It needs luajit and a directory holding KOReader's `lua-ljsqlite3` binding; run it after touching that module or any of the three schemas.
+
 **Releases and the version**: never edit `version` in `crossbill.koplugin/_meta.lua`. The Release workflow owns it (`workflow_dispatch`, pick patch/minor/major): it bumps the line, commits it to main, tags it and publishes the plugin zip. CI fails any pull request whose `_meta.lua` evaluates to a different version than the one at its merge base (`scripts/check_version_unchanged.sh`, which compares the value rather than the text). Every request carries the version as `X-Crossbill-Client: koreader-plugin/<version>`, and the server refuses versions it no longer supports. `_meta.lua` also owns the project URL as `homepage`; the About menu item and the too-old-plugin message both read it from there, so never write that address out a second time. It owns `update_check_url` in the same way: `modules/update/check.lua` asks that address for the newest published release, so pointing the check at a different service is an edit to that one line. The Release workflow also signs the zip with the Ed25519 key in the `CROSSBILL_SIGNING_KEY` secret, publishes the detached signature as `crossbill.koplugin.zip.sig`, and fails if that signature matches no key in `crossbill.koplugin/modules/update/keys.lua` — so a release nobody could install never ships. Generate or rotate the key with `scripts/setup_signing_key.sh`.
 
 **Updating the plugin from the device**: `modules/update/` holds the whole story — `check.lua` asks GitHub what the newest release is, `installer.lua` downloads and swaps it in, `signature.lua` verifies it, and `keys.lua` lists the public keys a release may be signed with. Nothing is installed that is not signed by one of those keys, and every way of being unable to check that refuses just as firmly; the reader is told to install by hand instead. `signature.lua` is the only `ffi.cdef` in the plugin, deliberately, so the rest stays testable — busted runs plain Lua 5.1, where `require("ffi")` fails and the module takes its fail-closed path.
@@ -75,6 +77,7 @@ Shared by all of them
     ├── UpgradeRequired - Typed error: the server refuses this plugin version
     ├── AuthFailed      - Typed error: credentials the server would not accept
     ├── SqliteStore     - The one database file: WAL, schemas, migrations, statements
+    ├── LegacyDatabases - Carries the three databases the plugin used to keep into that one, then deletes them
     └── UI              - KOReader dialogs and menu building
 ```
 
@@ -95,7 +98,13 @@ Shared by all of them
   its queries, owning its own tables and asking `ensureSchema` for them at
   startup. The `SqliteStore` owns the connection, WAL mode, migrations, the
   not-open guard and the logging of anything that fails, and `main.lua` closes
-  it on exit; a store never closes what it did not open. Nothing there raises:
+  it on exit; a store never closes what it did not open. On the first open
+  after the update that made the three files one, `modules/legacy_databases`
+  absorbs whatever a reader still has in `<namespace>_sessions.sqlite3` and
+  `<namespace>_highlights.sqlite3`, counts what arrived and deletes the old
+  files, sidecars and all; `<namespace>_digests.sqlite3` is a cache and is only
+  deleted. A copy that does not add up leaves its file where it was, and the
+  next open tries again. Nothing there raises either:
   every caller is a KOReader event handler. A bind list that can hold a nil is
   built with `SqliteStore.binds`, because `#` stops at the first one.
 - `SessionTracker` and `HighlightSnapshot` take their store as a dependency, so
