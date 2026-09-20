@@ -64,10 +64,21 @@ function UI.showSyncingMessage()
 	return UI.showMessage(_("Syncing with Crossbill..."), 2)
 end
 
---- Show the outcome of a sync: what was uploaded, and what the pull brought back
+--- Show the outcome of a sync: that it worked, and what actually changed
+-- Every line here counts something the sync changed. The pull's own `inserted`
+-- is not one of them: it rebuilds the book's whole highlight set whenever
+-- anything at all differs, so it counts the book's highlights rather than the
+-- arrivals, and told a reader who had synced the same book twice that 50
+-- highlights came down both times. `new_highlights` is the count of the ones
+-- this book did not already hold, which is what a reader means by pulled.
 -- @param result table Sync result with the upload counts and the pull outcome
 function UI.showSyncSuccess(result)
 	local lines = {}
+
+	-- A pull that failed is no success to announce; the failure line says so.
+	if not result.pull_error then
+		table.insert(lines, _("Sync successful."))
+	end
 
 	local uploaded = result.highlights_created or 0
 	if uploaded > 0 then
@@ -80,22 +91,20 @@ function UI.showSyncSuccess(result)
 	end
 
 	local pull = result.pull or {}
-	local pulled = pull.inserted or 0
+	local pulled = pull.new_highlights or 0
 	if pulled > 0 then
-		table.insert(lines, string.format(_("Pulled %d highlights from Crossbill."), pulled))
+		table.insert(lines, string.format(_("Pulled %d new highlights from Crossbill."), pulled))
 	end
 
+	-- Highlights the server holds that this copy of the book has no place for:
+	-- worth saying, now that the pull line above counts only what arrived.
 	local skipped = (pull.skipped_unplaceable or 0) + (pull.skipped_invalid or 0)
 	if skipped > 0 then
-		table.insert(lines, string.format(_("Skipped: %d"), skipped))
+		table.insert(lines, string.format(_("Skipped %d highlights that do not fit this book."), skipped))
 	end
 
 	if result.pull_error then
 		table.insert(lines, _("Pull failed: ") .. tostring(result.pull_error))
-	end
-
-	if #lines == 0 then
-		table.insert(lines, _("Highlights are up to date."))
 	end
 
 	UI.showMessage(table.concat(lines, "\n"), 6)

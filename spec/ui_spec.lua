@@ -27,48 +27,62 @@ describe("UI", function()
 	end
 
 	describe("showSyncSuccess", function()
-		it("reports what the push uploaded, one line per fact", function()
+		it("reports what the push uploaded, under the line that says the sync worked", function()
 			UI.showSyncSuccess({ highlights_created = 3, highlights_skipped = 7 })
 
-			assert.are.equal("Uploaded 3 new highlights.", shownText())
+			assert.are.equal("Sync successful.\nUploaded 3 new highlights.", shownText())
 		end)
 
-		it("says the highlights are up to date when nothing happened at all", function()
+		it("says the sync succeeded when nothing happened at all", function()
 			UI.showSyncSuccess({})
 
-			assert.are.equal("Highlights are up to date.", shownText())
+			assert.are.equal("Sync successful.", shownText())
 		end)
 
-		it("says the highlights are up to date when the pull found them matching", function()
+		it("says the sync succeeded when the pull found the highlights matching", function()
 			UI.showSyncSuccess({ pull = { unchanged = true, inserted = 0 } })
 
-			assert.are.equal("Highlights are up to date.", shownText())
+			assert.are.equal("Sync successful.", shownText())
 		end)
 
-		it("reports what the pull brought back", function()
-			UI.showSyncSuccess({ highlights_created = 1, pull = { inserted = 12 } })
+		it("reports the highlights the pull brought to this book for the first time", function()
+			UI.showSyncSuccess({ highlights_created = 1, pull = { inserted = 12, new_highlights = 3 } })
 
-			assert.are.equal("Uploaded 1 new highlights.\nPulled 12 highlights from Crossbill.", shownText())
+			assert.are.equal(
+				"Sync successful.\nUploaded 1 new highlights.\nPulled 3 new highlights from Crossbill.",
+				shownText()
+			)
+		end)
+
+		it("counts nothing for highlights the pull only rewrote", function()
+			-- The pull rebuilds the whole set whenever anything differs, so its
+			-- own count is the book's highlight count: the same 12 every sync.
+			UI.showSyncSuccess({ highlights_created = 1, pull = { inserted = 12, new_highlights = 0 } })
+
+			assert.are.equal("Sync successful.\nUploaded 1 new highlights.", shownText())
 		end)
 
 		it("sums the two kinds of skipped highlight into one count", function()
 			UI.showSyncSuccess({
-				pull = { inserted = 2, skipped_unplaceable = 3, skipped_invalid = 4 },
+				pull = { inserted = 2, new_highlights = 2, skipped_unplaceable = 3, skipped_invalid = 4 },
 			})
 
-			assert.are.equal("Pulled 2 highlights from Crossbill.\nSkipped: 7", shownText())
+			assert.are.equal(
+				"Sync successful.\nPulled 2 new highlights from Crossbill.\nSkipped 7 highlights that do not fit this book.",
+				shownText()
+			)
 		end)
 
 		it("leaves every zero-valued line out", function()
 			UI.showSyncSuccess({
 				highlights_created = 0,
-				pull = { inserted = 0, skipped_unplaceable = 0, skipped_invalid = 1 },
+				pull = { inserted = 0, new_highlights = 0, skipped_unplaceable = 0, skipped_invalid = 1 },
 			})
 
-			assert.are.equal("Skipped: 1", shownText())
+			assert.are.equal("Sync successful.\nSkipped 1 highlights that do not fit this book.", shownText())
 		end)
 
-		it("reports a pull that failed, after the upload that succeeded", function()
+		it("reports a pull that failed, after the upload that succeeded, and claims no success", function()
 			UI.showSyncSuccess({
 				highlights_created = 3,
 				pull_error = "Book not found on Crossbill",
@@ -78,7 +92,7 @@ describe("UI", function()
 		end)
 
 		it("shows the message long enough to read it", function()
-			UI.showSyncSuccess({ pull = { inserted = 1 } })
+			UI.showSyncSuccess({ pull = { inserted = 1, new_highlights = 1 } })
 
 			assert.are.equal(6, UIManager.show.calls[1].vals[2].timeout)
 		end)
@@ -88,13 +102,13 @@ describe("UI", function()
 			-- server looked exactly like a sync that did nothing.
 			UI.showSyncSuccess({ highlights_created = 1, highlights_removed = 2 })
 
-			assert.are.equal("Uploaded 1 new highlights.\n2 removed from your devices.", shownText())
+			assert.are.equal("Sync successful.\nUploaded 1 new highlights.\n2 removed from your devices.", shownText())
 		end)
 
 		it("leaves the removal line out when nothing was removed", function()
 			UI.showSyncSuccess({ highlights_created = 1, highlights_removed = 0 })
 
-			assert.are.equal("Uploaded 1 new highlights.", shownText())
+			assert.are.equal("Sync successful.\nUploaded 1 new highlights.", shownText())
 		end)
 	end)
 
