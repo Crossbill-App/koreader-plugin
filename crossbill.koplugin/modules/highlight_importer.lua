@@ -177,22 +177,31 @@ local function fingerprint(item)
 	}, "\0")
 end
 
---- Check whether the reader already holds exactly the highlights we would insert
+--- Index the highlights the reader already holds, by position
 -- Bookmarks (annotations without a drawer) are left out: the replacement never
--- touches them. NoteEdits.SEEN_FIELD is left out too, being the plugin's own
--- bookkeeping rather than something the server sends.
+-- touches them. NoteEdits.SEEN_FIELD is left out of the fingerprint too, being
+-- the plugin's own bookkeeping rather than something the server sends.
+-- @param annotations table The reader's live annotation array
+-- @return table Fingerprint by position key
+-- @return number How many highlights were indexed
+local function deviceHighlights(annotations)
+	local device = {}
+	local count = 0
+	for _, item in ipairs(annotations) do
+		if item.drawer then
+			device[positionKey(item)] = fingerprint(item)
+			count = count + 1
+		end
+	end
+	return device, count
+end
+
+--- Check whether the reader already holds exactly the highlights we would insert
 -- @param annotations table The reader's live annotation array
 -- @param built table Array of annotation items built from the server's copy
 -- @return boolean True when replacing would change nothing
 local function sameHighlightSet(annotations, built)
-	local device = {}
-	local device_count = 0
-	for _, item in ipairs(annotations) do
-		if item.drawer then
-			device[positionKey(item)] = fingerprint(item)
-			device_count = device_count + 1
-		end
-	end
+	local device, device_count = deviceHighlights(annotations)
 
 	if device_count ~= #built then
 		return false
@@ -205,6 +214,27 @@ local function sameHighlightSet(annotations, built)
 	end
 
 	return true
+end
+
+--- Count the highlights the replacement would bring to this book for the first time
+-- New means the book holds no highlight at that position: a highlight the
+-- reader already has, whose note or colour the server changed, is not new. The
+-- count has to be taken before the replacement, which leaves the book holding
+-- every one of them.
+-- @param annotations table The reader's live annotation array
+-- @param built table Array of annotation items built from the server's copy
+-- @return number How many of the built items the book does not already hold
+local function countNewHighlights(annotations, built)
+	local device = deviceHighlights(annotations)
+	local new_count = 0
+
+	for _, item in ipairs(built) do
+		if device[positionKey(item)] == nil then
+			new_count = new_count + 1
+		end
+	end
+
+	return new_count
 end
 
 --- Count the page bookmarks a replacement would keep
@@ -277,7 +307,8 @@ end
 -- before returning.
 -- @param ui table The KOReader UI context
 -- @param items table Array of highlight items from the server
--- @return table|nil Result with inserted, skipped_unplaceable, skipped_invalid,
+-- @return table|nil Result with inserted, new_highlights (how many of those the
+--   book did not already hold), skipped_unplaceable, skipped_invalid,
 --   kept_bookmarks, unchanged and placed (the {server_id, text} of every
 --   highlight that reached the book), or nil on failure
 -- @return string|nil Error message
@@ -291,6 +322,7 @@ function HighlightImporter:replaceHighlights(ui, items)
 
 	local result = {
 		inserted = 0,
+		new_highlights = 0,
 		skipped_unplaceable = 0,
 		skipped_invalid = 0,
 		kept_bookmarks = 0,
@@ -326,10 +358,14 @@ function HighlightImporter:replaceHighlights(ui, items)
 		previous[i] = item
 	end
 
+	-- Taken before the replacement empties the book of what it can be compared to
+	local new_highlights = countNewHighlights(ui.annotation.annotations, built)
+
 	local ok, err = pcall(function()
 		result.kept_bookmarks = removeHighlights(ui)
 		addItems(ui, built)
 		result.inserted = #built
+		result.new_highlights = new_highlights
 	end)
 
 	if not ok then
@@ -352,7 +388,7 @@ function HighlightImporter:replaceHighlights(ui, items)
 	ui:handleEvent(Event:new("FlushSettings"))
 	UIManager:setDirty(ui.dialog, "ui")
 
-	log.info("Replaced highlights with", result.inserted, "from the server")
+	log.info("Replaced highlights with", result.inserted, "from the server,", result.new_highlights, "of them new")
 	return result, nil
 end
 

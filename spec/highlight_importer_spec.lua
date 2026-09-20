@@ -506,6 +506,75 @@ describe("HighlightImporter", function()
 		end)
 	end)
 
+	-- What the reader is told arrived. The replacement rewrites every highlight
+	-- whatever changed, so `inserted` counts the book rather than the arrivals.
+	describe("the new highlights it counts", function()
+		it("counts a highlight the book has no position for", function()
+			local reader = readerFor({ annotations = { deviceHighlight() } })
+
+			local result = importer:replaceHighlights(reader, {
+				serverItem(),
+				serverItem({ id = 2, start_xpoint = XPOINT_C, end_xpoint = XPOINT_D }),
+			})
+
+			assert.are.equal(2, result.inserted)
+			assert.are.equal(1, result.new_highlights)
+		end)
+
+		it("counts nothing for a highlight the server only edited", function()
+			local reader = readerFor({ annotations = { deviceHighlight() } })
+
+			local result = importer:replaceHighlights(reader, { serverItem({ note = "edited in the web app" }) })
+
+			assert.are.equal(1, result.inserted)
+			assert.are.equal(0, result.new_highlights)
+		end)
+
+		it("counts nothing when the book already matches the server", function()
+			local reader = readerFor({ annotations = { deviceHighlight() } })
+
+			local result = importer:replaceHighlights(reader, { serverItem() })
+
+			assert.is_true(result.unchanged)
+			assert.are.equal(0, result.new_highlights)
+		end)
+
+		it("counts every highlight of a book that had none", function()
+			local reader = readerFor({ annotations = {} })
+
+			local result = importer:replaceHighlights(reader, {
+				serverItem(),
+				serverItem({ id = 2, start_xpoint = XPOINT_C, end_xpoint = XPOINT_D }),
+			})
+
+			assert.are.equal(2, result.new_highlights)
+		end)
+
+		it("counts nothing for a removal, which brings no highlight down", function()
+			local reader = readerFor({
+				annotations = { deviceHighlight(), deviceHighlight({ pos0 = XPOINT_C, pos1 = XPOINT_D }) },
+			})
+
+			local result = importer:replaceHighlights(reader, { serverItem() })
+
+			assert.are.equal(1, result.inserted)
+			assert.are.equal(0, result.new_highlights)
+		end)
+
+		it("counts nothing for a highlight the book kept when the replacement threw", function()
+			local reader = readerFor({ annotations = { deviceHighlight() } })
+			reader.annotation.addItem = function()
+				error("no room")
+			end
+
+			local result = importer:replaceHighlights(reader, {
+				serverItem({ start_xpoint = XPOINT_C, end_xpoint = XPOINT_D }),
+			})
+
+			assert.is_nil(result)
+		end)
+	end)
+
 	describe("replacing", function()
 		it("removes the highlights the server no longer has", function()
 			local reader = readerFor({
