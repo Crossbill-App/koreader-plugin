@@ -5,7 +5,7 @@ Orchestrates the complete sync workflow including:
 - Highlight extraction and upload
 - Pulling the server's highlights back into the book
 - Reading session upload
-- EPUB file uploads
+- Creating the book from its EPUB when the server has none
 
 Extracted from main.lua to improve separation of concerns.
 The main plugin handles lifecycle events and UI, while this
@@ -17,7 +17,6 @@ local log = Log.forModule("SyncService")
 local BookIdentity = require("modules/book_identity")
 local BookMetadata = require("modules/book_metadata")
 local DeviceIdentity = require("modules/device_identity")
-local DocumentSupport = require("modules/document_support")
 local HighlightExtractor = require("modules/highlight_extractor")
 local HighlightImporter = require("modules/highlight_importer")
 local NoteEdits = require("modules/note_edits")
@@ -158,11 +157,10 @@ function SyncService:_runSyncSteps(result, ui, opts)
 	local book_data = book_metadata:extractBookData()
 	local doc_path = book_metadata:getDocPath()
 
-	-- Fetch or create book on server
 	local server_metadata, metadata_err = self:_getServerBookMetadata(book_data.client_book_id)
 	if metadata_err then
 		-- A fetch that failed for any reason other than "no such book" says
-		-- nothing about whether the book is there, so creating one would only
+		-- nothing about whether the book is there, so uploading it would only
 		-- meet the same failure a step later and report it from further away.
 		result.success = false
 		result.error = metadata_err
@@ -170,23 +168,13 @@ function SyncService:_runSyncSteps(result, ui, opts)
 	end
 
 	if not server_metadata then
-		-- Book doesn't exist on server, create it
-		log.info("Book not found on server, creating it")
-		local create_code, created_metadata, create_err = self.api_client:createBook(book_data)
-		if create_code ~= 200 or not created_metadata then
-			-- A create that answered 200 and said nothing about the book leaves the
-			-- steps below nothing to work from: the EPUB upload would skip quietly
-			-- for want of server metadata, and a sync that silently sends no file
-			-- is worse than one that says what it could not do.
+		local upload_err = self:_uploadBook(book_data, doc_path)
+		if upload_err then
 			result.success = false
-			result.error = create_err or "Create book failed: the server sent no book back"
+			result.error = upload_err
 			return
 		end
-		server_metadata = created_metadata
 	end
-
-	-- Upload files (EPUB)
-	self:_syncFiles(book_data.client_book_id, book_metadata, server_metadata)
 
 	-- Stamp notes edited since the last sync, before they are extracted
 	self:_stampNoteEdits(ui)
@@ -547,35 +535,11 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 	return result
 end
 
---- Send the book's EPUB up to the server
--- The upload is unconditional, including when server_metadata.has_ebook says a
--- copy is already there: while the server's text extraction keeps changing, a
--- re-upload is what guarantees it holds a copy it can still read. That costs a
--- full EPUB over WiFi on every sync, so it is a deliberate trade to revisit
--- rather than an oversight.
---
--- Nothing here fails the sync on its own: a book the server has not heard of
--- yet, or a document that is not an EPUB, is skipped quietly, and a file that
--- cannot be read or an upload the server rejects is logged and handed back
--- without stopping anything. Only the server's refusal to serve this plugin
--- version stops the sync, and it raises out of the upload rather than arriving
--- here to be weighed.
--- @param client_book_id string The client book ID
--- @param book_metadata BookMetadata instance
--- @param server_metadata table|nil Server metadata containing has_ebook, etc.
--- @return any|nil The error the upload failed with
-function SyncService:_syncFiles(client_book_id, book_metadata, server_metadata)
-	if not server_metadata then
-		log.dbg("No server metadata, skipping EPUB upload")
-		return nil
-	end
-
-	local doc_path = book_metadata:getDocPath()
-	if not DocumentSupport.isEpubPath(doc_path) then
-		log.dbg("Document is not an EPUB file, skipping upload")
-		return nil
-	end
-
+--- Upload the EPUB so the server creates the book from it
+-- @param book_data table The book's client_book_id and page_count
+-- @param doc_path string The EPUB's path
+-- @return any|nil The error the read or the upload failed with
+function SyncService:_uploadBook(book_data, doc_path)
 	local epub_data, read_err = self.read_file(doc_path)
 	if not epub_data or epub_data == "" then
 		log.err("Failed to read EPUB data:", read_err)
@@ -583,19 +547,19 @@ function SyncService:_syncFiles(client_book_id, book_metadata, server_metadata)
 	end
 
 	local filename = BookMetadata.getFilename(doc_path)
-	log.dbg("Uploading EPUB file:", filename, "size:", #epub_data, "bytes")
+	log.info("Book not found on server, uploading", filename, "size:", #epub_data, "bytes")
 
-	local upload_code, _, upload_err = self.api_client:uploadEpub(client_book_id, epub_data, filename)
-	if upload_code ~= 200 then
-		log.warn("EPUB upload issue:", upload_err)
-		return upload_err
+	local code, metadata, err =
+		self.api_client:uploadBook(book_data.client_book_id, book_data.page_count, epub_data, filename)
+	if code ~= 200 or not metadata then
+		return err or "Book upload failed: the server sent no book back"
 	end
 
 	return nil
 end
 
 --- Fetch book metadata from the server
--- A book the server has never heard of is not an error: it is created next.
+-- A book the server has never heard of is not an error: it is uploaded next.
 -- Everything else that went wrong is handed back for the sync to end on, since
 -- a fetch that failed for another reason says nothing about whether the book is
 -- there.
@@ -613,7 +577,7 @@ function SyncService:_getServerBookMetadata(client_book_id)
 	if not metadata then
 		log.warn("No usable book metadata from server:", err)
 		-- Never a bare nil: that is how a book the server does not have is
-		-- reported, and a failure read as one would create the book again. The
+		-- reported, and a failure read as one would upload the book again. The
 		-- fallback covers the one answer that is not a failure but is still no
 		-- metadata: a 200 the server sent no body with.
 		return nil, err or "The server sent no book metadata back"

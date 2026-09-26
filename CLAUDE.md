@@ -37,11 +37,11 @@ and the pieces every flow leans on.
 main.lua (CrossbillSync) - KOReader event handlers, the menu, and the wiring of everything below
 
 The push -- highlights and sessions out
-    ├── BookMetadata       - Title, author, ISBN, language and page count off the document
+    ├── BookMetadata       - Title, author and page count off the document
     ├── HighlightExtractor - Highlights from ReaderAnnotation's memory, or the sidecar on disk
     ├── SessionTracker     - Decides what a reading session is and where the reader got to
     ├── SessionStore       - Finished sessions as rows, and the two queries the sync needs
-    ├── SyncService        - Orders the sync: the book, the EPUB, the push, the pull, sessions, digests
+    ├── SyncService        - Orders the sync: the book, the push, the pull, sessions, digests
     ├── ApiClient          - Every server call, answering `code, data, error`
     └── Auth               - Login, refresh and token caching
 
@@ -85,7 +85,7 @@ Shared by all of them
 - Nothing but `modules/log.lua` requires `logger` directly. A module takes its logger from `modules/log.lua` -- `local log = Log.forModule("SyncService")` -- and calls `log.dbg`, `log.info`, `log.warn` or `log.err` with the message alone. The prefix is built there as `<display name> <ModuleName>:` (so `Crossbill SyncService:`, and `Crossbill Test SyncService:` in the side-by-side test build), which is why a log prefix is never written out as a literal
 - API methods return `code, data, error`; success is `code == 200`, and a `code` of nil means nothing answered at all. The data is whatever the server sent, nil when it sent nothing, and a caller that needs a body checks for one. A 200 whose body would not decode is no usable answer either, so it comes back with a nil code and a message saying which call it was
 - A failure a caller acts on rather than merely reports travels as a typed error, never as prose to match on: `modules/upgrade_required.lua` for the server refusing this plugin version, `modules/auth_failed.lua` for credentials the server would not accept. Both carry `__tostring` and `__concat`, so a path that logs or appends the error still works. A plain network error stays a plain string.
-- Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. They share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out. The server's 426 refusal is raised as an `UpgradeRequired` error from the three wrappers those helpers send through, caught once in `SyncService:syncBook` and once in `DigestService:getForCurrentChapter`, so no call site has to check for it.
+- Every ApiClient call goes out through `_authorizedGet`, `_authorizedPost` or `_authorizedMultipart`, so a public method is a payload builder and one call. The two posts judge the answer in `_authorizedSend`, and all three share `_sendAuthorized`, which fetches the token and, when the server answers 401, forgets the stored tokens and sends the request once more: a token revoked before its recorded expiry would otherwise fail every call until that expiry passed. `Settings:getApiUrl()` owns the `/api/v1` prefix, so neither ApiClient nor Auth writes it out. The server's 426 refusal is raised as an `UpgradeRequired` error from the three wrappers those helpers send through, caught once in `SyncService:syncBook` and once in `DigestService:getForCurrentChapter`, so no call site has to check for it.
 - Network module handles WiFi lifecycle (enable before sync, disable after if we enabled it)
 - The SQLite-backed stores -- `session_store`, `digest_cache`,
   `highlight_snapshot_store` -- are each a schema and its queries over a
@@ -102,10 +102,10 @@ Shared by all of them
 A sync is one ordered walk through `SyncService:syncBook`, and it is both a
 push and a pull:
 
-1. `BookMetadata` extracts title, author and ISBN from the document, and
-   `BookIdentity` hashes them into the client book id the server knows the book by
-2. `SyncService` asks the server for that book, creates it when it is new, and
-   uploads the EPUB the server has no copy of
+1. `BookMetadata` extracts title, author and page count from the document, and
+   `BookIdentity` hashes title and author into the client book id the server knows the book by
+2. `SyncService` asks the server for that book and, when it is new, uploads the
+   EPUB in one call that creates it; a book the server already has is not sent
 3. `NoteEdits` stamps the notes edited since the last sync, then
    `HighlightExtractor` reads the annotations from memory (preferred) or disk,
    and the push carries them together with what `HighlightSnapshot` says was

@@ -344,6 +344,45 @@ describe("Network", function()
 		end)
 	end)
 
+	describe("a multipart upload", function()
+		--- The body the most recent request sent
+		-- @return string The body its source served
+		local function sentBody()
+			return HttpFake.requests[#HttpFake.requests].source()
+		end
+
+		it("sends a file part with its filename and content type", function()
+			Network.postMultipart(URL, {
+				{ name = "epub", filename = "dune.epub", content_type = "application/epub+zip", data = "epub-bytes" },
+			})
+
+			local body = sentBody()
+			assert.is_truthy(
+				body:find('Content-Disposition: form-data; name="epub"; filename="dune.epub"\r\n', 1, true)
+			)
+			assert.is_truthy(body:find("Content-Type: application/epub+zip\r\n\r\nepub-bytes\r\n", 1, true))
+		end)
+
+		it("sends a field part as its bare value", function()
+			Network.postMultipart(URL, { { name = "page_count", data = "412" } })
+
+			assert.is_truthy(
+				sentBody():find('Content-Disposition: form-data; name="page_count"\r\n\r\n412\r\n', 1, true)
+			)
+		end)
+
+		it("decodes the JSON the server answered with", function()
+			HttpFake.body = '{"book_id": 1}'
+			JsonFake.decoded = { book_id = 1 }
+
+			local code, data, err = Network.postMultipart(URL, { { name = "page_count", data = "412" } })
+
+			assert.are.equal(200, code)
+			assert.are.same({ book_id = 1 }, data)
+			assert.is_nil(err)
+		end)
+	end)
+
 	describe("the size it will accept", function()
 		it("accepts a response within the cap", function()
 			HttpFake.body = string.rep("x", 100)

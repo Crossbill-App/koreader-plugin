@@ -62,24 +62,26 @@ end
 
 --- Post a multipart body, refusing to answer when the server turns us away
 -- @param url string The URL to post to
--- @param files table Array of file objects
+-- @param parts table Array of file and field parts
 -- @param token string|nil Bearer token for authorization
 -- @return number|nil HTTP status code
--- @return string Response body
+-- @return table|nil Parsed JSON response
 -- @return any Error message
-local function postMultipart(url, files, token)
-	local code, response_text, err = Network.postMultipart(url, files, token)
+local function postMultipart(url, parts, token)
+	local code, response_data, err = Network.postMultipart(url, parts, token)
+	UpgradeRequired.raiseIfRefused(code, response_data)
+	return code, response_data, err
+end
 
-	-- A multipart upload hands back an undecoded body, so this is the one route
-	-- that has to decode the refusal's detail for itself, and only bothers when
-	-- there is a refusal to decode it for; a body that will not decode is still a
-	-- refusal, only a vaguer one.
-	if code == UpgradeRequired.STATUS then
-		local decoded, body = pcall(JSON.decode, response_text)
-		UpgradeRequired.raiseIfRefused(code, decoded and body or nil)
+--- The server's own message for a failure when it sent one, else the status
+-- @param code number HTTP status code
+-- @param response_data table|nil Decoded response body
+-- @return string
+local function serverReason(code, response_data)
+	if type(response_data) == "table" and type(response_data.message) == "string" then
+		return response_data.message
 	end
-
-	return code, response_text, err
+	return tostring(code)
 end
 
 local ApiClient = {}
@@ -182,25 +184,25 @@ function ApiClient:_authorizedGet(path, what)
 	return code, nil, "Fetch failed: " .. tostring(code)
 end
 
---- Post a JSON payload with the caller's bearer token
+--- Post with the caller's bearer token and judge the answer
 -- Every POST the plugin makes answers the same two ways: a 200, or a failure
 -- carrying its status. As with a fetch, the body is not part of that verdict: a
 -- caller that acts on what the server sent back -- the counts of a highlight
--- push, the book a create returns -- checks for it and says what its absence
+-- push, the book an upload returns -- checks for it and says what its absence
 -- cost, which the status could never say for it.
 -- @param path string Path below the API root, starting with a slash
--- @param payload table The data to send
 -- @param what string What is being sent, for the log lines
 -- @param failure string|nil What to call a failure, "Upload failed" by default
+-- @param post function Called with the URL and a token; returns code, body, error
 -- @return number|nil HTTP status code, nil when there was no usable answer
 -- @return table|nil Response data, nil when the server sent no body
 -- @return any Error message, nil on success
-function ApiClient:_authorizedPost(path, payload, what, failure)
+function ApiClient:_authorizedSend(path, what, failure, post)
 	local api_url = self.settings:getApiUrl() .. path
 
 	local code, response_data, err = self:_sendAuthorized(what, function(token)
 		log.dbg("Sending", what, "to", api_url)
-		return postJson(api_url, payload, token)
+		return post(api_url, token)
 	end)
 
 	if not code then
@@ -220,36 +222,31 @@ function ApiClient:_authorizedPost(path, payload, what, failure)
 	end
 
 	log.warn("Uploading", what, "failed with code:", code)
-	return code, nil, (failure or "Upload failed") .. ": " .. tostring(code)
+	return code, nil, (failure or "Upload failed") .. ": " .. serverReason(code, response_data)
+end
+
+--- Post a JSON payload with the caller's bearer token
+-- @param path string Path below the API root, starting with a slash
+-- @param payload table The data to send
+-- @param what string What is being sent, for the log lines
+-- @param failure string|nil What to call a failure, "Upload failed" by default
+-- @return number|nil, table|nil, any The status, response data and error
+function ApiClient:_authorizedPost(path, payload, what, failure)
+	return self:_authorizedSend(path, what, failure, function(api_url, token)
+		return postJson(api_url, payload, token)
+	end)
 end
 
 --- Post a multipart body with the caller's bearer token
--- Unlike a JSON post this asks for no body back: the status is the whole answer.
 -- @param path string Path below the API root, starting with a slash
--- @param files table Array of file objects
+-- @param parts table Array of file and field parts
 -- @param what string What is being sent, for the log lines
--- @return number|nil HTTP status code
--- @return nil Response data, never carried by these endpoints
--- @return any Error message, nil on success
-function ApiClient:_authorizedMultipart(path, files, what)
-	local api_url = self.settings:getApiUrl() .. path
-
-	local code, _, err = self:_sendAuthorized(what, function(token)
-		log.dbg("Uploading", what, "to", api_url)
-		return postMultipart(api_url, files, token)
+-- @param failure string|nil What to call a failure, "Upload failed" by default
+-- @return number|nil, table|nil, any The status, response data and error
+function ApiClient:_authorizedMultipart(path, parts, what, failure)
+	return self:_authorizedSend(path, what, failure, function(api_url, token)
+		return postMultipart(api_url, parts, token)
 	end)
-
-	if not code then
-		return nil, nil, err or "Network error"
-	end
-
-	if code == 200 then
-		log.info("Uploaded", what)
-		return code, nil, nil
-	end
-
-	log.warn("Uploading", what, "failed with code:", code)
-	return code, nil, "Upload failed: " .. tostring(code)
 end
 
 --- Upload highlights to the server
@@ -329,33 +326,34 @@ function ApiClient:getHighlights(client_book_id)
 	return code, items, nil
 end
 
---- Create a new book on the server
--- @param book_data table Book metadata (title, author, isbn, description, language, page_count, client_book_id, keywords)
--- @return number|nil HTTP status code, 200 on success
--- @return table|nil Response data containing book metadata (same as getBookMetadata)
--- @return any Error message, nil on success
-function ApiClient:createBook(book_data)
-	return self:_authorizedPost("/ereader/books", book_data, "the new book", "Create book failed")
+--- The form parts of a book upload, page_count left out when unknown
+-- @param client_book_id string The client-side book ID (hash of title|author)
+-- @param page_count number|nil KOReader's page count for the book
+-- @param epub_data string The EPUB file binary data
+-- @param filename string The EPUB's file name
+-- @return table Array of multipart parts
+local function bookUploadParts(client_book_id, page_count, epub_data, filename)
+	local parts = {
+		{ name = "epub", filename = filename, content_type = "application/epub+zip", data = epub_data },
+		{ name = "client_book_id", data = client_book_id },
+	}
+	if page_count then
+		table.insert(parts, { name = "page_count", data = tostring(page_count) })
+	end
+	return parts
 end
 
---- Upload an EPUB file for a book using client_book_id
+--- Create a book on the server from its EPUB, a no-op for a book it already has
 -- @param client_book_id string The client-side book ID (hash of title|author)
+-- @param page_count number|nil KOReader's page count for the book
 -- @param epub_data string The EPUB file binary data
--- @param filename string The original EPUB filename
+-- @param filename string The EPUB's file name
 -- @return number|nil HTTP status code, 200 on success
--- @return nil Response data (always nil for this endpoint)
+-- @return table|nil Book metadata, the shape getBookMetadata returns
 -- @return any Error message, nil on success
-function ApiClient:uploadEpub(client_book_id, epub_data, filename)
-	local files = {
-		{
-			name = "epub",
-			filename = filename,
-			content_type = "application/epub+zip",
-			data = epub_data,
-		},
-	}
-
-	return self:_authorizedMultipart("/ereader/books/" .. client_book_id .. "/epub", files, "the EPUB")
+function ApiClient:uploadBook(client_book_id, page_count, epub_data, filename)
+	local parts = bookUploadParts(client_book_id, page_count, epub_data, filename)
+	return self:_authorizedMultipart("/ereader/books", parts, "the book", "Book upload failed")
 end
 
 local function unixToISO8601(timestamp)

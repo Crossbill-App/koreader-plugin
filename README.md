@@ -28,7 +28,7 @@ Syncs your KOReader highlights to your Crossbill server.
 ## Features
 
 - Syncs highlights from the currently open book
-- Uploads book epub to the Crossbill
+- Uploads the book's EPUB to Crossbill the first time it is synced
 - Uploads reading session data to the Crossbill
 - Works with EPUB files only: on a PDF, mobi, fb2 or any other format the plugin
   stays inactive and its menu does not appear
@@ -78,7 +78,7 @@ Unit tests live in `spec/` and run under busted, the same framework KOReader its
 ```bash
 make test                        # the whole suite
 busted spec/settings_spec.lua    # one file
-busted --filter "ISBN"           # tests whose name matches
+busted --filter "client_book_id" # tests whose name matches
 ```
 
 The plugin's modules `require` things that only exist inside KOReader (`logger`, `docsettings`,
