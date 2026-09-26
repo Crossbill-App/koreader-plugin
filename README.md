@@ -28,7 +28,7 @@ Syncs your KOReader highlights to your Crossbill server.
 ## Features
 
 - Syncs highlights from the currently open book
-- Uploads book epub to the Crossbill
+- Uploads the book's EPUB to Crossbill the first time it is synced
 - Uploads reading session data to the Crossbill
 - Works with EPUB files only: on a PDF, mobi, fb2 or any other format the plugin
   stays inactive and its menu does not appear

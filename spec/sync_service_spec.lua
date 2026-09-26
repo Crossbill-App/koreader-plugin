@@ -522,9 +522,14 @@ describe("SyncService", function()
 				getHighlights = function()
 					return 200, {}
 				end,
-				uploadEpub = function(self, _, data, filename)
-					self.uploaded_epub = { data = data, filename = filename }
-					return 200, {}
+				uploadBook = function(self, client_book_id, page_count, data, filename)
+					self.uploaded_book = {
+						client_book_id = client_book_id,
+						page_count = page_count,
+						data = data,
+						filename = filename,
+					}
+					return 200, { book_id = 1 }
 				end,
 				uploadReadingSessions = function(self, _, sessions)
 					self.sessions_uploaded = sessions
@@ -622,63 +627,54 @@ describe("SyncService", function()
 			assert.are.same({ 7 }, session_tracker.marked)
 		end)
 
-		describe("the EPUB it sends up with the book", function()
+		describe("a book the server does not have yet", function()
 			local A_HIGHLIGHT = { drawer = "lighten", text = "a passage" }
 
-			it("uploads the file under its own name", function()
-				local api = apiForSyncBook()
-				local service = serviceFor(api, {})
+			--- Build an api client whose metadata fetch finds no such book
+			-- @param overrides table|nil Functions to replace
+			-- @return table The api client stand-in
+			local function apiForNewBook(overrides)
+				local api = apiForSyncBook(overrides)
+				api.getBookMetadata = function()
+					return 404
+				end
+				return api
+			end
 
-				service:syncBook(bookFor({ A_HIGHLIGHT }))
-
-				assert.are.same({ data = "epub-bytes", filename = "dune.epub" }, api.uploaded_epub)
-			end)
-
-			it("uploads a book whose extension is upper case", function()
-				-- A reader's library is full of Book.EPUB, and a case-sensitive
-				-- check used to sync its highlights while never sending the file.
-				local api = apiForSyncBook()
-				local service = serviceFor(api, {})
-
-				service:syncBook(bookFor({ A_HIGHLIGHT }, "/books/DUNE.EPUB"))
-
-				assert.are.same({ data = "epub-bytes", filename = "DUNE.EPUB" }, api.uploaded_epub)
-			end)
-
-			it("skips a document that is not an EPUB", function()
-				local api = apiForSyncBook()
-				local service = serviceFor(api, {})
-
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }, "/books/dune.pdf"))
-
-				assert.is_nil(api.uploaded_epub)
-				assert.is_true(result.success)
-			end)
-
-			it("ends the sync when the created book came back with no metadata", function()
-				-- Without the book the server made there is nothing to upload the
-				-- EPUB against, and a sync that quietly sends no file is worse than
-				-- one that says what it could not do.
-				local api = apiForSyncBook({
-					getBookMetadata = function()
-						return 404
-					end,
-					createBook = function()
-						-- Created, but with nothing said back about the book.
-						return 200, nil
-					end,
-				})
+			it("uploads the EPUB once and then syncs the highlights", function()
+				local api = apiForNewBook()
 				local service = serviceFor(api, {})
 
 				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
 
-				assert.is_false(result.success)
-				assert.are.equal("Create book failed: the server sent no book back", result.error)
-				assert.is_nil(api.uploaded_epub)
+				assert.is_true(result.success)
+				assert.are.same({
+					client_book_id = CLIENT_BOOK_ID,
+					data = "epub-bytes",
+					filename = "dune.epub",
+				}, api.uploaded_book)
+				assert.are.equal(1, #api.uploaded.highlights)
 			end)
 
-			it("carries on with the sync when the file cannot be read", function()
-				local api = apiForSyncBook()
+			it("sends the page count KOReader recorded", function()
+				DocSettings.setFixture(BOOK_PATH, { doc_pages = 412 })
+				local api = apiForNewBook()
+
+				serviceFor(api, {}):syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.are.equal(412, api.uploaded_book.page_count)
+			end)
+
+			it("uploads a book whose extension is upper case", function()
+				local api = apiForNewBook()
+
+				serviceFor(api, {}):syncBook(bookFor({ A_HIGHLIGHT }, "/books/DUNE.EPUB"))
+
+				assert.are.equal("DUNE.EPUB", api.uploaded_book.filename)
+			end)
+
+			it("ends the sync when the file cannot be read", function()
+				local api = apiForNewBook()
 				local service = serviceFor(api, {
 					read_file = function()
 						return nil, "No such file"
@@ -687,13 +683,14 @@ describe("SyncService", function()
 
 				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
 
-				assert.is_nil(api.uploaded_epub)
-				assert.is_true(result.success)
-				assert.are.equal(1, #api.uploaded.highlights)
+				assert.is_false(result.success)
+				assert.are.equal("No such file", result.error)
+				assert.is_nil(api.uploaded_book)
+				assert.is_nil(api.uploaded)
 			end)
 
-			it("carries on with the sync when the file is empty", function()
-				local api = apiForSyncBook()
+			it("ends the sync when the file is empty", function()
+				local api = apiForNewBook()
 				local service = serviceFor(api, {
 					read_file = function()
 						return ""
@@ -702,29 +699,48 @@ describe("SyncService", function()
 
 				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
 
-				assert.is_nil(api.uploaded_epub)
-				assert.is_true(result.success)
+				assert.is_false(result.success)
+				assert.are.equal("Failed to read EPUB data", result.error)
+				assert.is_nil(api.uploaded_book)
 			end)
 
-			it("hands back the upload's own error without failing the sync", function()
-				local api = apiForSyncBook({
-					uploadEpub = function()
-						return 500, nil, "server exploded"
+			it("ends the sync with the upload's own error", function()
+				local api = apiForNewBook({
+					uploadBook = function()
+						return 400, nil, "Book upload failed: 400"
 					end,
 				})
-				local service = serviceFor(api, {})
-				local book_metadata = {
-					getDocPath = function()
-						return BOOK_PATH
+
+				local result = serviceFor(api, {}):syncBook(bookFor({ A_HIGHLIGHT }))
+
+				assert.is_false(result.success)
+				assert.are.equal("Book upload failed: 400", result.error)
+				assert.is_nil(api.uploaded)
+			end)
+
+			it("ends the sync when the upload came back with no book", function()
+				local api = apiForNewBook({
+					uploadBook = function()
+						return 200, nil
 					end,
-				}
+				})
 
-				local err = service:_syncFiles(CLIENT_BOOK_ID, book_metadata, { book_id = 1 })
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }))
+				local result = serviceFor(api, {}):syncBook(bookFor({ A_HIGHLIGHT }))
 
-				assert.are.equal("server exploded", err)
+				assert.is_false(result.success)
+				assert.are.equal("Book upload failed: the server sent no book back", result.error)
+				assert.is_nil(api.uploaded)
+			end)
+		end)
+
+		describe("a book the server already has", function()
+			it("sends no EPUB", function()
+				local api = apiForSyncBook()
+
+				local result = serviceFor(api, {}):syncBook(bookFor({ { drawer = "lighten", text = "a passage" } }))
+
 				assert.is_true(result.success)
-				assert.are.equal(1, #api.uploaded.highlights)
+				assert.is_nil(api.uploaded_book)
 			end)
 		end)
 
@@ -1120,8 +1136,8 @@ describe("SyncService", function()
 					getBookMetadata = function()
 						return nil, nil, refused
 					end,
-					createBook = function(self)
-						self.created = true
+					uploadBook = function(self)
+						self.book_uploaded = true
 						return 200, {}
 					end,
 				})
@@ -1132,10 +1148,10 @@ describe("SyncService", function()
 				assert.is_false(result.success)
 				assert.is_true(AuthFailed.is(result.error))
 				assert.are.equal("Login failed: 401", AuthFailed.message(result.error))
-				-- And the book is not created blind on the way: a fetch that
+				-- And the book is not uploaded blind on the way: a fetch that
 				-- failed on the reader's credentials says nothing about whether
 				-- the server has the book.
-				assert.is_nil(api.created)
+				assert.is_nil(api.book_uploaded)
 			end)
 
 			it("ends the sync on any other failed metadata fetch too", function()
@@ -1146,8 +1162,8 @@ describe("SyncService", function()
 					getBookMetadata = function()
 						return 500, nil, "Fetch failed: 500"
 					end,
-					createBook = function(self)
-						self.created = true
+					uploadBook = function(self)
+						self.book_uploaded = true
 						return 200, {}
 					end,
 				})
@@ -1157,20 +1173,20 @@ describe("SyncService", function()
 
 				assert.is_false(result.success)
 				assert.are.equal("Fetch failed: 500", result.error)
-				assert.is_nil(api.created)
+				assert.is_nil(api.book_uploaded)
 			end)
 		end)
 
 		describe("a metadata fetch the server answered with no book", function()
-			it("ends the sync saying so, rather than creating the book again", function()
+			it("ends the sync saying so, rather than uploading the book again", function()
 				-- A 200 with no body is a successful call that told the sync
 				-- nothing, and only a 404 means the server does not have the book.
 				local api = apiForSyncBook({
 					getBookMetadata = function()
 						return 200, nil
 					end,
-					createBook = function(self)
-						self.created = true
+					uploadBook = function(self)
+						self.book_uploaded = true
 						return 200, {}
 					end,
 				})
@@ -1180,7 +1196,7 @@ describe("SyncService", function()
 
 				assert.is_false(result.success)
 				assert.are.equal("The server sent no book metadata back", result.error)
-				assert.is_nil(api.created)
+				assert.is_nil(api.book_uploaded)
 			end)
 		end)
 
@@ -1223,8 +1239,8 @@ describe("SyncService", function()
 				api.getBookMetadata = function(self)
 					return refuse(self, "getBookMetadata")
 				end
-				api.createBook = function(self)
-					return refuse(self, "createBook")
+				api.uploadBook = function(self)
+					return refuse(self, "uploadBook")
 				end
 				api.uploadHighlights = function(self)
 					return refuse(self, "uploadHighlights")
@@ -1342,35 +1358,14 @@ describe("SyncService", function()
 				assert.are.same({ REFUSAL }, told)
 			end)
 
-			it("stops when the EPUB upload is the call that is refused", function()
-				-- An EPUB upload that fails is otherwise only logged, but a refusal
-				-- is about the plugin rather than about the file.
-				local api = apiForSyncBook({
-					uploadEpub = function()
-						error(REFUSAL, 0)
-					end,
-					uploadHighlights = function(self)
-						self.pushed = true
-						return 200, {}
-					end,
-				})
-				local service = serviceFor(api, {})
-
-				local result = service:syncBook(bookFor({ A_HIGHLIGHT }), telling)
-
-				assert.is_false(result.success)
-				assert.is_nil(api.pushed)
-				assert.are.same({ REFUSAL }, told)
-			end)
-
-			it("stops when creating the book is the first call to be refused", function()
+			it("stops when uploading the book is the first call to be refused", function()
 				-- A new book makes the metadata fetch a 404 rather than a refusal,
-				-- so the create is where a first sync meets it.
+				-- so the upload is where a first sync meets it.
 				local api = apiForSyncBook({
 					getBookMetadata = function()
 						return 404
 					end,
-					createBook = function()
+					uploadBook = function()
 						error(REFUSAL, 0)
 					end,
 					uploadHighlights = function(self)

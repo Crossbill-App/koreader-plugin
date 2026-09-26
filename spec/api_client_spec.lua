@@ -314,28 +314,85 @@ describe("ApiClient", function()
 		end)
 	end)
 
-	describe("uploadEpub", function()
-		it("reports a successful upload with the status and nothing else", function()
-			-- These endpoints answer with no body at all, so the status is the
-			-- whole answer.
-			network.setMultipartResult(200, "")
+	describe("uploadBook", function()
+		local BOOK = { book_id = 1, bookname = "Dune", author = "Frank Herbert", has_ebook = true }
 
-			local code, response, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+		--- Upload a book with a successful server answer
+		-- @param page_count number|nil The page count to send
+		-- @return table The upload the client made
+		local function uploadWith(page_count)
+			network.setMultipartResult(200, BOOK)
+			clientWithToken(TOKEN):uploadBook(CLIENT_BOOK_ID, page_count, "epub-bytes", "dune.epub")
+			return network.uploaded[1]
+		end
+
+		--- The part of an upload with the given name
+		-- @param upload table The recorded upload
+		-- @param name string The part's name
+		-- @return table|nil The part
+		local function partNamed(upload, name)
+			for _, part in ipairs(upload.parts) do
+				if part.name == name then
+					return part
+				end
+			end
+		end
+
+		it("posts to the ereader books endpoint with the bearer token", function()
+			local upload = uploadWith(412)
+
+			assert.are.equal(BASE_URL .. "/api/v1/ereader/books", upload.url)
+			assert.are.equal(TOKEN, upload.token)
+		end)
+
+		it("sends the EPUB as a file under its own name", function()
+			assert.are.same({
+				name = "epub",
+				filename = "dune.epub",
+				content_type = "application/epub+zip",
+				data = "epub-bytes",
+			}, partNamed(uploadWith(412), "epub"))
+		end)
+
+		it("sends the book id and page count as fields", function()
+			local upload = uploadWith(412)
+
+			assert.are.same({ name = "client_book_id", data = CLIENT_BOOK_ID }, partNamed(upload, "client_book_id"))
+			assert.are.same({ name = "page_count", data = "412" }, partNamed(upload, "page_count"))
+		end)
+
+		it("leaves the page count out when KOReader has none", function()
+			assert.is_nil(partNamed(uploadWith(nil), "page_count"))
+		end)
+
+		it("returns the book the server answered with", function()
+			network.setMultipartResult(200, BOOK)
+
+			local code, book, err = clientWithToken(TOKEN):uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "dune.epub")
 
 			assert.are.equal(200, code)
-			assert.is_nil(response)
+			assert.are.same(BOOK, book)
 			assert.is_nil(err)
-			assert.are.equal(BASE_URL .. "/api/v1/ereader/books/" .. CLIENT_BOOK_ID .. "/epub", network.uploaded[1].url)
 		end)
 
 		it("reports a rejected upload with its status", function()
-			network.setMultipartResult(500, "")
+			network.setMultipartResult(400, { detail = "Not an EPUB" })
 
-			local code, response, err = clientWithToken(TOKEN):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local code, book, err = clientWithToken(TOKEN):uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "dune.epub")
 
-			assert.are.equal(500, code)
-			assert.is_nil(response)
-			assert.are.equal("Upload failed: 500", err)
+			assert.are.equal(400, code)
+			assert.is_nil(book)
+			assert.are.equal("Book upload failed: 400", err)
+		end)
+
+		it("reports a 200 whose body would not decode without a status", function()
+			network.setMultipartResult(200, nil, "Invalid JSON response")
+
+			local code, book, err = clientWithToken(TOKEN):uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "dune.epub")
+
+			assert.is_nil(code)
+			assert.is_nil(book)
+			assert.are.equal("the book: the server answered 200 with a body that would not decode", err)
 		end)
 	end)
 
@@ -358,7 +415,7 @@ describe("ApiClient", function()
 		it("is a success without data on a post", function()
 			network.setPostResult(200, nil)
 
-			local code, data, err = clientWithToken(TOKEN):createBook({ client_book_id = CLIENT_BOOK_ID })
+			local code, data, err = clientWithToken(TOKEN):uploadHighlights(CLIENT_BOOK_ID, {}, nil, { 7 })
 
 			assert.are.equal(200, code)
 			assert.is_nil(data)
@@ -420,8 +477,8 @@ describe("ApiClient", function()
 			assert.are.equal("Login failed: 401", AuthFailed.message(err))
 		end)
 
-		it("reaches the caller of an EPUB upload intact", function()
-			local code, _, err = clientRefusedByAuth():uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+		it("reaches the caller of a book upload intact", function()
+			local code, _, err = clientRefusedByAuth():uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "a.epub")
 
 			assert.is_nil(code)
 			assert.is_true(AuthFailed.is(err))
@@ -488,28 +545,13 @@ describe("ApiClient", function()
 			end))
 		end)
 
-		it("raises it out of a refused book creation the same way", function()
-			network.setPostResult(426, REFUSAL)
+		it("raises it out of a refused book upload the same way", function()
+			network.setMultipartResult(426, REFUSAL)
 			local client = clientWithToken(TOKEN)
 
 			assertRefusal(refusalRaisedBy(function()
-				return client:createBook({ client_book_id = CLIENT_BOOK_ID })
+				return client:uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "a.epub")
 			end))
-		end)
-
-		it("raises it out of a refused EPUB upload the same way", function()
-			-- The multipart helper hands back an undecoded body, so this path
-			-- reads the refusal's detail for itself.
-			network.setMultipartResult(426, '{"detail": {}}')
-			stub(json, "decode", REFUSAL)
-			local client = clientWithToken(TOKEN)
-
-			local err = refusalRaisedBy(function()
-				return client:uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
-			end)
-
-			json.decode:revert()
-			assertRefusal(err)
 		end)
 
 		it("still raises a refusal whose body could not be read", function()
@@ -526,12 +568,12 @@ describe("ApiClient", function()
 			assert.is_nil(err.update_url)
 		end)
 
-		it("still raises an EPUB refusal whose body could not be read", function()
-			network.setMultipartResult(426, "<html>Upgrade required</html>")
+		it("still raises a book upload refusal whose body could not be read", function()
+			network.setMultipartResult(426, nil, "Invalid JSON response")
 			local client = clientWithToken(TOKEN)
 
 			local err = refusalRaisedBy(function()
-				return client:uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+				return client:uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "a.epub")
 			end)
 
 			assert.is_true(UpgradeRequired.is(err))
@@ -598,13 +640,14 @@ describe("ApiClient", function()
 			assert.are.equal("fresh", network.posted_json[2].token)
 		end)
 
-		it("logs in again and repeats an EPUB upload the server turned away", function()
+		it("logs in again and repeats a book upload the server turned away", function()
 			local auth = authWithTokens({ "revoked", "fresh" })
-			network.setMultipartResults({ 401 }, { 200 })
+			network.setMultipartResults({ 401 }, { 200, { book_id = 1 } })
 
-			local code, _, err = clientWithAuth(auth):uploadEpub(CLIENT_BOOK_ID, "epub-bytes", "a.epub")
+			local code, book, err = clientWithAuth(auth):uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "a.epub")
 
 			assert.are.equal(200, code)
+			assert.are.equal(1, book.book_id)
 			assert.is_nil(err)
 			assert.are.equal(1, auth.cleared)
 			assert.are.equal(2, #network.uploaded)
