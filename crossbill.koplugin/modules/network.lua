@@ -274,26 +274,39 @@ function Network.postForm(url, data)
 	return decodedResponse(code, response_text)
 end
 
+--- The header lines that open one multipart part
+-- @param part table A file {name, filename, content_type, data} or a field {name, data}
+-- @return table The lines, in order
+local function partHeaders(part)
+	if not part.filename then
+		return { string.format('Content-Disposition: form-data; name="%s"', part.name) }
+	end
+
+	return {
+		string.format('Content-Disposition: form-data; name="%s"; filename="%s"', part.name, part.filename),
+		"Content-Type: " .. part.content_type,
+	}
+end
+
 --- Make a multipart/form-data POST request
 -- @param url string The URL to request
--- @param files table Array of file objects {name, filename, content_type, data}
+-- @param parts table Array of files {name, filename, content_type, data} and
+--   plain fields {name, data}
 -- @param token string|nil Bearer token for authorization
 -- @return number|nil HTTP status code
--- @return string Response body
+-- @return table|nil Parsed JSON response
 -- @return string|nil Error message
-function Network.postMultipart(url, files, token)
+function Network.postMultipart(url, parts, token)
 	local boundary = "----CrossbillBoundary" .. os.time()
 	local body_parts = {}
 
-	for _, file in ipairs(files) do
+	for _, part in ipairs(parts) do
 		table.insert(body_parts, "--" .. boundary)
-		table.insert(
-			body_parts,
-			string.format('Content-Disposition: form-data; name="%s"; filename="%s"', file.name, file.filename)
-		)
-		table.insert(body_parts, "Content-Type: " .. file.content_type)
+		for _, line in ipairs(partHeaders(part)) do
+			table.insert(body_parts, line)
+		end
 		table.insert(body_parts, "")
-		table.insert(body_parts, file.data)
+		table.insert(body_parts, part.data)
 	end
 	table.insert(body_parts, "--" .. boundary .. "--")
 
@@ -307,7 +320,7 @@ function Network.postMultipart(url, files, token)
 		headers["Authorization"] = "Bearer " .. token
 	end
 
-	return Network.request({
+	local code, response_text, err = Network.request({
 		url = url,
 		method = "POST",
 		headers = headers,
@@ -317,6 +330,12 @@ function Network.postMultipart(url, files, token)
 		-- knows. A stalled connection still ends; a slow one is left alone.
 		total_timeout = Network.NO_TOTAL_TIMEOUT,
 	})
+
+	if not code then
+		return nil, nil, err
+	end
+
+	return decodedResponse(code, response_text)
 end
 
 --- Run something once the device is online, turning WiFi on if it is off

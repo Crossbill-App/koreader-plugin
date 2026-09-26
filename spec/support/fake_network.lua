@@ -115,13 +115,12 @@ function FakeNetwork:new(options)
 	end
 
 	--- Answer `postMultipart` with whatever the current test has queued
-	-- Answers with the body undecoded, as the real module does.
 	-- @param url string The URL being posted to
-	-- @param files table The files the caller built
+	-- @param parts table The file and field parts the caller built
 	-- @param token string|nil The bearer token
-	-- @return number|nil, string|nil, string|nil The queued status, body and error
-	function fake.postMultipart(url, files, token)
-		return answerMultipart({ url = url, files = files, token = token })
+	-- @return number|nil, table|nil, string|nil The queued status, body and error
+	function fake.postMultipart(url, parts, token)
+		return answerMultipart({ url = url, parts = parts, token = token })
 	end
 
 	--- Run the work now if the device is online, hold it if it is not
