@@ -73,6 +73,17 @@ local function postMultipart(url, parts, token)
 	return code, response_data, err
 end
 
+--- The server's own message for a failure when it sent one, else the status
+-- @param code number HTTP status code
+-- @param response_data table|nil Decoded response body
+-- @return string
+local function serverReason(code, response_data)
+	if type(response_data) == "table" and type(response_data.message) == "string" then
+		return response_data.message
+	end
+	return tostring(code)
+end
+
 local ApiClient = {}
 ApiClient.__index = ApiClient
 
@@ -211,7 +222,7 @@ function ApiClient:_authorizedSend(path, what, failure, post)
 	end
 
 	log.warn("Uploading", what, "failed with code:", code)
-	return code, nil, (failure or "Upload failed") .. ": " .. tostring(code)
+	return code, nil, (failure or "Upload failed") .. ": " .. serverReason(code, response_data)
 end
 
 --- Post a JSON payload with the caller's bearer token

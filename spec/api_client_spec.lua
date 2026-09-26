@@ -375,14 +375,27 @@ describe("ApiClient", function()
 			assert.is_nil(err)
 		end)
 
-		it("reports a rejected upload with its status", function()
-			network.setMultipartResult(400, { detail = "Not an EPUB" })
+		it("reports a failed upload with the server's reason", function()
+			network.setMultipartResult(
+				400,
+				{ error = "bad_request", message = "Invalid EPUB: file too large (max 50MB)" }
+			)
 
 			local code, book, err = clientWithToken(TOKEN):uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "dune.epub")
 
 			assert.are.equal(400, code)
 			assert.is_nil(book)
-			assert.are.equal("Book upload failed: 400", err)
+			assert.are.equal("Book upload failed: Invalid EPUB: file too large (max 50MB)", err)
+		end)
+
+		it("reports a failed upload by its status when the server gave no reason", function()
+			network.setMultipartResult(422, { detail = {} })
+
+			local code, book, err = clientWithToken(TOKEN):uploadBook(CLIENT_BOOK_ID, 412, "epub-bytes", "dune.epub")
+
+			assert.are.equal(422, code)
+			assert.is_nil(book)
+			assert.are.equal("Book upload failed: 422", err)
 		end)
 
 		it("reports a 200 whose body would not decode without a status", function()
