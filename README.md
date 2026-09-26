@@ -78,7 +78,7 @@ Unit tests live in `spec/` and run under busted, the same framework KOReader its
 ```bash
 make test                        # the whole suite
 busted spec/settings_spec.lua    # one file
-busted --filter "ISBN"           # tests whose name matches
+busted --filter "client_book_id" # tests whose name matches
 ```
 
 The plugin's modules `require` things that only exist inside KOReader (`logger`, `docsettings`,

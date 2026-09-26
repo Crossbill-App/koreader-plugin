@@ -37,7 +37,7 @@ and the pieces every flow leans on.
 main.lua (CrossbillSync) - KOReader event handlers, the menu, and the wiring of everything below
 
 The push -- highlights and sessions out
-    ├── BookMetadata       - Title, author, ISBN, language and page count off the document
+    ├── BookMetadata       - Title, author and page count off the document
     ├── HighlightExtractor - Highlights from ReaderAnnotation's memory, or the sidecar on disk
     ├── SessionTracker     - Decides what a reading session is and where the reader got to
     ├── SessionStore       - Finished sessions as rows, and the two queries the sync needs
@@ -102,8 +102,8 @@ Shared by all of them
 A sync is one ordered walk through `SyncService:syncBook`, and it is both a
 push and a pull:
 
-1. `BookMetadata` extracts title, author and ISBN from the document, and
-   `BookIdentity` hashes them into the client book id the server knows the book by
+1. `BookMetadata` extracts title, author and page count from the document, and
+   `BookIdentity` hashes title and author into the client book id the server knows the book by
 2. `SyncService` asks the server for that book and, when it is new, uploads the
    EPUB in one call that creates it; a book the server already has is not sent
 3. `NoteEdits` stamps the notes edited since the last sync, then
