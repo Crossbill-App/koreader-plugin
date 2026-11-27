@@ -395,6 +395,21 @@ function ApiClient:uploadReadingSessions(client_book_id, sessions)
 			api_session.end_xpoint = ""
 		end
 
+		-- Left out when there are none: an empty table would encode as an
+		-- object, and the server reads a missing list as an empty one.
+		if session.page_views and #session.page_views > 0 then
+			api_session.page_views = {}
+			for i, page_view in ipairs(session.page_views) do
+				api_session.page_views[i] = {
+					start_xpoint = page_view.start_xpoint,
+					end_xpoint = page_view.end_xpoint,
+					shown_at = unixToISO8601(page_view.shown_at),
+					-- tonumber, as for the times: SQLite hands back cdata int64
+					duration_seconds = tonumber(page_view.duration_seconds),
+				}
+			end
+		end
+
 		table.insert(api_sessions, api_session)
 	end
 
