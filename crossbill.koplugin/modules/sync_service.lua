@@ -523,6 +523,14 @@ function SyncService:_syncReadingSessions(ui, client_book_id, doc_path)
 		end
 		self.session_tracker:markSessionsSynced(session_ids)
 
+		-- Page Views stay on the device after their sessions sync unless the
+		-- reader turned pruning on. Nothing sends them again: they are kept
+		-- because they cost little (a few MB a year), and the hidden setting
+		-- is there for a reader who would rather have the space.
+		if self.settings:shouldPruneSyncedPageViews() then
+			self.session_tracker:deletePageViews(session_ids)
+		end
+
 		log.info("Synced", #sessions, "reading sessions")
 		result.synced = #sessions
 	else

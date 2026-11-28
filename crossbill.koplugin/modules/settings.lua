@@ -29,6 +29,9 @@ local DEFAULTS = {
 	autosync_enabled = false,
 	session_tracking_enabled = true,
 	min_reading_session_duration = 60,
+	-- Hidden: no menu entry, set by hand in KOReader's settings file. Off, a
+	-- synced session's Page Views stay on the device (a few MB a year).
+	prune_synced_page_views = false,
 }
 
 -- Settings key in KOReader's global settings
@@ -202,6 +205,12 @@ end
 function Settings:setMinReadingSessionDuration(seconds)
 	self:set("min_reading_session_duration", seconds)
 	return self:save()
+end
+
+--- Check whether a synced session's Page Views are deleted from the device
+-- @return boolean True when they are deleted once the server has them
+function Settings:shouldPruneSyncedPageViews()
+	return self:get("prune_synced_page_views") == true
 end
 
 --- Toggle session tracking setting

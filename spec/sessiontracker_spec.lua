@@ -88,6 +88,68 @@ local function uiFor(document, page)
 	}
 end
 
+-- How long the book is that `bookOpenAt` builds.
+local BOOK_PAGES = 10
+
+--- Where a page of the `bookOpenAt` book starts, under a given layout
+-- A relayout moves every page's start, so the layout is part of the answer.
+-- @param page number The page
+-- @param layout string|nil The layout's name, "default" when nil
+-- @return string The XPointer of the page's first text
+local function pageStart(page, layout)
+	return string.format("/body/DocFragment[2]/p[%d]@%s", page, layout or "default")
+end
+
+--- Build a reflowable book the test turns the pages of
+-- What KOReader hands the plugin in page mode: the page on screen starts at
+-- `getXPointer()`, and any page's start is `getPageXPointer(page)`. Past the
+-- last page crengine answers an empty XPointer, and this does the same.
+-- @param page number The page on screen
+-- @return table The document stand-in, with `page`, `layout` and
+--   `visible_page_numbers` for the test to change
+local function bookOpenAt(page)
+	local document = documentAt(nil)
+	document.page = page
+	document.layout = nil
+	document.visible_page_numbers = 1
+	document.getXPointer = function(self)
+		return pageStart(self.page, self.layout)
+	end
+	document.getPageXPointer = function(self, n)
+		if n < 1 or n > BOOK_PAGES then
+			return ""
+		end
+		return pageStart(n, self.layout)
+	end
+	document.getPageCount = function()
+		return BOOK_PAGES
+	end
+	document.getVisiblePageNumberCount = function(self)
+		return self.visible_page_numbers
+	end
+	return document
+end
+
+--- Build the reader UI around a book read in page mode
+-- @param document table The `bookOpenAt` document
+-- @return table The UI stand-in, whose `view.view_mode` the test can change
+local function pageModeUiFor(document)
+	local ui = uiFor(document, document.page)
+	ui.view.view_mode = "page"
+	return ui
+end
+
+--- Turn the book to a page, the way KOReader's PageUpdate reaches the tracker
+-- @param tracker table The tracker
+-- @param document table The `bookOpenAt` document
+-- @param ui table Its UI
+-- @param page number The page turned to
+local function turnTo(tracker, document, ui, page)
+	document.page = page
+	ui.view.state.page = page
+	tracker:updatePosition(document, ui, page)
+end
+
 --- Build settings that keep sessions of at least MIN_DURATION
 -- @param min_duration number|nil The minimum to report
 -- @return table The settings stand-in
@@ -476,6 +538,318 @@ describe("SessionTracker", function()
 		end)
 	end)
 
+	describe("Page Views", function()
+		it("records each page that was on screen, from its start to the next page's", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(20)
+			turnTo(tracker, document, ui, 4)
+			clock.advance(50)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[4]@default",
+					shown_at = START_TIME,
+					duration_seconds = 20,
+				},
+				{
+					start_xpoint = "/body/DocFragment[2]/p[4]@default",
+					end_xpoint = "/body/DocFragment[2]/p[5]@default",
+					shown_at = START_TIME + 20,
+					duration_seconds = 50,
+				},
+			}, store.sessions[1].page_views)
+		end)
+
+		it("ends the Page View at a relayout and starts one for the new layout", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(30)
+			-- A font change: KOReader re-renders, keeps the reader on the same
+			-- page number and reports it again.
+			document.layout = "bigger-font"
+			turnTo(tracker, document, ui, 3)
+			clock.advance(40)
+			tracker:endSession(document, ui, "document_close")
+
+			local page_views = store.sessions[1].page_views
+			assert.are.equal(2, #page_views)
+			assert.are.equal("/body/DocFragment[2]/p[4]@default", page_views[1].end_xpoint)
+			assert.are.equal(30, page_views[1].duration_seconds)
+			assert.are.equal("/body/DocFragment[2]/p[3]@bigger-font", page_views[2].start_xpoint)
+			assert.are.equal("/body/DocFragment[2]/p[4]@bigger-font", page_views[2].end_xpoint)
+			assert.are.equal(START_TIME + 30, page_views[2].shown_at)
+			assert.are.equal(40, page_views[2].duration_seconds)
+		end)
+
+		it("keeps one Page View when the same screen is reported again", function()
+			-- KOReader repeats PageUpdate for a screen that did not change, a
+			-- font gamma change for one.
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(30)
+			turnTo(tracker, document, ui, 3)
+			clock.advance(40)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[4]@default",
+					shown_at = START_TIME,
+					duration_seconds = 70,
+				},
+			}, store.sessions[1].page_views)
+		end)
+
+		it("counts no time asleep: a suspend ends the Page View and the resume starts another", function()
+			-- What main.lua does on Suspend and Resume.
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "suspend")
+			clock.advance(600)
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "suspend")
+
+			assert.are.equal(2, #store.sessions)
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[4]@default",
+					shown_at = START_TIME,
+					duration_seconds = MIN_DURATION,
+				},
+			}, store.sessions[1].page_views)
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[4]@default",
+					shown_at = START_TIME + MIN_DURATION + 600,
+					duration_seconds = MIN_DURATION,
+				},
+			}, store.sessions[2].page_views)
+		end)
+
+		it("records no Page View for the book's last page, which has no next page to end at", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(BOOK_PAGES - 1)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(20)
+			turnTo(tracker, document, ui, BOOK_PAGES)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[9]@default",
+					end_xpoint = "/body/DocFragment[2]/p[10]@default",
+					shown_at = START_TIME,
+					duration_seconds = 20,
+				},
+			}, store.sessions[1].page_views)
+		end)
+
+		it("drops the open Page View of a session a gap ended at its last page turn", function()
+			-- Its time on screen would be the idle gap, not reading, and the
+			-- server would drop it for ending after its session.
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(40)
+			turnTo(tracker, document, ui, 4)
+			clock.advance(30)
+			turnTo(tracker, document, ui, 5)
+			clock.advance(ACTIVITY_GAP_SECONDS + 1)
+			turnTo(tracker, document, ui, 6)
+
+			assert.are.equal(1, #store.sessions)
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[4]@default",
+					shown_at = START_TIME,
+					duration_seconds = 40,
+				},
+				{
+					start_xpoint = "/body/DocFragment[2]/p[4]@default",
+					end_xpoint = "/body/DocFragment[2]/p[5]@default",
+					shown_at = START_TIME + 40,
+					duration_seconds = 30,
+				},
+			}, store.sessions[1].page_views)
+		end)
+
+		it("starts the sitting after a gap on the page it was picked up at", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			turnTo(tracker, document, ui, 4)
+			clock.advance(ACTIVITY_GAP_SECONDS + 1)
+			turnTo(tracker, document, ui, 6)
+			local picked_up_at = clock.now()
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[6]@default",
+					end_xpoint = "/body/DocFragment[2]/p[7]@default",
+					shown_at = picked_up_at,
+					duration_seconds = MIN_DURATION,
+				},
+			}, store.sessions[2].page_views)
+		end)
+
+		it("drops the open Page View when a session ends long after its last page turn", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			turnTo(tracker, document, ui, 4)
+			clock.advance(ACTIVITY_GAP_SECONDS + 1)
+			tracker:endSession(document, ui, "suspend")
+
+			assert.are.equal(1, #store.sessions[1].page_views)
+			assert.are.equal(MIN_DURATION, store.sessions[1].page_views[1].duration_seconds)
+		end)
+
+		it("records a two-page spread as one Page View, to where the next spread starts", function()
+			-- With each column numbered, the spread on screen is pages 3 and 4.
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			document.visible_page_numbers = 2
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[5]@default",
+					shown_at = START_TIME,
+					duration_seconds = MIN_DURATION,
+				},
+			}, store.sessions[1].page_views)
+		end)
+
+		it("records no Page View for a spread that reaches the book's last page", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(BOOK_PAGES - 1)
+			document.visible_page_numbers = 2
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({}, store.sessions[1].page_views)
+		end)
+
+		it("records no Page View for a screen crengine cannot place", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			document.getPageXPointer = function()
+				return ""
+			end
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({}, store.sessions[1].page_views)
+		end)
+
+		it("opens no Page View when the UI cannot say which page is on screen", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+			ui.view.state.page = nil
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({}, store.sessions[1].page_views)
+		end)
+
+		it("records no Page Views in scroll mode", function()
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+			ui.view.view_mode = "scroll"
+
+			tracker:startSession(document, ui)
+			clock.advance(20)
+			turnTo(tracker, document, ui, 4)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({}, store.sessions[1].page_views)
+		end)
+
+		it("ends the open Page View when the reader switches to scroll mode", function()
+			-- main.lua passes ChangeViewMode on as a position update with no
+			-- page, which is what KOReader's scroll mode sends instead of
+			-- PageUpdate.
+			local tracker, store, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(20)
+			ui.view.view_mode = "scroll"
+			tracker:updatePosition(document, ui, nil)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.equal(1, #store.sessions[1].page_views)
+			assert.are.equal(20, store.sessions[1].page_views[1].duration_seconds)
+		end)
+
+		it("records no Page Views for an EPUB opened as a paged document", function()
+			local tracker, store, clock = trackerWith()
+			local document = pagedDocument()
+			local ui = uiFor(document, 3)
+			ui.view.view_mode = "page"
+
+			tracker:startSession(document, ui)
+			clock.advance(20)
+			tracker:updatePosition(document, ui, 4)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			assert.are.same({}, store.sessions[1].page_views)
+		end)
+	end)
+
 	describe("reading back what was saved", function()
 		--- Save one finished session for a book
 		-- @param tracker table The tracker
@@ -503,6 +877,26 @@ describe("SessionTracker", function()
 			assert.are.equal("/body/DocFragment[1]", sessions[1].start_position)
 			assert.is_not_nil(sessions[1].id)
 			assert.is_nil(sessions[1].book_title)
+		end)
+
+		it("answers each session with its Page Views", function()
+			local tracker, _, clock = trackerWith()
+			local document = bookOpenAt(3)
+			local ui = pageModeUiFor(document)
+
+			tracker:startSession(document, ui)
+			clock.advance(MIN_DURATION)
+			tracker:endSession(document, ui, "document_close")
+
+			local sessions = tracker:getUnsyncedSessionsForBook("md5:" .. FILE)
+			assert.are.same({
+				{
+					start_xpoint = "/body/DocFragment[2]/p[3]@default",
+					end_xpoint = "/body/DocFragment[2]/p[4]@default",
+					shown_at = START_TIME,
+					duration_seconds = MIN_DURATION,
+				},
+			}, sessions[1].page_views)
 		end)
 
 		it("stops answering the sessions the server has taken", function()

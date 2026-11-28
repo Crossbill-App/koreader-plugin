@@ -561,6 +561,9 @@ describe("SyncService", function()
 				isSessionTrackingEnabled = function()
 					return opts.session_tracker ~= nil
 				end,
+				shouldPruneSyncedPageViews = function()
+					return opts.prune_synced_page_views == true
+				end,
 			}
 			return SyncService:new({
 				api_client = api,
@@ -625,6 +628,70 @@ describe("SyncService", function()
 			assert.is_truthy(result.pull_error)
 			assert.are.equal(1, result.sessions_synced)
 			assert.are.same({ 7 }, session_tracker.marked)
+		end)
+
+		describe("the Page Views of the sessions it uploads", function()
+			--- Build a session tracker with one unsynced session
+			-- @return table The tracker stand-in, recording what it was asked
+			local function trackerWithOneSession()
+				return {
+					getUnsyncedSessionsForBook = function()
+						return { { id = 7 } }
+					end,
+					markSessionsSynced = function(self, ids)
+						self.marked = ids
+						return true
+					end,
+					deletePageViews = function(self, ids)
+						self.pruned = ids
+						return true
+					end,
+				}
+			end
+
+			it("keeps them on the device after a sync while pruning is off", function()
+				local session_tracker = trackerWithOneSession()
+				local service = serviceFor(apiForSyncBook(), {
+					session_tracker = session_tracker,
+					highlight_importer = importerReturning({ inserted = 0 }),
+				})
+
+				service:syncBook(bookFor({}))
+
+				assert.are.same({ 7 }, session_tracker.marked)
+				assert.is_nil(session_tracker.pruned)
+			end)
+
+			it("deletes them once the server has the sessions, when pruning is on", function()
+				local session_tracker = trackerWithOneSession()
+				local service = serviceFor(apiForSyncBook(), {
+					session_tracker = session_tracker,
+					highlight_importer = importerReturning({ inserted = 0 }),
+					prune_synced_page_views = true,
+				})
+
+				service:syncBook(bookFor({}))
+
+				assert.are.same({ 7 }, session_tracker.pruned)
+			end)
+
+			it("keeps them when the server did not confirm the sessions, even when pruning is on", function()
+				local session_tracker = trackerWithOneSession()
+				local api = apiForSyncBook({
+					uploadReadingSessions = function()
+						return 500, nil, "server exploded"
+					end,
+				})
+				local service = serviceFor(api, {
+					session_tracker = session_tracker,
+					highlight_importer = importerReturning({ inserted = 0 }),
+					prune_synced_page_views = true,
+				})
+
+				service:syncBook(bookFor({}))
+
+				assert.is_nil(session_tracker.pruned)
+			end)
 		end)
 
 		describe("a book the server does not have yet", function()

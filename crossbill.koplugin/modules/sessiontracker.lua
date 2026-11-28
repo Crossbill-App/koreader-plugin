@@ -151,6 +151,94 @@ function SessionTracker:_capturePosition(document, ui)
 	return position_data
 end
 
+--- Read what is on screen as the two ends of a Page View
+-- The start is where the screen's text begins and the end is where the next
+-- screen's begins, so a Page View covers exactly the text that was shown.
+--
+-- Three screens are not Page Views. Scroll mode has no pages to view, and the
+-- reader does not read in it. An EPUB opened with MuPDF has pages but no
+-- XPointers. And on the book's last page there is no next screen to end at,
+-- while crengine has no XPointer for the end of the book.
+-- @param document The document object
+-- @param ui The UI object
+-- @param page number The page on screen
+-- @return table|nil {start_xpoint, end_xpoint}, nil when the screen cannot be one
+function SessionTracker:_captureScreen(document, ui, page)
+	local view = ui and ui.view
+	if not view or view.view_mode ~= "page" then
+		return nil
+	end
+	if document.info and document.info.has_pages then
+		return nil
+	end
+
+	local ok, screen = pcall(function()
+		-- A two-page spread is one screen. When its columns are numbered on
+		-- their own, the next screen starts two page numbers on.
+		local numbers_on_screen = document.getVisiblePageNumberCount and document:getVisiblePageNumberCount() or 1
+		local next_page = page + numbers_on_screen
+		if next_page > document:getPageCount() then
+			return nil
+		end
+		local start_xpoint = document:getXPointer()
+		local end_xpoint = document:getPageXPointer(next_page)
+		-- crengine answers a position it cannot place as an empty XPointer
+		if not start_xpoint or start_xpoint == "" or not end_xpoint or end_xpoint == "" then
+			return nil
+		end
+		return { start_xpoint = start_xpoint, end_xpoint = end_xpoint }
+	end)
+	if not ok then
+		log.warn("Error capturing the screen for a Page View:", screen)
+		return nil
+	end
+	return screen
+end
+
+--- Show a screen: end the Page View that was open and open one for this screen
+-- @param session table The session the Page Views belong to
+-- @param document The document object
+-- @param ui The UI object
+-- @param page number|nil The page on screen; nil when there is none, which
+--   ends the open Page View and opens no other
+-- @param now number Unix time the screen appeared
+function SessionTracker:_showScreen(session, document, ui, page, now)
+	-- Position capture answers page 0 when the UI holds no page; that is no
+	-- screen to view, and page 0's "next page" would be the start of the book.
+	local screen = page and page >= 1 and self:_captureScreen(document, ui, page)
+	local open = session.open_page_view
+
+	-- KOReader reports a screen again that has not changed (a font gamma
+	-- change, a redraw), and that is still the one appearance. A relayout moves
+	-- where the screen ends even when it starts where it did, so it is not.
+	if open and screen and open.start_xpoint == screen.start_xpoint and open.end_xpoint == screen.end_xpoint then
+		return
+	end
+
+	self:_closePageView(session, now)
+	if screen then
+		screen.shown_at = now
+		session.open_page_view = screen
+	end
+end
+
+--- End the open Page View and keep it with its session
+-- @param session table The session the Page View belongs to
+-- @param now number Unix time the screen went away
+function SessionTracker:_closePageView(session, now)
+	local open = session.open_page_view
+	if not open then
+		return
+	end
+	session.open_page_view = nil
+	table.insert(session.page_views, {
+		start_xpoint = open.start_xpoint,
+		end_xpoint = open.end_xpoint,
+		shown_at = open.shown_at,
+		duration_seconds = now - open.shown_at,
+	})
+end
+
 --- Get total pages in document
 -- @param document The document object
 -- @return number Total pages or 0
@@ -260,7 +348,11 @@ function SessionTracker:startSession(document, ui)
 		last_activity_time = now,
 		last_capture_time = now,
 		total_pages = self:_getTotalPages(document),
+		-- Finished Page Views, and the one on screen now
+		page_views = {},
+		open_page_view = nil,
 	}
+	self:_showScreen(self.current_session, document, ui, position.page, now)
 
 	log.dbg("Started session for", book_title or file_path)
 end
@@ -269,7 +361,9 @@ end
 -- This should be fast as it's called frequently
 -- @param document The document object
 -- @param ui The UI object
--- @param pageno number Current page number (optional)
+-- @param pageno number|nil Current page number. Nil means the page is not
+--   known: the position is captured in full, and the open Page View ends with
+--   none opened after it, which is how main.lua reports a switch to scroll mode
 function SessionTracker:updatePosition(document, ui, pageno)
 	local session = self.current_session
 	if not session then
@@ -308,6 +402,8 @@ function SessionTracker:updatePosition(document, ui, pageno)
 	if pageno then
 		session.current_page = pageno
 	end
+
+	self:_showScreen(session, document, ui, pageno, now)
 
 	session.last_activity_time = now
 end
@@ -351,6 +447,7 @@ function SessionTracker:_saveSession(session, end_time, end_position, end_page, 
 			end_page = end_page,
 			total_pages = session.total_pages,
 			device_id = DeviceIdentity.getDeviceId(),
+			page_views = session.page_views,
 		})
 	end)
 
@@ -374,6 +471,9 @@ function SessionTracker:_endSessionAtLastActivity(reason)
 	end
 
 	local end_time = session.last_activity_time or session.start_time
+	-- The open Page View is dropped, not closed: its time on screen is the gap,
+	-- not reading, and it would end after the session it belongs to.
+	session.open_page_view = nil
 	self:_saveSession(session, end_time, session.current_position, session.current_page, reason)
 	self.current_session = nil
 end
@@ -417,6 +517,7 @@ function SessionTracker:endSession(document, ui, reason)
 		end
 	end
 
+	self:_closePageView(session, end_time)
 	self:_saveSession(session, end_time, end_position, end_page, reason)
 	self.current_session = nil
 end
@@ -431,6 +532,19 @@ function SessionTracker:markSessionsSynced(session_ids)
 
 	return guarded("mark sessions as synced", function()
 		return self.store:markSessionsSynced(session_ids)
+	end) or false
+end
+
+--- Delete the Page Views of sessions the server has taken
+-- @param session_ids table Array of session IDs
+-- @return boolean Success status
+function SessionTracker:deletePageViews(session_ids)
+	if not self._initialized then
+		return false
+	end
+
+	return guarded("delete synced Page Views", function()
+		return self.store:deletePageViews(session_ids)
 	end) or false
 end
 

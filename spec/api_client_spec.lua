@@ -191,6 +191,56 @@ describe("ApiClient", function()
 				},
 			}, payload.sessions)
 		end)
+
+		it("sends each session's Page Views with it", function()
+			network.setPostResult(200, { created_count = 1, skipped_duplicate_count = 0 })
+
+			clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {
+				{
+					start_time = 1700000000,
+					end_time = 1700003600,
+					position_type = "xpointer",
+					start_position = "/body/div[1]/p[1]",
+					end_position = "/body/div[1]/p[50]",
+					page_views = {
+						{
+							start_xpoint = "/body/div[1]/p[1]",
+							end_xpoint = "/body/div[1]/p[9]",
+							shown_at = 1700000000,
+							duration_seconds = 42,
+						},
+					},
+				},
+			})
+
+			assert.are.same({
+				{
+					start_xpoint = "/body/div[1]/p[1]",
+					end_xpoint = "/body/div[1]/p[9]",
+					shown_at = "2023-11-14T22:13:20Z",
+					duration_seconds = 42,
+				},
+			}, network.posted_json[1].data.sessions[1].page_views)
+		end)
+
+		it("leaves Page Views out of a session that has none", function()
+			-- An empty Lua table would reach the server as an object where it
+			-- expects a list; left out, the server reads it as no Page Views.
+			network.setPostResult(200, { created_count = 1, skipped_duplicate_count = 0 })
+
+			clientWithToken(TOKEN):uploadReadingSessions(CLIENT_BOOK_ID, {
+				{
+					start_time = 1700000000,
+					end_time = 1700003600,
+					position_type = "xpointer",
+					start_position = "/body/div[1]/p[1]",
+					end_position = "/body/div[1]/p[50]",
+					page_views = {},
+				},
+			})
+
+			assert.is_nil(network.posted_json[1].data.sessions[1].page_views)
+		end)
 	end)
 
 	describe("getHighlights", function()

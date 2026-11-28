@@ -39,8 +39,8 @@ main.lua (CrossbillSync) - KOReader event handlers, the menu, and the wiring of 
 The push -- highlights and sessions out
     ├── BookMetadata       - Title, author and page count off the document
     ├── HighlightExtractor - Highlights from ReaderAnnotation's memory, or the sidecar on disk
-    ├── SessionTracker     - Decides what a reading session is and where the reader got to
-    ├── SessionStore       - Finished sessions as rows, and the two queries the sync needs
+    ├── SessionTracker     - Decides what a reading session is, where the reader got to, and its Page Views
+    ├── SessionStore       - Finished sessions and their Page Views as rows, and the queries the sync needs
     ├── SyncService        - Orders the sync: the book, the push, the pull, sessions, digests
     ├── ApiClient          - Every server call, answering `code, data, error`
     └── Auth               - Login, refresh and token caching
@@ -113,8 +113,12 @@ push and a pull:
 4. The server's copy comes back: `HighlightImporter` rebuilds the book's
    highlights from it, and `HighlightSnapshot` records what was placed, so the
    next sync can tell a deletion from a highlight that was never here
-5. `SessionTracker` decides what a session is; `SessionStore` keeps them in
-   SQLite (`crossbill_sessions.sqlite3`) until the same sync uploads them
+5. `SessionTracker` decides what a session is and records a Page View for each
+   screen shown in page mode; `SessionStore` keeps them in SQLite
+   (`crossbill_sessions.sqlite3`) until the same sync uploads them. A session
+   and its Page Views are written in one transaction, because the server
+   ignores the Page Views of a session it already has. Page Views stay on the
+   device after the sync unless the hidden setting `prune_synced_page_views` is on
 6. `DigestService` refreshes the book's chapter digests into `DigestCache`,
    which is what the digest menu item and gesture read from -- including offline
 

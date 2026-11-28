@@ -465,6 +465,18 @@ function CrossbillSync:onPageUpdate(pageno)
 	return false
 end
 
+--- Called when the reader switches between page and scroll mode
+-- Scroll mode sends no PageUpdate, so without this the Page View open when the
+-- reader switched would run on through all the scrolling. A position update
+-- with no page ends it. The switch back needs nothing: KOReader follows it
+-- with a PageUpdate of its own.
+function CrossbillSync:onChangeViewMode()
+	if self:isSessionTrackingActive() and self.ui.view and self.ui.view.view_mode ~= "page" then
+		self.session_tracker:updatePosition(self.ui.document, self.ui, nil)
+	end
+	return false
+end
+
 --- Called when device resumes from sleep
 function CrossbillSync:onResume()
 	if self:isSessionTrackingActive() and self.ui.document then

@@ -37,7 +37,15 @@ describe("Settings", function()
 			assert.is_false(settings:isAutosyncEnabled())
 			assert.is_true(settings:isSessionTrackingEnabled())
 			assert.are.equal(60, settings:getMinReadingSessionDuration())
+			assert.is_false(settings:shouldPruneSyncedPageViews())
 			assert.is_nil(settings:getAccessToken())
+		end)
+
+		it("prunes synced Page Views once the settings file turns it on", function()
+			-- There is no menu entry: the reader sets it by hand.
+			persisted({ prune_synced_page_views = true })
+
+			assert.is_true(Settings:new():load():shouldPruneSyncedPageViews())
 		end)
 
 		it("keeps persisted values instead of overwriting them with defaults", function()

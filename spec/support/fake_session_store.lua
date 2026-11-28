@@ -5,8 +5,10 @@ In-memory stand-in for the session tracker's SQLite store.
 KOReader, so the tracker takes its store as a dependency and specs hand it this
 one. It implements the same contract: a saved session keeps the columns it was
 given, `getUnsyncedSessionsForBook` answers a book's sessions oldest first --
-carrying only the columns the upload sends, the way the real query does -- and
-one marked synced stops being answered.
+carrying only the columns the upload sends and the session's Page Views, the
+way the real query does -- and one marked synced stops being answered. Page
+Views outlive their session's sync until `deletePageViews` is asked to remove
+them.
 
 Follows `spec/support/fake_snapshot_store.lua`, down to `fails_at` for the tests
 that need a store to misbehave.
@@ -25,10 +27,26 @@ function FakeSessionStore:new()
 		opened_with = nil,
 		closed = false,
 		next_id = 1,
-		-- Set to "open", "saveSession" or "markSessionsSynced" to make that
-		-- call misbehave.
+		-- Set to "open", "saveSession", "markSessionsSynced" or
+		-- "deletePageViews" to make that call misbehave.
 		fails_at = nil,
 	}, FakeSessionStore)
+end
+
+--- Copy a session's Page Views so the caller cannot mutate what was stored
+-- @param page_views table|nil The Page Views
+-- @return table A fresh array of fresh Page Views
+local function copyPageViews(page_views)
+	local copied = {}
+	for i, page_view in ipairs(page_views or {}) do
+		copied[i] = {
+			start_xpoint = page_view.start_xpoint,
+			end_xpoint = page_view.end_xpoint,
+			shown_at = page_view.shown_at,
+			duration_seconds = page_view.duration_seconds,
+		}
+	end
+	return copied
 end
 
 --- Copy a session so the caller cannot mutate what was stored
@@ -39,6 +57,7 @@ local function copySession(session)
 	for key, value in pairs(session) do
 		copied[key] = value
 	end
+	copied.page_views = copyPageViews(session.page_views)
 	return copied
 end
 
@@ -71,7 +90,8 @@ function FakeSessionStore:saveSession(session)
 end
 
 -- What `SessionStore:getUnsyncedSessionsForBook` selects: the columns the
--- upload sends, plus the id the sync marks them synced by.
+-- upload sends, plus the id the sync marks them synced by. The session's Page
+-- Views come with it as `page_views`.
 local UNSYNCED_COLUMNS = {
 	"id",
 	"start_time",
@@ -95,6 +115,7 @@ function FakeSessionStore:getUnsyncedSessionsForBook(book_file_hash)
 			for _, column in ipairs(UNSYNCED_COLUMNS) do
 				record[column] = session[column]
 			end
+			record.page_views = copyPageViews(session.page_views)
 			table.insert(found, record)
 		end
 	end
@@ -113,6 +134,25 @@ function FakeSessionStore:markSessionsSynced(session_ids)
 		for _, session in ipairs(self.sessions) do
 			if session.id == id then
 				session.synced = true
+			end
+		end
+	end
+
+	return true
+end
+
+--- Delete the Page Views of the given sessions
+-- @param session_ids table Array of session IDs
+-- @return boolean Success status
+function FakeSessionStore:deletePageViews(session_ids)
+	if self.fails_at == "deletePageViews" then
+		return false
+	end
+
+	for _, id in ipairs(session_ids or {}) do
+		for _, session in ipairs(self.sessions) do
+			if session.id == id then
+				session.page_views = {}
 			end
 		end
 	end
